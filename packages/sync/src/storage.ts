@@ -45,6 +45,65 @@ export interface SyncNoteSnapshotRecord {
   readonly updatedAt: number
 }
 
+export type SyncDeviceTodoScope = 'todos:read' | 'todos:write'
+
+export interface SyncDeviceTodoToken {
+  readonly tokenHash: string
+  readonly accountId: string
+  readonly deviceId: string
+  readonly deviceName: string
+  readonly scopes: readonly SyncDeviceTodoScope[]
+  readonly createdAt: number
+  readonly expiresAt: number
+  readonly revokedAt: number | null
+}
+
+export type SyncDeviceTodoAction = 'complete' | 'reopen'
+
+export interface SyncDeviceTodoActionRecord {
+  readonly operationId: string
+  readonly accountId: string
+  readonly generation: number
+  readonly deviceId: string
+  readonly sequence: number
+  readonly inputHash: string
+  readonly noteId: string
+  readonly topicId: string
+  readonly blockId: string
+  readonly action: SyncDeviceTodoAction
+  readonly resultRevision: string
+  readonly createdAt: number
+}
+
+export interface SyncDeviceTodoActionCommitInput {
+  readonly operationId: string
+  readonly accountId: string
+  readonly generation: number
+  readonly deviceId: string
+  readonly inputHash: string
+  readonly noteId: string
+  readonly topicId: string
+  readonly blockId: string
+  readonly action: SyncDeviceTodoAction
+  readonly expectedRevision: string
+  readonly update: string
+  readonly createdAt: number
+}
+
+export type SyncDeviceTodoActionCommitResult
+  = { readonly status: 'applied', readonly record: SyncDeviceTodoActionRecord }
+    | { readonly status: 'duplicate', readonly record: SyncDeviceTodoActionRecord }
+    | { readonly status: 'stale', readonly currentRevision: string | null }
+
+export interface SyncDeviceTodoStore {
+  readonly createToken: (input: Omit<SyncDeviceTodoToken, 'revokedAt'>) => Promise<SyncDeviceTodoToken>
+  readonly findToken: (tokenHash: string) => Promise<SyncDeviceTodoToken | null>
+  readonly listTokens: (accountId: string) => Promise<readonly SyncDeviceTodoToken[]>
+  readonly revokeToken: (accountId: string, deviceId: string, revokedAt: number) => Promise<boolean>
+  /** Atomically appends and materializes a device-generated Note update. */
+  readonly commitAction: (input: SyncDeviceTodoActionCommitInput) => Promise<SyncDeviceTodoActionCommitResult>
+}
+
 export type SyncLearningEntityKind = 'assignment' | 'card' | 'optimizer' | 'review-event' | 'tombstone'
 export type SyncLearningMutationOperation = 'upsert' | 'delete'
 

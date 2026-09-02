@@ -1,12 +1,12 @@
-import type { SyncAssetManifestRecord, SyncAuditStore, SyncAuthStore, SyncChangeRecord, SyncDeviceCredential, SyncInvite, SyncLearningEntityRecord, SyncLearningTombstoneRecord, SyncMutationBatch, SyncNoteSnapshotRecord, SyncPairingSession, SyncRepository, SyncResetJob } from '@memorilo/sync'
+import type { SyncAssetManifestRecord, SyncAuditStore, SyncAuthStore, SyncChangeRecord, SyncDeviceCredential, SyncDeviceTodoActionCommitInput, SyncDeviceTodoActionCommitResult, SyncDeviceTodoActionRecord, SyncDeviceTodoStore, SyncDeviceTodoToken, SyncInvite, SyncLearningEntityRecord, SyncLearningTombstoneRecord, SyncMutationBatch, SyncNoteSnapshotRecord, SyncPairingSession, SyncRepository, SyncResetJob } from '@memorilo/sync'
 import { fileURLToPath } from 'node:url'
 import { mergeAuthoritativeNoteSnapshot, validateAssetManifest, validatePolicyTransition } from '@memorilo/sync'
 import { and, asc, desc, eq, gt, isNull, lt, lte, or } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/postgres-js'
 import { migrate as migrateDrizzle } from 'drizzle-orm/postgres-js/migrator'
 import postgres from 'postgres'
-import { syncAccounts, syncAssetManifests, syncAuditEvents, syncChanges, syncDeviceCredentials, syncDeviceNonces, syncInvites, syncLearningEntities, syncLearningTombstones, syncNoteSnapshots, syncObjects, syncPairingSessions, syncResetJobs, syncSessions, syncUsers } from './schema.postgres'
-import { accountStateFromRow, compareLearningEntityOrder, frontierFromRows, objectMetadataFromRow, payloadHash, resetJobFromRow } from './shared'
+import { syncAccounts, syncAssetManifests, syncAuditEvents, syncChanges, syncDeviceCredentials, syncDeviceNonces, syncDeviceTodoActions, syncDeviceTodoTokens, syncInvites, syncLearningEntities, syncLearningTombstones, syncNoteSnapshots, syncObjects, syncPairingSessions, syncResetJobs, syncSessions, syncUsers } from './schema.postgres'
+import { accountStateFromRow, compareLearningEntityOrder, deviceTodoActionFromRow, deviceTodoTokenFromRow, frontierFromRows, noteSnapshotRevision, objectMetadataFromRow, payloadHash, resetJobFromRow } from './shared'
 
 export interface PostgresSyncDatabaseOptions {
   readonly url: string
@@ -19,6 +19,7 @@ export interface PostgresSyncDatabase {
   readonly audit: SyncAuditStore
   readonly auth: SyncAuthStore
   readonly repository: SyncRepository
+  readonly deviceTodo: SyncDeviceTodoStore
   readonly migrate: () => Promise<void>
   readonly close: () => Promise<void>
 }
@@ -562,11 +563,102 @@ export function createPostgresSyncDatabase(options: PostgresSyncDatabaseOptions)
     }),
   }
 
+  const deviceTodo: SyncDeviceTodoStore = {
+    createToken: async (input) => {
+      const [row] = await db.insert(syncDeviceTodoTokens).values({ ...input, revokedAt: null }).returning()
+      if (!row)
+        throw new Error('Failed to create device todo token')
+      return deviceTodoTokenFromRow(row as SyncDeviceTodoToken)
+    },
+    findToken: async (tokenHash) => {
+      const [row] = await db.select().from(syncDeviceTodoTokens).where(eq(syncDeviceTodoTokens.tokenHash, tokenHash)).limit(1)
+      return row === undefined ? null : deviceTodoTokenFromRow(row as SyncDeviceTodoToken)
+    },
+    listTokens: async accountId => (await db.select().from(syncDeviceTodoTokens).where(eq(syncDeviceTodoTokens.accountId, accountId)).orderBy(asc(syncDeviceTodoTokens.createdAt), asc(syncDeviceTodoTokens.deviceId)))
+      .map(row => deviceTodoTokenFromRow(row as SyncDeviceTodoToken)),
+    revokeToken: async (accountId, deviceId, revokedAt) => {
+      const rows = await db.update(syncDeviceTodoTokens).set({ revokedAt }).where(and(eq(syncDeviceTodoTokens.accountId, accountId), eq(syncDeviceTodoTokens.deviceId, deviceId), isNull(syncDeviceTodoTokens.revokedAt))).returning({ deviceId: syncDeviceTodoTokens.deviceId })
+      return rows.length === 1
+    },
+    commitAction: async (input: SyncDeviceTodoActionCommitInput): Promise<SyncDeviceTodoActionCommitResult> => db.transaction(async (transaction) => {
+      const [account] = await transaction.select().from(syncAccounts).where(eq(syncAccounts.accountId, input.accountId)).for('update').limit(1)
+      if (!account || account.generation !== input.generation || !account.enabledModes.includes('authoritative'))
+        throw new Error('Sync account generation is not writable')
+      const [existing] = await transaction.select().from(syncDeviceTodoActions).where(eq(syncDeviceTodoActions.operationId, input.operationId)).limit(1)
+      if (existing) {
+        if (existing.inputHash !== input.inputHash)
+          throw new Error('Device todo operation idempotency conflict')
+        return { status: 'duplicate', record: deviceTodoActionFromRow(existing as SyncDeviceTodoActionRecord) }
+      }
+      const [current] = await transaction.select().from(syncNoteSnapshots).where(and(
+        eq(syncNoteSnapshots.accountId, input.accountId),
+        eq(syncNoteSnapshots.generation, input.generation),
+        eq(syncNoteSnapshots.noteId, input.noteId),
+      )).for('update').limit(1)
+      const currentRevision = noteSnapshotRevision(current ? current as SyncNoteSnapshotRecord : null)
+      if (currentRevision !== input.expectedRevision)
+        return { status: 'stale', currentRevision }
+      const merged = mergeAuthoritativeNoteSnapshot(current?.snapshot ?? null, input.update)
+      const [latest] = await transaction.select({ sequence: syncDeviceTodoActions.sequence })
+        .from(syncDeviceTodoActions)
+        .where(and(eq(syncDeviceTodoActions.accountId, input.accountId), eq(syncDeviceTodoActions.generation, input.generation), eq(syncDeviceTodoActions.deviceId, input.deviceId)))
+        .orderBy(desc(syncDeviceTodoActions.sequence))
+        .limit(1)
+      const sequence = (latest?.sequence ?? 0) + 1
+      const payload = JSON.stringify({ noteId: input.noteId, update: input.update })
+      await transaction.insert(syncChanges).values({
+        accountId: input.accountId,
+        deviceId: input.deviceId,
+        generation: input.generation,
+        id: input.operationId,
+        kind: 'note-update',
+        namespace: 'notes',
+        payload,
+        payloadHash: payloadHash(payload),
+        receiptSequence: account.nextReceiptSequence,
+        receivedAt: input.createdAt,
+        sequence,
+      })
+      await transaction.update(syncAccounts).set({ nextReceiptSequence: account.nextReceiptSequence + 1 }).where(eq(syncAccounts.accountId, input.accountId))
+      const resultRevision = noteSnapshotRevision({ snapshot: merged.snapshot })
+      if (resultRevision === null)
+        throw new Error('Device todo update did not produce a snapshot')
+      const record = {
+        accountId: input.accountId,
+        action: input.action,
+        blockId: input.blockId,
+        createdAt: input.createdAt,
+        deviceId: input.deviceId,
+        generation: input.generation,
+        inputHash: input.inputHash,
+        noteId: input.noteId,
+        operationId: input.operationId,
+        resultRevision,
+        sequence,
+        topicId: input.topicId,
+      } satisfies SyncDeviceTodoActionRecord
+      await transaction.insert(syncDeviceTodoActions).values(record)
+      await transaction.insert(syncNoteSnapshots).values({
+        accountId: input.accountId,
+        frontier: merged.frontier,
+        generation: input.generation,
+        noteId: input.noteId,
+        snapshot: merged.snapshot,
+        updatedAt: input.createdAt,
+      }).onConflictDoUpdate({
+        target: [syncNoteSnapshots.accountId, syncNoteSnapshots.generation, syncNoteSnapshots.noteId],
+        set: { frontier: merged.frontier, snapshot: merged.snapshot, updatedAt: input.createdAt },
+      })
+      return { status: 'applied', record }
+    }),
+  }
+
   return {
     audit,
     auth,
     close: () => client.end(),
     migrate: () => migrateDrizzle(db, { migrationsFolder: fileURLToPath(new URL('./migrations-postgres', import.meta.url)) }),
     repository,
+    deviceTodo,
   }
 }

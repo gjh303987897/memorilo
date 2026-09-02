@@ -12,6 +12,7 @@ import { createFilesystemObjectStore } from '../infrastructure/object-store/file
 import { createS3ObjectStore } from '../infrastructure/object-store/s3'
 import { createSyncServerPeer, rebuildAuthoritativeState } from '../infrastructure/p2p/server-peer'
 import { createSyncServerApp } from './app'
+import { createDeviceTodoModule } from './device-todo'
 import { createSyncServerMetrics } from './metrics'
 import { createOrphanWorker } from './orphan-worker'
 import { createResetWorker } from './reset-worker'
@@ -121,6 +122,7 @@ export async function createSyncServerRuntime(config: SyncServerConfig, options:
       peerMetrics: () => metrics.snapshot(peer.metrics()),
       renderWeb: webRenderer.render,
       repository: database.repository,
+      deviceTodo: createDeviceTodoModule({ repository: database.repository, store: database.deviceTodo }),
       webRoot: fileURLToPath(webRootUrl),
     })
     scope.commit()

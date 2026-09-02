@@ -1,4 +1,4 @@
-import type { SyncAssetManifestRecord, SyncAuditStore, SyncAuthStore, SyncChangeRecord, SyncDeviceCredential, SyncInvite, SyncLearningEntityRecord, SyncLearningTombstoneRecord, SyncMutationBatch, SyncNoteSnapshotRecord, SyncPairingSession, SyncRepository, SyncResetJob } from '@memorilo/sync'
+import type { SyncAssetManifestRecord, SyncAuditStore, SyncAuthStore, SyncChangeRecord, SyncDeviceCredential, SyncDeviceTodoActionCommitInput, SyncDeviceTodoActionCommitResult, SyncDeviceTodoActionRecord, SyncDeviceTodoStore, SyncDeviceTodoToken, SyncInvite, SyncLearningEntityRecord, SyncLearningTombstoneRecord, SyncMutationBatch, SyncNoteSnapshotRecord, SyncPairingSession, SyncRepository, SyncResetJob } from '@memorilo/sync'
 import type Database from 'better-sqlite3'
 import { fileURLToPath } from 'node:url'
 import { mergeAuthoritativeNoteSnapshot, validateAssetManifest, validatePolicyTransition } from '@memorilo/sync'
@@ -6,8 +6,8 @@ import BetterSqlite3 from 'better-sqlite3'
 import { and, asc, desc, eq, gt, isNull, lt, lte, or, sql } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
 import { migrate as migrateDrizzle } from 'drizzle-orm/better-sqlite3/migrator'
-import { syncAccounts, syncAssetManifests, syncAuditEvents, syncChanges, syncDeviceCredentials, syncDeviceNonces, syncInvites, syncLearningEntities, syncLearningTombstones, syncNoteSnapshots, syncObjects, syncPairingSessions, syncResetJobs, syncSessions, syncUsers } from './schema'
-import { accountStateFromRow, compareLearningEntityOrder, frontierFromRows, objectMetadataFromRow, payloadHash, resetJobFromRow } from './shared'
+import { syncAccounts, syncAssetManifests, syncAuditEvents, syncChanges, syncDeviceCredentials, syncDeviceNonces, syncDeviceTodoActions, syncDeviceTodoTokens, syncInvites, syncLearningEntities, syncLearningTombstones, syncNoteSnapshots, syncObjects, syncPairingSessions, syncResetJobs, syncSessions, syncUsers } from './schema'
+import { accountStateFromRow, compareLearningEntityOrder, deviceTodoActionFromRow, deviceTodoTokenFromRow, frontierFromRows, noteSnapshotRevision, objectMetadataFromRow, payloadHash, resetJobFromRow } from './shared'
 
 export interface SqliteSyncDatabaseOptions {
   readonly filename: string
@@ -20,6 +20,7 @@ export interface SqliteSyncDatabase {
   readonly auth: SyncAuthStore
   readonly provisionAccount: SyncAuthStore['provisionAccount']
   readonly repository: SyncRepository
+  readonly deviceTodo: SyncDeviceTodoStore
   readonly migrate: () => void
   readonly close: () => void
 }
@@ -724,6 +725,95 @@ export function createSqliteSyncDatabase(options: SqliteSyncDatabaseOptions): Sq
     },
   }
 
+  const deviceTodo: SyncDeviceTodoStore = {
+    createToken: async (input) => {
+      const row: typeof syncDeviceTodoTokens.$inferInsert = { ...input, revokedAt: null }
+      db.insert(syncDeviceTodoTokens).values(row).run()
+      return deviceTodoTokenFromRow(row as SyncDeviceTodoToken)
+    },
+    findToken: async (tokenHash) => {
+      const row = db.select().from(syncDeviceTodoTokens).where(eq(syncDeviceTodoTokens.tokenHash, tokenHash)).get()
+      return row === undefined ? null : deviceTodoTokenFromRow(row as SyncDeviceTodoToken)
+    },
+    listTokens: async accountId => db.select().from(syncDeviceTodoTokens).where(eq(syncDeviceTodoTokens.accountId, accountId)).orderBy(asc(syncDeviceTodoTokens.createdAt), asc(syncDeviceTodoTokens.deviceId)).all().map(row => deviceTodoTokenFromRow(row as SyncDeviceTodoToken)),
+    revokeToken: async (accountId, deviceId, revokedAt) => {
+      const result = db.update(syncDeviceTodoTokens).set({ revokedAt }).where(and(eq(syncDeviceTodoTokens.accountId, accountId), eq(syncDeviceTodoTokens.deviceId, deviceId), isNull(syncDeviceTodoTokens.revokedAt))).run()
+      return result.changes === 1
+    },
+    commitAction: async (input: SyncDeviceTodoActionCommitInput): Promise<SyncDeviceTodoActionCommitResult> => db.transaction((transaction) => {
+      const existing = transaction.select().from(syncDeviceTodoActions).where(eq(syncDeviceTodoActions.operationId, input.operationId)).get()
+      if (existing) {
+        if (existing.inputHash !== input.inputHash)
+          throw new Error('Device todo operation idempotency conflict')
+        return { status: 'duplicate', record: deviceTodoActionFromRow(existing as SyncDeviceTodoActionRecord) }
+      }
+      const account = transaction.select().from(syncAccounts).where(eq(syncAccounts.accountId, input.accountId)).get()
+      if (!account || account.generation !== input.generation || !account.enabledModes.includes('authoritative'))
+        throw new Error('Sync account generation is not writable')
+      const current = transaction.select().from(syncNoteSnapshots).where(and(
+        eq(syncNoteSnapshots.accountId, input.accountId),
+        eq(syncNoteSnapshots.generation, input.generation),
+        eq(syncNoteSnapshots.noteId, input.noteId),
+      )).get() as SyncNoteSnapshotRecord | undefined
+      const currentRevision = noteSnapshotRevision(current ?? null)
+      if (currentRevision !== input.expectedRevision)
+        return { status: 'stale', currentRevision }
+      const merged = mergeAuthoritativeNoteSnapshot(current?.snapshot ?? null, input.update)
+      const sequence = (transaction.select({ sequence: syncDeviceTodoActions.sequence })
+        .from(syncDeviceTodoActions)
+        .where(and(eq(syncDeviceTodoActions.accountId, input.accountId), eq(syncDeviceTodoActions.generation, input.generation), eq(syncDeviceTodoActions.deviceId, input.deviceId)))
+        .orderBy(desc(syncDeviceTodoActions.sequence))
+        .limit(1)
+        .get()
+        ?.sequence ?? 0) + 1
+      const payload = JSON.stringify({ noteId: input.noteId, update: input.update })
+      transaction.insert(syncChanges).values({
+        accountId: input.accountId,
+        deviceId: input.deviceId,
+        generation: input.generation,
+        id: input.operationId,
+        kind: 'note-update',
+        namespace: 'notes',
+        payload,
+        payloadHash: payloadHash(payload),
+        receiptSequence: account.nextReceiptSequence,
+        receivedAt: input.createdAt,
+        sequence,
+      }).run()
+      transaction.update(syncAccounts).set({ nextReceiptSequence: account.nextReceiptSequence + 1 }).where(eq(syncAccounts.accountId, input.accountId)).run()
+      const resultRevision = noteSnapshotRevision({ snapshot: merged.snapshot })
+      if (resultRevision === null)
+        throw new Error('Device todo update did not produce a snapshot')
+      const record = {
+        accountId: input.accountId,
+        action: input.action,
+        blockId: input.blockId,
+        createdAt: input.createdAt,
+        deviceId: input.deviceId,
+        generation: input.generation,
+        inputHash: input.inputHash,
+        noteId: input.noteId,
+        operationId: input.operationId,
+        resultRevision,
+        sequence,
+        topicId: input.topicId,
+      } satisfies SyncDeviceTodoActionRecord
+      transaction.insert(syncDeviceTodoActions).values(record).run()
+      transaction.insert(syncNoteSnapshots).values({
+        accountId: input.accountId,
+        frontier: merged.frontier,
+        generation: input.generation,
+        noteId: input.noteId,
+        snapshot: merged.snapshot,
+        updatedAt: input.createdAt,
+      }).onConflictDoUpdate({
+        target: [syncNoteSnapshots.accountId, syncNoteSnapshots.generation, syncNoteSnapshots.noteId],
+        set: { frontier: merged.frontier, snapshot: merged.snapshot, updatedAt: input.createdAt },
+      }).run()
+      return { status: 'applied', record }
+    }),
+  }
+
   return {
     audit,
     close: () => database.close(),
@@ -732,5 +822,6 @@ export function createSqliteSyncDatabase(options: SqliteSyncDatabaseOptions): Sq
     database,
     migrate,
     repository,
+    deviceTodo,
   }
 }

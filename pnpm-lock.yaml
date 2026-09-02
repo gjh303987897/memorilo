@@ -421,6 +421,9 @@ importers:
       '@hono/node-server':
         specifier: ^1.19.0
         version: 1.19.17(hono@4.13.2)
+      '@memorilo/editor':
+        specifier: workspace:*
+        version: link:../../packages/editor
       '@memorilo/effect-lifecycle':
         specifier: workspace:*
         version: link:../../packages/effect-lifecycle

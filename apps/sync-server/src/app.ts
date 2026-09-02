@@ -3,6 +3,7 @@ import type { P2pApplication } from '@memorilo/sync/node'
 import type { Context, Next } from 'hono'
 import type { AuthenticatedBrowserAccount, BrowserAuthOptions } from '../infrastructure/auth/browser-auth'
 import type { SyncServerConfig } from './config'
+import type { DeviceTodoModule } from './device-todo'
 import type { SyncPeerMetrics, SyncServerMetrics } from './metrics'
 import type { RateLimiter } from './rate-limiter'
 import { Buffer } from 'node:buffer'
@@ -11,10 +12,12 @@ import { readFile } from 'node:fs/promises'
 import { extname, join } from 'node:path'
 import { encodeSyncServerCredentialBundle } from '@memorilo/sync'
 import { decodePairingPayload, verifyPairingResponse } from '@memorilo/sync/node'
+import { Effect } from 'effect'
 import { Hono } from 'hono'
 import { createBrowserAuth } from '../infrastructure/auth/browser-auth'
 import { withDatabaseFailureMetrics } from '../infrastructure/metrics'
 import { hashDeviceCredential, hashPairingSharedSecret, newDeviceCredential } from '../infrastructure/p2p/server-peer'
+import { DeviceTodoError } from './device-todo'
 import { createSyncServerMetrics } from './metrics'
 import { createRateLimiter } from './rate-limiter'
 
@@ -39,6 +42,15 @@ interface SyncServerEnvironment {
 
 export type SyncServerApp = Hono<SyncServerEnvironment>
 
+async function runDeviceTodo<Result>(effect: Effect.Effect<Result, DeviceTodoError>): Promise<{ readonly ok: true, readonly value: Result } | { readonly ok: false, readonly error: DeviceTodoError }> {
+  try {
+    return { ok: true, value: await Effect.runPromise(effect) }
+  }
+  catch (error) {
+    return { ok: false, error: error instanceof DeviceTodoError ? error : new DeviceTodoError('internal_error', 'Device Todo operation failed', { cause: error }) }
+  }
+}
+
 export interface SyncServerAppServices extends BrowserAuthOptions {
   readonly audit: SyncAuditStore
   readonly metrics?: SyncServerMetrics
@@ -50,6 +62,7 @@ export interface SyncServerAppServices extends BrowserAuthOptions {
   readonly closeAccountSyncSessions?: (accountId: string) => Promise<void>
   readonly closeDeviceSyncSessions?: (accountId: string, deviceId: string) => Promise<void>
   readonly isReady?: () => boolean
+  readonly deviceTodo?: DeviceTodoModule
 }
 
 const rateLimitWindowMs = 60_000
@@ -108,6 +121,7 @@ export function createSyncServerApp(config: SyncServerConfig, services: SyncServ
     return csrfError ?? account
   }
   const rateLimiter = services.rateLimiter ?? createRateLimiter(services.now)
+  const deviceTodo = services.deviceTodo
   const peerMetrics = (): SyncPeerMetrics => services.peerMetrics?.() ?? { activeObjectTransfers: 0, activeSyncSessions: 0 }
   const renderIndex = async (body: Uint8Array): Promise<Response> => {
     let html = Buffer.from(body).toString('utf8')
@@ -410,6 +424,99 @@ export function createSyncServerApp(config: SyncServerConfig, services: SyncServ
         peerId: device.peerId,
       }))
     return context.json({ devices })
+  })
+  app.post('/api/devices/todo-token', async (context) => {
+    const account = await browserAuth.current(context.req.raw)
+    if (!account)
+      return context.json({ code: 'unauthorized' }, 401)
+    try {
+      await browserAuth.requireCsrf(context.req.raw, account)
+    }
+    catch {
+      return context.json({ code: 'csrf_invalid' }, 403)
+    }
+    if (!deviceTodo)
+      return context.json({ code: 'device_todo_unavailable' }, 503)
+    const body = await context.req.json<{ deviceName?: unknown, expiresAt?: unknown, scopes?: unknown }>()
+    const result = await runDeviceTodo(deviceTodo.issueToken({
+      accountId: account.accountId,
+      deviceName: typeof body.deviceName === 'string' ? body.deviceName : '',
+      expiresAt: typeof body.expiresAt === 'number' ? body.expiresAt : Number.NaN,
+      scopes: Array.isArray(body.scopes) ? body.scopes as never : [],
+    }))
+    if (!result.ok)
+      return context.json({ code: result.error.code }, result.error.code === 'invalid_request' ? 400 : 409)
+    await recordAudit({ accountId: account.accountId, action: 'device.todo-token.issue', actorId: account.accountId, actorType: 'browser', details: { deviceId: result.value.credential.deviceId }, outcome: 'success', remoteAddress: context.get('remoteAddress'), requestId: context.get('requestId') })
+    return context.json({ credential: result.value.token, device: { deviceId: result.value.credential.deviceId, deviceName: result.value.credential.deviceName }, expiresAt: result.value.credential.expiresAt, scopes: result.value.credential.scopes }, 201)
+  })
+  app.get('/api/devices/todo-tokens', async (context) => {
+    const account = await browserAuth.current(context.req.raw)
+    if (!account)
+      return context.json({ code: 'unauthorized' }, 401)
+    if (!deviceTodo)
+      return context.json({ code: 'device_todo_unavailable' }, 503)
+    const tokens = await Effect.runPromise(deviceTodo.listTokens(account.accountId))
+    return context.json({ tokens: tokens.filter(token => token.revokedAt === null).map(token => ({ createdAt: token.createdAt, deviceId: token.deviceId, deviceName: token.deviceName, expiresAt: token.expiresAt, scopes: token.scopes })) })
+  })
+  app.post('/api/devices/todo-tokens/:deviceId/revoke', async (context) => {
+    const account = await browserAuth.current(context.req.raw)
+    if (!account)
+      return context.json({ code: 'unauthorized' }, 401)
+    try {
+      await browserAuth.requireCsrf(context.req.raw, account)
+    }
+    catch {
+      return context.json({ code: 'csrf_invalid' }, 403)
+    }
+    if (!deviceTodo)
+      return context.json({ code: 'device_todo_unavailable' }, 503)
+    const revoked = await Effect.runPromise(deviceTodo.revokeToken(account.accountId, context.req.param('deviceId')))
+    return revoked ? context.json({ revoked: true }) : context.json({ code: 'device_not_found' }, 404)
+  })
+  app.get('/api/device/v1/todos', async (context) => {
+    if (!deviceTodo)
+      return context.json({ code: 'device_todo_unavailable' }, 503)
+    const token = context.req.header('authorization')?.startsWith('Bearer ')
+      ? context.req.header('authorization')!.slice(7)
+      : ''
+    const date = context.req.query('date') ?? new Date(now()).toISOString().slice(0, 10)
+    const view = context.req.query('view') === 'all' ? 'all' : 'today'
+    const limit = Number(context.req.query('limit') ?? 20)
+    const result = await runDeviceTodo(deviceTodo.list({ date, limit, token, view }))
+    if (!result.ok)
+      return context.json({ code: result.error.code }, result.error.code === 'unauthorized' ? 401 : result.error.code === 'forbidden' ? 403 : 400)
+    const tag = `"${result.value.revision}"`
+    context.header('etag', tag)
+    context.header('cache-control', 'private, max-age=0')
+    if (context.req.header('if-none-match') === tag)
+      return new Response(null, { status: 304, headers: { etag: tag } })
+    return context.json(result.value)
+  })
+  app.post('/api/device/v1/todo-actions', async (context) => {
+    if (!deviceTodo)
+      return context.json({ code: 'device_todo_unavailable' }, 503)
+    let body: { action?: unknown, baseRevision?: unknown, operationId?: unknown, todoId?: unknown }
+    try {
+      body = await context.req.json()
+    }
+    catch {
+      return context.json({ code: 'invalid_request' }, 400)
+    }
+    const token = context.req.header('authorization')?.startsWith('Bearer ')
+      ? context.req.header('authorization')!.slice(7)
+      : ''
+    const result = await runDeviceTodo(deviceTodo.applyAction({
+      action: body.action as never,
+      baseRevision: typeof body.baseRevision === 'string' ? body.baseRevision : '',
+      operationId: typeof body.operationId === 'string' ? body.operationId : '',
+      token,
+      todoId: typeof body.todoId === 'string' ? body.todoId : '',
+    }))
+    if (!result.ok) {
+      const status = result.error.code === 'unauthorized' ? 401 : result.error.code === 'forbidden' ? 403 : result.error.code === 'revision_conflict' ? 409 : result.error.code === 'todo_not_found' ? 404 : 400
+      return context.json({ code: result.error.code, ...(result.error.currentRevision === undefined ? {} : { currentRevision: result.error.currentRevision }) }, status)
+    }
+    return context.json(result.value)
   })
   app.post('/api/devices/pairing', async (context) => {
     const account = await requireAccountWithCsrf(context)

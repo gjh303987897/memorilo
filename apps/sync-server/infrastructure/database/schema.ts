@@ -62,6 +62,38 @@ export const syncDeviceNonces = sqliteTable('sync_device_nonces', {
   deviceNoncesCredential: index('sync_device_nonces_credential').on(table.credentialHash),
 }))
 
+export const syncDeviceTodoTokens = sqliteTable('sync_device_todo_tokens', {
+  tokenHash: text('token_hash').primaryKey(),
+  accountId: text('account_id').notNull(),
+  deviceId: text('device_id').notNull(),
+  deviceName: text('device_name').notNull(),
+  scopes: text('scopes', { mode: 'json' }).$type<readonly ('todos:read' | 'todos:write')[]>().notNull(),
+  createdAt: integer('created_at').notNull(),
+  expiresAt: integer('expires_at').notNull(),
+  revokedAt: integer('revoked_at'),
+}, table => ({
+  deviceTodoTokensAccountDevice: uniqueIndex('sync_device_todo_tokens_account_device').on(table.accountId, table.deviceId),
+  deviceTodoTokensAccount: index('sync_device_todo_tokens_account').on(table.accountId),
+}))
+
+export const syncDeviceTodoActions = sqliteTable('sync_device_todo_actions', {
+  operationId: text('operation_id').primaryKey(),
+  accountId: text('account_id').notNull(),
+  generation: integer('generation').notNull(),
+  deviceId: text('device_id').notNull(),
+  sequence: integer('sequence').notNull(),
+  inputHash: text('input_hash').notNull(),
+  noteId: text('note_id').notNull(),
+  topicId: text('topic_id').notNull(),
+  blockId: text('block_id').notNull(),
+  action: text('action', { enum: ['complete', 'reopen'] }).notNull(),
+  resultRevision: text('result_revision').notNull(),
+  createdAt: integer('created_at').notNull(),
+}, table => ({
+  deviceTodoActionsAccountGeneration: index('sync_device_todo_actions_account_generation').on(table.accountId, table.generation),
+  deviceTodoActionsDeviceSequence: uniqueIndex('sync_device_todo_actions_device_sequence').on(table.accountId, table.generation, table.deviceId, table.sequence),
+}))
+
 export const syncPairingSessions = sqliteTable('sync_pairing_sessions', {
   pairingId: text('pairing_id').primaryKey(),
   accountId: text('account_id').notNull(),
