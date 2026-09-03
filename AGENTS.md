@@ -116,3 +116,8 @@ Use the default five-role triage label vocabulary. See `docs/agents/triage-label
 ### Domain docs
 
 This repository uses a multi-context domain documentation layout. See `docs/agents/domain.md`.
+
+### ESP-IDF flashing
+
+For ESP32 real-device build, flash, recovery, or serial-monitor work, use the
+`esp-idf-flashing` skill and follow `docs/agents/esp-idf-flashing.md`.

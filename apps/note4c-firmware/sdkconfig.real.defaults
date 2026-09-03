@@ -1,3 +1,0 @@
-# Physical NOTE4C display backend. Use only for a controlled hardware build.
-# CONFIG_NOTE4C_FAKE_DISPLAY is not set
-CONFIG_NOTE4C_COLOR_TEST_PATTERN=y

@@ -1,91 +1,89 @@
-# ZECTRIX NOTE4C TODO firmware
+# Device TODO firmware
 
-Offline TODO UI prototype for the ZECTRIX NOTE4C: ESP32-S3 N16R8 with a
-400 x 300 SSD2683 black/white/red/yellow e-paper panel.
+Rust application firmware for the ESP32-S3 N16R8 board and its 400 x 300
+SSD2683 black/white/red/yellow e-paper panel. The application, TODO model,
+framebuffer renderer, button handling, and refresh scheduler are Rust. The
+verified panel command sequence remains in the C ESP-IDF component under
+`components/zectrix_note4c_epd` and is called through a three-function FFI
+bridge.
 
-The renderer uses the NOTE4C-native packed BWRY format:
+The renderer uses the panel-native packed BWRY format: two bits per pixel,
+four pixels per byte, MSB first. `00` is black, `01` white, `10` yellow, and
+`11` red. One 400 x 300 frame uses 30,000 bytes.
 
-- 2 bits per pixel, four pixels per byte, MSB first
-- `00` black, `01` white, `10` yellow, `11` red
-- 30,000 bytes per 400 x 300 frame
+GPIO39 and GPIO18 move the selection; GPIO0 toggles complete/reopen. GPIO3 is
+held high so the active-low status LED remains off.
 
-Fake TODO data covers open, doing, done, nested and undated items. GPIO39 and
-GPIO18 move the selection; GPIO0 toggles complete/reopen.
+## Toolchain
 
-## Display safety
+Install Rust and `uv` through Scoop, then install the Rust ESP tools unavailable
+in Scoop:
 
-The default configuration deliberately uses a fake display backend. It
-compiles and logs BWRY pixel counts, but does not send commands to the panel.
-Do not flash this default variant expecting it to update the panel.
-
-The black-and-white NOTE4 `zectrix_epd` component is not compatible and is not
-accepted by this project. The real backend is a minimal MIT-licensed adaptation
-of the NOTE4C reference firmware linked by the official ZECTRIX Wiki:
-
-```text
-https://github.com/LazyYoun/youn-ink-fourcolor-firmware
-CONFIG_ZECTRIX_EPD_PANEL_4COLOR_SSD2683=y
+```powershell
+scoop install uv
+cargo install espup ldproxy
+espup install --std --targets esp32s3
+. $env:USERPROFILE\export-esp.ps1
 ```
 
-The adaptation is pinned to upstream commit
-`51812e4ab3fa80ba7a5a5a274635ca2cf3901a25`; attribution and the extracted
-scope are recorded under `components/zectrix_note4c_epd`. Upstream requires
-ESP-IDF 5.4 or newer and its Windows build uses ESP-IDF 5.5.2, so no second IDF
-installation is required.
+The crate pins ESP-IDF 5.5.2 and lets `esp-idf-sys` manage its build tools.
+The flash and monitor scripts obtain pinned official Espressif Python tools
+through `uvx`.
 
-## Build the safe fake backend
+## Test and build
 
-```text
-idf.py set-target esp32s3
-idf.py build
+Run the TODO model and framebuffer tests on the host:
+
+```powershell
+cargo +stable test --target x86_64-pc-windows-msvc
 ```
 
-The real backend also participates in this build, but `NOTE4C_FAKE_DISPLAY`
-remains enabled by default. It can be disabled in `idf.py menuconfig` only when
-preparing a controlled hardware test. The real path uses the NOTE4C GPIO
-assignment, 40 MHz SPI mode 0, active-low BUSY, and the upstream SSD2683
-power/reset/refresh/deep-sleep sequence.
+The default build uses a fake display and sends no panel commands:
 
-To compile the first physical-display test into a separate directory without
-changing the safe default configuration:
-
-```text
-idf.py -B build-real -D IDF_TARGET=esp32s3 -D SDKCONFIG=build-real/sdkconfig -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.real.defaults" build
+```powershell
+cargo build --target-dir C:\tmp\mf --release
 ```
 
-This command only builds an image. It does not flash a connected device.
-This variant displays black, white, red, and yellow vertical bars in that
-left-to-right order, then leaves TODO input disabled.
+Build the physical-display color bars, then the interactive TODO firmware:
 
-After the color-bar test passes, build the interactive offline TODO variant in
-its own directory:
-
-```text
-idf.py -B build-todo -D IDF_TARGET=esp32s3 -D SDKCONFIG=build-todo/sdkconfig -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.todo.defaults" build
+```powershell
+cargo build --target-dir C:\tmp\mf --release --no-default-features --features "real-display,color-test"
+cargo build --target-dir C:\tmp\mf --release --no-default-features --features real-display
 ```
 
-This variant uses the same real NOTE4C SSD2683 backend, renders the bundled
-fake TODO data, and enables the GPIO39/GPIO18/GPIO0 controls. A button action
-requests a full four-color refresh, so the updated selection may take roughly
-25 seconds to appear. Button input remains active while the panel is busy.
-Actions update the in-memory TODO state immediately, and actions received
-during one refresh are coalesced into at most one follow-up refresh of the
-latest state. GPIO3 is held high so the active-low status LED stays off.
+The short target directory avoids the ESP-IDF Windows path-length limit in deep
+worktrees. Real-device flashing uses the official Espressif image and serial
+tools through the project script; `cargo run` is intentionally not a flashing
+entry point:
 
-## Back up a NOTE4C before any flash
+```powershell
+.\tools\flash-firmware.ps1 -Port COM3
+.\tools\monitor-firmware.ps1 -Port COM3
+```
 
-Connect the NOTE4C in download mode and identify its new `COM` port. After
-activating the ESP-IDF environment, create and verify a complete 16 MiB backup:
+Run the monitor separately and only when diagnostics are needed. The canonical
+workflow and recovery rules are documented in
+[`docs/agents/esp-idf-flashing.md`](../../docs/agents/esp-idf-flashing.md).
+Button input remains active during the roughly 20 to 25 second panel refresh.
+A capacity-one channel coalesces input received during a refresh into at most
+one follow-up refresh of the latest Rust model state.
+
+## Display driver boundary
+
+The C component owns SPI, panel power, reset, BUSY polling, refresh, and deep
+sleep. Rust owns its handle and only calls initialize, refresh, and delete
+through `note4c_epd_bridge.h`. The driver attribution and pinned upstream commit
+are recorded in `components/zectrix_note4c_epd/UPSTREAM.md`.
+
+## Back up flash before the first write
+
+Connect the device in download mode, activate the existing ESP-IDF environment,
+and create a verified 16 MiB backup before the first flash:
 
 ```powershell
 . C:\Users\mslxl\esp\esp-idf-v5.5.2\export.ps1
 .\tools\backup-note4c-flash.ps1 -Port COM5
 ```
 
-The script accepts only a present `COM` port, writes under the ignored
-`backups/` directory, refuses to overwrite an existing file, checks for exactly
-16 MiB, and prints its SHA-256 hash. Replace `COM5` with the detected device
-port. Reading the flash may reset the device, but does not write its flash.
-
-Before any first flash, back up the complete 16 MB factory flash and verify the
-device label says NOTE4C, not NOTE4.
+The script writes under the ignored `backups/` directory, refuses to overwrite
+an existing file, checks its size, and prints its SHA-256 hash.
