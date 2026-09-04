@@ -10,6 +10,22 @@ export function createDesktopApi(
   subscribeP2pStatus: DesktopApi['subscribeP2pStatus'] = () => () => undefined,
   subscribeLearningUpdates: DesktopApi['subscribeLearningUpdates'] = () => () => undefined,
   subscribeSyncServerEvents: DesktopApi['subscribeSyncServerEvents'] = () => () => undefined,
+  deviceProvisioning: DesktopApi['deviceProvisioning'] = {
+    cancelSelection: async () => undefined,
+    clearLocalManagementToken: async () => undefined,
+    deleteGalleryAsset: async () => undefined,
+    generateLocalManagementToken: async () => { throw new Error('Device provisioning is unavailable') },
+    hasLocalManagementToken: async () => false,
+    loadGallery: async () => { throw new Error('Device gallery is unavailable') },
+    reorderGallery: async () => undefined,
+    respondToPairing: async () => undefined,
+    saveLocalManagementToken: async () => undefined,
+    setGallerySlideshow: async () => undefined,
+    selectDevice: async () => undefined,
+    subscribeDevices: () => () => undefined,
+    subscribePairing: () => () => undefined,
+    uploadGalleryAsset: async () => undefined,
+  },
 ): DesktopApi {
   const p2p = services.p2p ?? {
     approvePairing: async () => { throw new Error('P2P sync is unavailable') },
@@ -30,6 +46,7 @@ export function createDesktopApi(
     updateDeviceName: async () => { throw new Error('P2P sync is unavailable') },
   }
   return {
+    deviceProvisioning,
     loadWhiteboardLibrary: () => services.whiteboardLibrary.load(),
     platform,
     request: request => services.transport.fetch(request),

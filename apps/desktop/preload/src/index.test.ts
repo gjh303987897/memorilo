@@ -1,4 +1,5 @@
-import type { DesktopApi, DesktopNoteExternalUpdate, DesktopSyncServerEvent } from './contract'
+import type { DesktopApi, DesktopNoteExternalUpdate, DesktopProvisioningDevice, DesktopProvisioningPairingRequest, DesktopSyncServerEvent } from './contract'
+import { desktopProvisioningChannels } from '@memorilo/desktop-api'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
@@ -35,6 +36,83 @@ beforeEach(() => {
 })
 
 describe('preload IPC bridge', () => {
+  it('exposes narrow Bluetooth selection and pairing contracts with removable listeners', async () => {
+    mocks.ipcInvoke.mockResolvedValue(undefined)
+    const api = exposedApi().deviceProvisioning
+
+    await api.selectDevice('device-1')
+    await api.respondToPairing({ confirmed: true, pin: '123456', requestId: 'pairing-1' })
+    await api.cancelSelection()
+    mocks.ipcInvoke.mockResolvedValueOnce('generated-token')
+    await expect(api.generateLocalManagementToken()).resolves.toBe('generated-token')
+    mocks.ipcInvoke.mockResolvedValueOnce(true)
+    await expect(api.hasLocalManagementToken('device-1')).resolves.toBe(true)
+    await api.saveLocalManagementToken('device-1', 'a'.repeat(32))
+    await api.clearLocalManagementToken('device-1')
+    const target = { address: '192.168.4.23', deviceId: 'device-1' }
+    await api.loadGallery(target)
+    await api.uploadGalleryAsset({
+      ...target,
+      bytes: new Uint8Array(30_000),
+      createdAtUnixSeconds: 1,
+      name: 'Image',
+    })
+    await api.deleteGalleryAsset(target, 1)
+    await api.reorderGallery(target, [1])
+    await api.setGallerySlideshow(target, 300)
+
+    expect(mocks.ipcInvoke).toHaveBeenCalledWith(desktopProvisioningChannels.selectDevice, 'device-1')
+    expect(mocks.ipcInvoke).toHaveBeenCalledWith(desktopProvisioningChannels.respondToPairing, {
+      confirmed: true,
+      pin: '123456',
+      requestId: 'pairing-1',
+    })
+    expect(mocks.ipcInvoke).toHaveBeenCalledWith(desktopProvisioningChannels.selectDevice, null)
+    expect(mocks.ipcInvoke).toHaveBeenCalledWith(desktopProvisioningChannels.generateLocalManagementToken)
+    expect(mocks.ipcInvoke).toHaveBeenCalledWith(desktopProvisioningChannels.hasLocalManagementToken, 'device-1')
+    expect(mocks.ipcInvoke).toHaveBeenCalledWith(desktopProvisioningChannels.saveLocalManagementToken, {
+      deviceId: 'device-1',
+      token: 'a'.repeat(32),
+    })
+    expect(mocks.ipcInvoke).toHaveBeenCalledWith(desktopProvisioningChannels.clearLocalManagementToken, 'device-1')
+    expect(mocks.ipcInvoke).toHaveBeenCalledWith(desktopProvisioningChannels.loadGallery, target)
+    expect(mocks.ipcInvoke).toHaveBeenCalledWith(desktopProvisioningChannels.deleteGalleryAsset, { ...target, id: 1 })
+    expect(mocks.ipcInvoke).toHaveBeenCalledWith(desktopProvisioningChannels.reorderGallery, { ...target, order: [1] })
+    expect(mocks.ipcInvoke).toHaveBeenCalledWith(desktopProvisioningChannels.setGallerySlideshow, {
+      ...target,
+      intervalSeconds: 300,
+    })
+
+    const deviceListener = vi.fn()
+    const stopDevices = api.subscribeDevices(deviceListener)
+    const deviceRegistration = mocks.ipcOn.mock.calls.find(([channel]) => channel === desktopProvisioningChannels.devicesChanged)
+    const handleDevices = deviceRegistration?.[1] as ((event: unknown, devices: readonly DesktopProvisioningDevice[]) => void) | undefined
+    if (!handleDevices)
+      throw new Error('Preload did not register the Bluetooth device list channel')
+    const devices = [{ deviceId: 'device-1', deviceName: 'Desk display' }]
+    handleDevices({}, devices)
+    expect(deviceListener).toHaveBeenCalledWith(devices)
+    stopDevices()
+    expect(mocks.ipcRemoveListener).toHaveBeenCalledWith(desktopProvisioningChannels.devicesChanged, handleDevices)
+
+    const pairingListener = vi.fn()
+    const stopPairing = api.subscribePairing(pairingListener)
+    const pairingRegistration = mocks.ipcOn.mock.calls.find(([channel]) => channel === desktopProvisioningChannels.pairingRequested)
+    const handlePairing = pairingRegistration?.[1] as ((event: unknown, request: DesktopProvisioningPairingRequest) => void) | undefined
+    if (!handlePairing)
+      throw new Error('Preload did not register the Bluetooth pairing channel')
+    const request: DesktopProvisioningPairingRequest = {
+      deviceId: 'device-1',
+      pairingKind: 'confirmPin',
+      pin: '123456',
+      requestId: 'pairing-1',
+    }
+    handlePairing({}, request)
+    expect(pairingListener).toHaveBeenCalledWith(request)
+    stopPairing()
+    expect(mocks.ipcRemoveListener).toHaveBeenCalledWith(desktopProvisioningChannels.pairingRequested, handlePairing)
+  })
+
   it('invokes the stable application-owned Fetch channel with the original request', async () => {
     const request = {
       body: '{"args":[]}',

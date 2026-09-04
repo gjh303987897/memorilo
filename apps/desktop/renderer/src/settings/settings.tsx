@@ -6,7 +6,7 @@ import { ConfigurationFields } from '@memorilo/config/react'
 import { desktopConfigurationDefinition } from '@memorilo/desktop-config'
 import { getUiThemeDefinitions, SegmentedControl, Sidebar } from '@memorilo/ui'
 import * as stylex from '@stylexjs/stylex'
-import { BookOpen, CalendarDays, GraduationCap, HardDrive, Keyboard, NotebookPen, Plug, Settings2, Wifi } from 'lucide-react'
+import { BookOpen, CalendarDays, GraduationCap, HardDrive, Keyboard, NotebookPen, Plug, Settings2, TabletSmartphone, Wifi } from 'lucide-react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import { Fragment, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -15,10 +15,11 @@ import { useDesktopConfiguration } from '../shared/configuration'
 import { AssetSettings } from './asset-settings'
 import { CalendarSettings } from './calendar-settings'
 import { DatabaseSettings } from './database-settings'
+import { DeviceSettings } from './device-settings'
 import { P2pSettings } from './p2p-settings'
 import { settingsShellStyles as settingsStyles } from './settings-shell.stylex'
 
-type SettingsCategoryId = 'calendar' | 'editor' | 'general' | 'learning' | 'mcp' | 'media' | 'reading' | 'shortcuts' | 'sync'
+type SettingsCategoryId = 'calendar' | 'device' | 'editor' | 'general' | 'learning' | 'mcp' | 'media' | 'reading' | 'shortcuts' | 'sync'
 type SourceSectionId = 'backup' | 'editor' | 'flashcards' | 'general' | 'goals' | 'images' | 'learning' | 'mcp' | 'reading' | 'shortcut-formatting' | 'shortcut-learning' | 'shortcut-navigation' | 'shortcut-note-structure' | 'sync-server' | 'todo'
 
 interface SettingsCategoryDefinition {
@@ -40,6 +41,7 @@ const settingsCategoryDefinitions: readonly SettingsCategoryDefinition[] = [
   { id: 'learning', sectionIds: ['learning', 'goals', 'flashcards'], showSectionHeadings: true },
   { id: 'media', sectionIds: ['images', 'backup'], showSectionHeadings: true },
   { id: 'mcp', sectionIds: ['mcp'] },
+  { id: 'device', sectionIds: [] },
   { id: 'sync', sectionIds: ['sync-server'], showSectionHeadings: true },
 ]
 
@@ -47,6 +49,7 @@ const learningDetailSectionIds: readonly SourceSectionId[] = ['flashcards', 'goa
 
 const categoryIcons = {
   calendar: CalendarDays,
+  device: TabletSmartphone,
   editor: NotebookPen,
   general: Settings2,
   learning: GraduationCap,
@@ -59,6 +62,7 @@ const categoryIcons = {
 
 const categoryLabelKeys: Readonly<Record<SettingsCategoryId, string>> = {
   calendar: 'calendarSection',
+  device: 'deviceSection',
   editor: 'editorSection',
   general: 'generalSection',
   learning: 'learningSection',
@@ -71,6 +75,7 @@ const categoryLabelKeys: Readonly<Record<SettingsCategoryId, string>> = {
 
 const categoryDescriptionKeys: Readonly<Record<SettingsCategoryId, string>> = {
   calendar: 'calendarDescription',
+  device: 'deviceDescription',
   editor: 'editorDescription',
   general: 'generalDescription',
   learning: 'learningDescription',
@@ -538,6 +543,7 @@ export function Settings({ store }: { store: ConfigurationStore<DesktopConfigura
                   </p>
                 </header>
                 {activeCategory.id === 'general' ? <ThemeGallery store={store} /> : null}
+                {activeCategory.id === 'device' ? <DeviceSettings /> : null}
                 {activeCategory.id === 'sync' ? <P2pSettings /> : null}
                 {activeCategory.sections.map((section, index) => (
                   <Fragment key={section.id}>

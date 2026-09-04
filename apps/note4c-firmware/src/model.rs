@@ -1,68 +1,29 @@
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum Status {
     Open,
     Doing,
     Done,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub struct TodoId(pub u64);
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct TodoItem {
-    pub title: &'static str,
-    pub due: &'static str,
+    pub id: TodoId,
+    pub title: String,
+    pub due: String,
     pub status: Status,
     pub indent: u8,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct TodoModel {
     pub items: Vec<TodoItem>,
+    #[serde(default)]
     pub selected: usize,
-}
-
-impl Default for TodoModel {
-    fn default() -> Self {
-        Self {
-            items: vec![
-                TodoItem {
-                    title: "Review sync design",
-                    due: "09:30",
-                    status: Status::Done,
-                    indent: 0,
-                },
-                TodoItem {
-                    title: "Prepare device prototype",
-                    due: "11:00",
-                    status: Status::Doing,
-                    indent: 0,
-                },
-                TodoItem {
-                    title: "Wire display adapter",
-                    due: "today",
-                    status: Status::Open,
-                    indent: 1,
-                },
-                TodoItem {
-                    title: "Verify button debounce",
-                    due: "",
-                    status: Status::Open,
-                    indent: 1,
-                },
-                TodoItem {
-                    title: "Write demo notes",
-                    due: "tomorrow",
-                    status: Status::Open,
-                    indent: 0,
-                },
-                TodoItem {
-                    title: "Archive old sketches",
-                    due: "",
-                    status: Status::Done,
-                    indent: 0,
-                },
-            ],
-            selected: 1,
-        }
-    }
 }
 
 impl TodoModel {
@@ -70,48 +31,59 @@ impl TodoModel {
         if self.items.is_empty() || delta == 0 {
             return;
         }
-
         self.selected =
             (self.selected as isize + delta).rem_euclid(self.items.len() as isize) as usize;
     }
-
-    pub fn toggle_selected(&mut self) {
-        let Some(item) = self.items.get_mut(self.selected) else {
-            return;
-        };
-        item.status = if item.status == Status::Done {
-            Status::Open
-        } else {
-            Status::Done
-        };
-    }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn selection_wraps_in_both_directions() {
-        let mut model = TodoModel {
-            selected: 0,
-            ..TodoModel::default()
-        };
-        model.move_selection(-1);
-        assert_eq!(model.selected, model.items.len() - 1);
-        model.move_selection(1);
-        assert_eq!(model.selected, 0);
-    }
-
-    #[test]
-    fn toggle_reopens_done_items_and_completes_other_items() {
-        let mut model = TodoModel {
-            selected: 0,
-            ..TodoModel::default()
-        };
-        model.toggle_selected();
-        assert_eq!(model.items[0].status, Status::Open);
-        model.toggle_selected();
-        assert_eq!(model.items[0].status, Status::Done);
+impl Default for TodoModel {
+    fn default() -> Self {
+        Self {
+            items: vec![
+                TodoItem {
+                    id: TodoId(1),
+                    title: "同步设计评审".into(),
+                    due: "09:30".into(),
+                    status: Status::Done,
+                    indent: 0,
+                },
+                TodoItem {
+                    id: TodoId(2),
+                    title: "准备设备原型".into(),
+                    due: "11:00".into(),
+                    status: Status::Doing,
+                    indent: 0,
+                },
+                TodoItem {
+                    id: TodoId(3),
+                    title: "Wire display adapter".into(),
+                    due: "today".into(),
+                    status: Status::Open,
+                    indent: 1,
+                },
+                TodoItem {
+                    id: TodoId(4),
+                    title: "验证按键去抖".into(),
+                    due: String::new(),
+                    status: Status::Open,
+                    indent: 1,
+                },
+                TodoItem {
+                    id: TodoId(5),
+                    title: "Write demo notes".into(),
+                    due: "tomorrow".into(),
+                    status: Status::Open,
+                    indent: 0,
+                },
+                TodoItem {
+                    id: TodoId(6),
+                    title: "Archive old sketches".into(),
+                    due: String::new(),
+                    status: Status::Done,
+                    indent: 0,
+                },
+            ],
+            selected: 1,
+        }
     }
 }

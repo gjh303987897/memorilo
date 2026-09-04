@@ -1,11 +1,17 @@
 import type {
   DesktopConfiguration,
+  DesktopDeviceGalleryStatus,
+  DesktopDeviceGalleryTarget,
+  DesktopDeviceGalleryUpload,
   DesktopNoteExternalUpdate,
   DesktopP2pDiscoveredPeer,
   DesktopP2pLocalDevice,
   DesktopP2pPairedDevice,
   DesktopP2pPairingRequest,
   DesktopP2pStatus,
+  DesktopProvisioningDevice,
+  DesktopProvisioningPairingRequest,
+  DesktopProvisioningPairingResponse,
   DesktopSyncServerEvent,
   DesktopSyncServerStatus,
   DesktopWhiteboardLibraryData,
@@ -21,6 +27,22 @@ export type DesktopPlatform = 'macos' | 'windows' | 'linux' | 'other'
 
 export interface DesktopApi {
   readonly platform: DesktopPlatform
+  deviceProvisioning: {
+    cancelSelection: () => Promise<void>
+    clearLocalManagementToken: (deviceId: string) => Promise<void>
+    deleteGalleryAsset: (target: DesktopDeviceGalleryTarget, id: number) => Promise<void>
+    generateLocalManagementToken: () => Promise<string>
+    hasLocalManagementToken: (deviceId: string) => Promise<boolean>
+    loadGallery: (target: DesktopDeviceGalleryTarget) => Promise<DesktopDeviceGalleryStatus>
+    reorderGallery: (target: DesktopDeviceGalleryTarget, order: readonly number[]) => Promise<void>
+    respondToPairing: (response: DesktopProvisioningPairingResponse) => Promise<void>
+    saveLocalManagementToken: (deviceId: string, token: string) => Promise<void>
+    setGallerySlideshow: (target: DesktopDeviceGalleryTarget, intervalSeconds: number | null) => Promise<void>
+    selectDevice: (deviceId: string) => Promise<void>
+    subscribeDevices: (listener: (devices: readonly DesktopProvisioningDevice[]) => void) => () => void
+    subscribePairing: (listener: (request: DesktopProvisioningPairingRequest) => void) => () => void
+    uploadGalleryAsset: (input: DesktopDeviceGalleryUpload) => Promise<void>
+  }
   loadWhiteboardLibrary: () => Promise<DesktopWhiteboardLibraryData>
   request: (request: DesktopFetchRequest) => Promise<DesktopFetchResponse>
   saveWhiteboardLibrary: (data: DesktopWhiteboardLibraryData) => Promise<void>

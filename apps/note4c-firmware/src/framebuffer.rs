@@ -1,3 +1,5 @@
+use embedded_graphics_core::pixelcolor::{PixelColor, raw::RawU2};
+
 pub const WIDTH: usize = 400;
 pub const HEIGHT: usize = 300;
 pub const FRAME_BYTES: usize = WIDTH * HEIGHT / 4;
@@ -10,6 +12,10 @@ pub enum Color {
     White = 1,
     Yellow = 2,
     Red = 3,
+}
+
+impl PixelColor for Color {
+    type Raw = RawU2;
 }
 
 pub fn set_pixel(framebuffer: &mut [u8], x: i32, y: i32, color: Color) {

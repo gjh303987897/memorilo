@@ -4,7 +4,7 @@ param(
     [ValidatePattern('^COM\d+$')]
     [string]$Port,
 
-    [string]$TargetDir = (Join-Path ([System.IO.Path]::GetTempPath()) 'memorilo-firmware-target')
+    [string]$TargetDir = (Join-Path ([System.IO.Path]::GetPathRoot([System.IO.Path]::GetTempPath())) 'tmp\mf')
 )
 
 Set-StrictMode -Version Latest

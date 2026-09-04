@@ -18,5 +18,6 @@ flash erasure, and backup restoration are recovery operations that require an
 explicit plan and matching user authorization.
 
 The operation is complete only after Espressif tooling verifies every image
-and resets the target. Wait for the physical display refresh when visual
-validation is part of the request.
+and performs the ESP32-S3 hard reset that clears force-download mode. Wait for
+the physical display refresh when visual validation is part of the request;
+the retained panel's old image does not prove the application booted.

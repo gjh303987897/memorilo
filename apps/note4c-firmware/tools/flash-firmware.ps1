@@ -4,10 +4,13 @@ param(
     [ValidatePattern('^COM\d+$')]
     [string]$Port,
 
-    [ValidateSet('real', 'color-test', 'fake')]
+    [ValidateSet('real', 'color-test', 'coordinator-test', 'fake')]
     [string]$Variant = 'real',
 
-    [string]$TargetDir = (Join-Path ([System.IO.Path]::GetTempPath()) 'memorilo-firmware-target'),
+    [ValidateSet(115200, 230400, 460800)]
+    [int]$Baud = 460800,
+
+    [string]$TargetDir = (Join-Path ([System.IO.Path]::GetPathRoot([System.IO.Path]::GetTempPath())) 'tmp\mf'),
 
     [switch]$SkipBuild
 )
@@ -19,17 +22,16 @@ $esptoolVersion = '5.4.0'
 $targetTriple = 'xtensa-esp32s3-espidf'
 $artifactName = 'memorilo-device-firmware'
 $projectDir = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot 'firmware-partition.ps1')
+$partitionCsvPath = Join-Path $projectDir 'partitions.csv'
 $targetFullPath = if ([System.IO.Path]::IsPathRooted($TargetDir)) {
     [System.IO.Path]::GetFullPath($TargetDir)
 } else {
     [System.IO.Path]::GetFullPath((Join-Path $projectDir $TargetDir))
 }
 
-if ([System.IO.Ports.SerialPort]::GetPortNames() -notcontains $Port) {
-    throw "Serial port $Port is not present. Reconnect the target and retry."
-}
-
 $uvx = Get-Command uvx -ErrorAction Stop
+$uv = Get-Command uv -ErrorAction Stop
 
 if (-not $SkipBuild) {
     $espExport = Join-Path $env:USERPROFILE 'export-esp.ps1'
@@ -46,6 +48,9 @@ if (-not $SkipBuild) {
         }
         'color-test' {
             $cargoArgs += @('--no-default-features', '--features', 'real-display,color-test')
+        }
+        'coordinator-test' {
+            $cargoArgs += @('--no-default-features', '--features', 'real-display,coordinator-test')
         }
         'fake' {}
     }
@@ -73,6 +78,17 @@ foreach ($artifact in @($elfPath, $bootloaderPath, $partitionTablePath)) {
     }
 }
 
+$partitionGenerator = Join-Path $env:USERPROFILE '.espressif\esp-idf\v5.5.2\components\partition_table\gen_esp32part.py'
+foreach ($input in @($partitionCsvPath, $partitionGenerator)) {
+    if (-not (Test-Path -LiteralPath $input -PathType Leaf)) {
+        throw "Required partition input is missing: $input"
+    }
+}
+& $uv.Source run --no-project python $partitionGenerator $partitionCsvPath $partitionTablePath
+if ($LASTEXITCODE -ne 0) {
+    throw "Partition table generation failed with exit code $LASTEXITCODE"
+}
+
 $esptool = @('--from', "esptool==$esptoolVersion", 'esptool')
 & $uvx.Source @esptool --chip esp32s3 elf2image `
     --flash-mode dio `
@@ -89,17 +105,28 @@ if ($LASTEXITCODE -ne 0) {
     throw "Application image validation failed with exit code $LASTEXITCODE"
 }
 
-Write-Host "Prepared $Variant firmware under $profileDir"
+$applicationPartition = Assert-EspApplicationFits `
+    -PartitionTablePath $partitionTablePath `
+    -ApplicationPath $applicationPath
+$applicationOffset = '0x{0:X}' -f $applicationPartition.Offset
+
+Write-Host "Prepared $Variant firmware for partition '$($applicationPartition.Label)' at $applicationOffset ($($applicationPartition.Size) bytes) under $profileDir"
 if (-not $PSCmdlet.ShouldProcess($Port, 'Flash bootloader, partition table, and application')) {
     return
 }
 
-# Keep the serial interaction to one official esptool session. Repeated probes
-# and an immediately attached monitor can wedge Windows usbser on native USB.
+if ([System.IO.Ports.SerialPort]::GetPortNames() -notcontains $Port) {
+    throw "Serial port $Port is not present. Reconnect the target and retry."
+}
+
+# Keep the serial interaction to one official esptool session. ESP32-S3
+# `hard-reset` clears the USB force-download state before resetting the chip;
+# a watchdog or soft reset can leave a successfully written device in the ROM
+# loader instead of booting the application.
 & $uvx.Source @esptool `
     --chip esp32s3 `
     --port $Port `
-    --baud 460800 `
+    --baud $Baud `
     --before usb-reset `
     --after hard-reset `
     write-flash `
@@ -108,7 +135,7 @@ if (-not $PSCmdlet.ShouldProcess($Port, 'Flash bootloader, partition table, and 
     --flash-size 16MB `
     0x0 $bootloaderPath `
     0x8000 $partitionTablePath `
-    0x10000 $applicationPath
+    $applicationOffset $applicationPath
 if ($LASTEXITCODE -ne 0) {
     throw "Firmware flash failed with exit code $LASTEXITCODE. Reconnect the target and rerun the complete flash command; do not continue with partial writes."
 }

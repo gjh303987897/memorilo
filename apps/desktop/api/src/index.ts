@@ -4,6 +4,16 @@ export type { DesktopHonoClient } from './client'
 export { createDesktopApiClient, createDesktopHonoClient } from './client'
 export type { ConfigurationRouteHandlers } from './configuration-routes'
 export type * from './contract'
+export { desktopProvisioningChannels } from './device-provisioning-contract'
+export type {
+  DesktopDeviceGalleryAsset,
+  DesktopDeviceGalleryStatus,
+  DesktopDeviceGalleryTarget,
+  DesktopDeviceGalleryUpload,
+  DesktopProvisioningDevice,
+  DesktopProvisioningPairingRequest,
+  DesktopProvisioningPairingResponse,
+} from './device-provisioning-contract'
 export type {
   DesktopHonoRequestContextHandler,
   DesktopOperationHandlers,

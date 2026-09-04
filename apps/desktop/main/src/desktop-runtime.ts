@@ -40,6 +40,7 @@ import { ensureNoteP2pBaselines } from './notes/note-p2p-baselines'
 import { createActiveReadingRegistry } from './reading/active-reading-registry'
 import { BetterSqliteDatabase } from './storage/better-sqlite-database'
 import { ElectronDeviceSigningKeyStore } from './storage/electron-device-signing-key-store'
+import { ElectronLocalManagementCredentialStore } from './storage/electron-local-management-credential-store'
 import { ElectronSyncServerCredentialStore } from './storage/electron-sync-server-credential-store'
 import { openCurrentMainDatabase } from './storage/main-database'
 import { TransformersEmbeddingModel } from './storage/transformers-embedding-model'
@@ -196,6 +197,9 @@ export async function createDesktopRuntime(options: DesktopRuntimeOptions): Prom
     })
     const configurationStore = configuration.resource
     const syncServerCredentialStore = new ElectronSyncServerCredentialStore(join(dataDirectory, 'sync-server', 'device-credential.enc'))
+    const localManagementCredentialStore = new ElectronLocalManagementCredentialStore(
+      join(dataDirectory, 'devices', 'local-management'),
+    )
     let storedSyncServerCredential = (await syncServerCredentialStore.load()) ?? ''
     const loadedSyncServerCredential = storedSyncServerCredential.length === 0
       ? null
@@ -667,7 +671,7 @@ export async function createDesktopRuntime(options: DesktopRuntimeOptions): Prom
     })
 
     const settingsWindow = (await scope.acquire({
-      acquire: () => createSettingsWindowController(options.mainDirectory),
+      acquire: () => createSettingsWindowController(options.mainDirectory, localManagementCredentialStore),
       close: controller => controller.close(),
       name: 'settings window controller',
     })).resource

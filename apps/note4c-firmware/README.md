@@ -11,8 +11,27 @@ The renderer uses the panel-native packed BWRY format: two bits per pixel,
 four pixels per byte, MSB first. `00` is black, `01` white, `10` yellow, and
 `11` red. One 400 x 300 frame uses 30,000 bytes.
 
-GPIO39 and GPIO18 move the selection; GPIO0 toggles complete/reopen. GPIO3 is
-held high so the active-low status LED remains off.
+TODO content is a read-only projection synchronized from Memorilo: none of the
+three device buttons completes, reopens, reorders, or otherwise mutates a TODO.
+GPIO3 is held high so the active-low status LED remains off.
+
+Long-press GPIO39/Up for the previous page or GPIO18/Down for the next page.
+The normal page loop is Todo, Gallery, Calendar, and Weather; it has no on-device
+Settings page. Short presses
+remain contextual: Gallery and Calendar use Up/Down for their local view, and
+GPIO0/Confirm opens or closes a gallery image or returns Calendar to the current
+month. Holding Up+Down opens the dedicated BLE pairing status page; all device
+configuration is edited in Memorilo. Gallery metadata and
+exact 30,000-byte frames live in the upstream-compatible 8 MiB `assets`
+SPIFFS partition with dual generation index slots. Confirm opens or closes the
+selected full-screen image; Up and Down continue to work while a physical
+refresh is running. Existing data in the former custom `gallery` region is not
+migrated.
+Optional slideshow intervals start at five minutes and never acquire a
+permanent sleep lease. Memorilo performs contain/cover resize, four-color
+dithering, authenticated upload, delete, and reorder operations from its Device
+settings page. The local HTTP contract is documented in
+[`docs/device-provisioning-protocol.md`](../../docs/device-provisioning-protocol.md).
 
 ## Toolchain
 
@@ -51,6 +70,14 @@ cargo build --target-dir C:\tmp\mf --release --no-default-features --features "r
 cargo build --target-dir C:\tmp\mf --release --no-default-features --features real-display
 ```
 
+The `coordinator-test` variant injects two synthetic navigation commands during
+the first physical refresh. It is only for repeatable real-device verification
+that input remains accepted and that one latest successor frame is displayed:
+
+```powershell
+.\tools\flash-firmware.ps1 -Port COM3 -Variant coordinator-test
+```
+
 The short target directory avoids the ESP-IDF Windows path-length limit in deep
 worktrees. Real-device flashing uses the official Espressif image and serial
 tools through the project script; `cargo run` is intentionally not a flashing
@@ -61,12 +88,41 @@ entry point:
 .\tools\monitor-firmware.ps1 -Port COM3
 ```
 
+If the native USB-Serial/JTAG link drops during transfer, retry the complete
+flash at a lower rate with `-Baud 115200`; the default remains `460800`.
+
 Run the monitor separately and only when diagnostics are needed. The canonical
 workflow and recovery rules are documented in
 [`docs/agents/esp-idf-flashing.md`](../../docs/agents/esp-idf-flashing.md).
 Button input remains active during the roughly 20 to 25 second panel refresh.
 A capacity-one channel coalesces input received during a refresh into at most
 one follow-up refresh of the latest Rust model state.
+
+After building or flashing, report the exact revision, Cargo features, image
+size, and image hash with:
+
+```powershell
+.\tools\measure-firmware.ps1 -Variant real
+```
+
+The preparation path runs ESP-IDF's official partition generator over the
+checked-in CSV. It keeps NVS and the factory application at their existing
+offsets, reserves a 3 MiB factory slot, and places the upstream-compatible
+8 MiB `assets` SPIFFS partition at `0x800000`. Measurement and budget checks reject
+stale images and images that exceed the actual app partition. This factory-only
+layout is intentionally not treated as the secure OTA design.
+
+The serial monitor emits machine-searchable `DIAG` records at boot and around
+every physical refresh. Snapshot records include free and minimum heap,
+internal RAM, PSRAM, and the current task's stack high-water mark. Refresh
+records include elapsed time and the first completed frame's boot-relative
+timestamp. Current draw still requires an external USB power meter or ammeter.
+
+The hidden diagnostics page remains available through the internal diagnostic
+command but is not part of the normal device page loop. Confirm returns to the
+Todo page. The page never refreshes periodically. Release
+budgets and the explicit runtime/power review gate are documented in
+[`docs/firmware-acceptance-budgets.md`](../../docs/firmware-acceptance-budgets.md).
 
 ## Display driver boundary
 

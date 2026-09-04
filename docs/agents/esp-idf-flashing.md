@@ -32,6 +32,14 @@ variants are:
 .\apps\note4c-firmware\tools\flash-firmware.ps1 -Port COM3 -Variant fake
 ```
 
+The default transfer rate is `460800`. For a marginal USB-Serial/JTAG link,
+repeat the complete flash at a lower rate without changing the image or reset
+sequence:
+
+```powershell
+.\apps\note4c-firmware\tools\flash-firmware.ps1 -Port COM3 -Baud 115200
+```
+
 Use `-WhatIf` to build, generate, and validate the application image without
 writing the device. Use `-SkipBuild` only when the selected target directory
 already contains the intended current build.
@@ -41,8 +49,10 @@ The script deliberately:
 - requires an explicit COM port;
 - pins the Windows USB fixes in `esptool 5.4.0` through `uvx`;
 - uses the ESP-IDF flash layout and stub-compressed transfer;
+- exits ESP32-S3 force-download mode with esptool's `hard-reset` sequence;
 - performs one serial session instead of probing the chip first;
 - verifies every written image before resetting the target;
+- rejects an application image that does not fit the selected app partition;
 - keeps the serial monitor out of the flash transaction.
 
 The flash layout is fixed by ESP-IDF:
@@ -51,7 +61,7 @@ The flash layout is fixed by ESP-IDF:
 | --- | --- |
 | `0x0000` | ESP-IDF bootloader |
 | `0x8000` | ESP-IDF partition table |
-| `0x10000` | Rust application image |
+| `0x10000` | Rust application image (current factory partition; the script reads the actual partition table) |
 
 ## Monitor
 
@@ -85,3 +95,13 @@ Windows `usbser` on the ESP32-S3 native USB interface.
 Completion means the flash command exits successfully after esptool verifies
 the bootloader, partition table, and application. For display validation, wait
 for the panel's approximately 20–25 second refresh before judging the result.
+The retained panel keeps its old image across resets and power loss, so an
+unchanged screen is not evidence that the new application booted.
+
+## Build invariant
+
+Keep `CONFIG_ESP_MAIN_TASK_STACK_SIZE=10000` in the effective ESP-IDF
+configuration. The interactive application performs Rust UI and bitmap-font
+rendering on the ESP main task before its first display request; the earlier
+3584-byte override could fail before the first physical refresh even though
+the minimal color-bar variant worked.
