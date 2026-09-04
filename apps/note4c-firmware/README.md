@@ -16,9 +16,10 @@ three device buttons completes, reopens, reorders, or otherwise mutates a TODO.
 GPIO3 is held high so the active-low status LED remains off.
 
 Long-press GPIO39/Up for the previous page or GPIO18/Down for the next page.
-The normal page loop is Todo, Gallery, Calendar, and Weather; it has no on-device
-Settings page. Short presses
-remain contextual: Gallery and Calendar use Up/Down for their local view, and
+Page navigation always uses a long press. The normal page loop is Todo, Gallery,
+Calendar, and Weather; it has no on-device Settings page. Short presses remain
+contextual: Todo uses short Up/Down presses to paginate its read-only list,
+Gallery and Calendar use them for their local view, and Weather ignores them.
 GPIO0/Confirm opens or closes a gallery image or returns Calendar to the current
 month. Holding Up+Down opens the dedicated BLE pairing status page; all device
 configuration is edited in Memorilo. Gallery metadata and

@@ -803,7 +803,9 @@ impl RawDrawUiManager {
 
         const CAPACITY: usize = 6;
         const ROW_HEIGHT: i32 = 38;
-        let visible_items = 0..snapshot.todos.items.len().min(CAPACITY);
+        let start = snapshot.todo_page.saturating_mul(CAPACITY);
+        let end = (start + CAPACITY).min(snapshot.todos.items.len());
+        let visible_items = start..end;
         for (row, item_index) in visible_items.clone().enumerate() {
             let item = &snapshot.todos.items[item_index];
             let bounds = Bounds::new(5, 38 + row as i32 * ROW_HEIGHT, 390, ROW_HEIGHT - 3);
@@ -832,7 +834,7 @@ impl RawDrawUiManager {
         draw.separator(276);
         draw.text(
             Point::new(10, 282),
-            "只读视图 / 内容和状态由 Memorilo 同步",
+            "只读 / 短按上下翻 TODO 页 / 长按切换应用页",
             self.theme.text,
         );
 

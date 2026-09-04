@@ -113,6 +113,7 @@ impl ServiceSnapshot {
 pub struct ApplicationSnapshot {
     pub lifecycle: LifecycleState,
     pub page: PageId,
+    pub todo_page: usize,
     pub todos: TodoModel,
     pub render_revision: u64,
     pub services: ServiceSnapshot,
@@ -246,6 +247,7 @@ impl Application {
             snapshot: ApplicationSnapshot {
                 lifecycle: LifecycleState::Created,
                 page: PageId::Todos,
+                todo_page: 0,
                 todos: state.todos,
                 render_revision: 0,
                 services: ServiceSnapshot { phases },
@@ -380,6 +382,16 @@ impl Application {
     }
 
     fn move_selection(&mut self, delta: isize) -> Transition {
+        if self.snapshot.page == PageId::Todos {
+            let page_count = self.snapshot.todos.items.len().div_ceil(6).max(1);
+            if page_count <= 1 {
+                return Transition::default();
+            }
+            return self.mutate(|snapshot| {
+                snapshot.todo_page =
+                    (snapshot.todo_page as isize + delta).rem_euclid(page_count as isize) as usize;
+            });
+        }
         if !matches!(
             self.snapshot.page,
             PageId::Gallery | PageId::Calendar
@@ -507,6 +519,14 @@ impl Application {
             return Transition::default();
         }
         self.snapshot.todos = todos;
+        self.snapshot.todo_page = self.snapshot.todo_page.min(
+            self.snapshot
+                .todos
+                .items
+                .len()
+                .div_ceil(6)
+                .saturating_sub(1),
+        );
         Transition {
             render: (self.snapshot.page == PageId::Todos).then(|| self.next_render()),
             ..Transition::default()
@@ -802,6 +822,23 @@ mod tests {
         let transition = application.dispatch(ApplicationCommand::TodosSynced(synced.clone()));
         assert_eq!(application.snapshot().todos, synced);
         assert!(transition.render.is_some());
+    }
+
+    #[test]
+    fn todo_short_navigation_changes_page_without_mutating_items() {
+        let mut application = Application::new([ServiceId::Display]);
+        application.start();
+        application.dispatch(ApplicationCommand::ServiceStarted(ServiceId::Display));
+        let mut todos = TodoModel::default();
+        let extra = todos.items.clone();
+        todos.items.extend(extra);
+        application.dispatch(ApplicationCommand::TodosSynced(todos.clone()));
+
+        application.dispatch(ApplicationCommand::SelectNext);
+        assert_eq!(application.snapshot().todo_page, 1);
+        assert_eq!(application.snapshot().todos, todos);
+        application.dispatch(ApplicationCommand::SelectPrevious);
+        assert_eq!(application.snapshot().todo_page, 0);
     }
 
     #[test]

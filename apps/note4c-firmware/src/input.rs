@@ -204,8 +204,8 @@ impl GestureRecognizer {
 
 pub fn route_gesture(page: PageId, gesture: Gesture) -> Option<ApplicationCommand> {
     match (page, gesture) {
-        (PageId::Todos, Gesture::Tap(ButtonId::Up)) => Some(ApplicationCommand::PreviousPage),
-        (PageId::Todos, Gesture::Tap(ButtonId::Down)) => Some(ApplicationCommand::NextPage),
+        (PageId::Todos, Gesture::Tap(ButtonId::Up)) => Some(ApplicationCommand::SelectPrevious),
+        (PageId::Todos, Gesture::Tap(ButtonId::Down)) => Some(ApplicationCommand::SelectNext),
         (PageId::Gallery | PageId::Calendar, Gesture::Tap(ButtonId::Up)) => {
             Some(ApplicationCommand::SelectPrevious)
         }
@@ -329,10 +329,18 @@ mod tests {
         );
         assert_eq!(
             route_gesture(PageId::Todos, Gesture::Tap(ButtonId::Down)),
-            Some(ApplicationCommand::NextPage)
+            Some(ApplicationCommand::SelectNext)
         );
         assert_eq!(
             route_gesture(PageId::Todos, Gesture::Tap(ButtonId::Up)),
+            Some(ApplicationCommand::SelectPrevious)
+        );
+        assert_eq!(
+            route_gesture(PageId::Todos, Gesture::LongPress(ButtonId::Down)),
+            Some(ApplicationCommand::NextPage)
+        );
+        assert_eq!(
+            route_gesture(PageId::Todos, Gesture::LongPress(ButtonId::Up)),
             Some(ApplicationCommand::PreviousPage)
         );
         assert_eq!(
