@@ -66,8 +66,8 @@ cargo build --target-dir C:\tmp\mf --release
 Build the physical-display color bars, then the interactive TODO firmware:
 
 ```powershell
-cargo build --target-dir C:\tmp\mf --release --no-default-features --features "real-display,color-test"
-cargo build --target-dir C:\tmp\mf --release --no-default-features --features real-display
+cargo build --target-dir C:\tmp\mf --release --no-default-features --features "hardware-display,color-test"
+cargo build --target-dir C:\tmp\mf --release --no-default-features --features hardware-display
 ```
 
 The `coordinator-test` variant injects two synthetic navigation commands during
@@ -102,7 +102,7 @@ After building or flashing, report the exact revision, Cargo features, image
 size, and image hash with:
 
 ```powershell
-.\tools\measure-firmware.ps1 -Variant real
+.\tools\measure-firmware.ps1 -Variant hardware
 ```
 
 The preparation path runs ESP-IDF's official partition generator over the

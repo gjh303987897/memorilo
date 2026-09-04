@@ -24,10 +24,11 @@ Identify the target COM port, then run from the repository root:
 .\apps\note4c-firmware\tools\flash-firmware.ps1 -Port COM3
 ```
 
-The default variant is the interactive real-display firmware. Other explicit
-variants are:
+The default variant is the interactive hardware-display firmware. Use the
+explicit `hardware` variant when scripting; other explicit variants are:
 
 ```powershell
+.\apps\note4c-firmware\tools\flash-firmware.ps1 -Port COM3 -Variant hardware
 .\apps\note4c-firmware\tools\flash-firmware.ps1 -Port COM3 -Variant color-test
 .\apps\note4c-firmware\tools\flash-firmware.ps1 -Port COM3 -Variant fake
 ```

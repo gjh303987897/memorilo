@@ -1,7 +1,7 @@
 # Firmware acceptance budgets
 
 These budgets turn firmware growth into an explicit review decision. They are
-measured from the release `real-display` artifact and the `DIAG` records emitted
+measured from the release `hardware-display` artifact and the `DIAG` records emitted
 by the same build. A stage may tighten a later limit after measurements, but it
 must not silently exceed the active row.
 

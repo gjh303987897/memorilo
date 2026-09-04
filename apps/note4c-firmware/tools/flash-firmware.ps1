@@ -4,8 +4,8 @@ param(
     [ValidatePattern('^COM\d+$')]
     [string]$Port,
 
-    [ValidateSet('real', 'color-test', 'coordinator-test', 'fake')]
-    [string]$Variant = 'real',
+    [ValidateSet('hardware', 'color-test', 'coordinator-test', 'fake')]
+    [string]$Variant = 'hardware',
 
     [ValidateSet(115200, 230400, 460800)]
     [int]$Baud = 460800,
@@ -43,14 +43,14 @@ if (-not $SkipBuild) {
     $cargo = Get-Command cargo -ErrorAction Stop
     $cargoArgs = @('build', '--target-dir', $targetFullPath, '--release')
     switch ($Variant) {
-        'real' {
-            $cargoArgs += @('--no-default-features', '--features', 'real-display')
+        'hardware' {
+            $cargoArgs += @('--no-default-features', '--features', 'hardware-display')
         }
         'color-test' {
-            $cargoArgs += @('--no-default-features', '--features', 'real-display,color-test')
+            $cargoArgs += @('--no-default-features', '--features', 'hardware-display,color-test')
         }
         'coordinator-test' {
-            $cargoArgs += @('--no-default-features', '--features', 'real-display,coordinator-test')
+            $cargoArgs += @('--no-default-features', '--features', 'hardware-display,coordinator-test')
         }
         'fake' {}
     }

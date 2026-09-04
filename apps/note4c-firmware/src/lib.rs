@@ -22,8 +22,8 @@ pub mod display;
 #[cfg(target_os = "espidf")]
 pub mod provisioning_ble;
 
-#[cfg(all(feature = "fake-display", feature = "real-display"))]
+#[cfg(all(feature = "fake-display", feature = "hardware-display"))]
 compile_error!("enable exactly one display backend");
 
-#[cfg(not(any(feature = "fake-display", feature = "real-display")))]
-compile_error!("enable either fake-display or real-display");
+#[cfg(not(any(feature = "fake-display", feature = "hardware-display")))]
+compile_error!("enable either fake-display or hardware-display");

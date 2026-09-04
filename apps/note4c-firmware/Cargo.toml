@@ -7,7 +7,7 @@ publish = false
 [features]
 default = ["fake-display"]
 fake-display = []
-real-display = []
+hardware-display = []
 color-test = []
 coordinator-test = []
 

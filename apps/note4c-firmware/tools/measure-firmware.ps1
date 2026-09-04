@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('real', 'color-test', 'coordinator-test', 'fake')]
-    [string]$Variant = 'real',
+    [ValidateSet('hardware', 'color-test', 'coordinator-test', 'fake')]
+    [string]$Variant = 'hardware',
 
     [string]$TargetDir = (Join-Path ([System.IO.Path]::GetPathRoot([System.IO.Path]::GetTempPath())) 'tmp\mf')
 )
@@ -31,9 +31,9 @@ foreach ($artifact in @($applicationPath, $elfPath, $partitionTablePath)) {
 }
 
 $features = switch ($Variant) {
-    'real' { 'real-display' }
-    'color-test' { 'real-display,color-test' }
-    'coordinator-test' { 'real-display,coordinator-test' }
+    'hardware' { 'hardware-display' }
+    'color-test' { 'hardware-display,color-test' }
+    'coordinator-test' { 'hardware-display,coordinator-test' }
     'fake' { 'fake-display (default)' }
 }
 

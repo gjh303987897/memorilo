@@ -1,34 +1,32 @@
-#[cfg(feature = "real-display")]
+#[cfg(feature = "hardware-display")]
 use std::ffi::c_void;
-#[cfg(feature = "real-display")]
+#[cfg(feature = "hardware-display")]
 use std::ptr::NonNull;
 
 use anyhow::{Result, ensure};
-#[cfg(feature = "real-display")]
+#[cfg(feature = "hardware-display")]
 use esp_idf_sys::esp;
 
 use crate::framebuffer::FRAME_BYTES;
 
-#[cfg(feature = "real-display")]
+#[cfg(feature = "hardware-display")]
 unsafe extern "C" {
     fn note4c_epd_bridge_new(out_display: *mut *mut c_void) -> i32;
     fn note4c_epd_bridge_refresh(display: *mut c_void, framebuffer: *const u8, size: usize) -> i32;
     fn note4c_epd_bridge_delete(display: *mut c_void);
 }
-
 enum Backend {
     #[cfg(feature = "fake-display")]
     Fake(Vec<u8>),
-    #[cfg(feature = "real-display")]
-    Real(NonNull<c_void>),
+    #[cfg(feature = "hardware-display")]
+    Hardware(NonNull<c_void>),
 }
-
 pub struct Display {
     backend: Backend,
 }
 
 // The driver handle is owned by one display thread and is never accessed concurrently.
-#[cfg(feature = "real-display")]
+#[cfg(feature = "hardware-display")]
 unsafe impl Send for Display {}
 
 impl Display {
@@ -41,15 +39,15 @@ impl Display {
             });
         }
 
-        #[cfg(feature = "real-display")]
+        #[cfg(feature = "hardware-display")]
         {
             let mut handle = std::ptr::null_mut();
             esp!(unsafe { note4c_epd_bridge_new(&mut handle) })?;
             let handle =
                 NonNull::new(handle).expect("C driver returned success with a null handle");
-            log::warn!("real SSD2683 backend enabled");
+            log::warn!("hardware SSD2683 backend enabled");
             Ok(Self {
-                backend: Backend::Real(handle),
+                backend: Backend::Hardware(handle),
             })
         }
     }
@@ -77,8 +75,8 @@ impl Display {
                 );
                 Ok(())
             }
-            #[cfg(feature = "real-display")]
-            Backend::Real(handle) => {
+            #[cfg(feature = "hardware-display")]
+            Backend::Hardware(handle) => {
                 esp!(unsafe {
                     note4c_epd_bridge_refresh(
                         handle.as_ptr(),
@@ -94,9 +92,9 @@ impl Display {
 
 impl Drop for Display {
     fn drop(&mut self) {
-        #[cfg(feature = "real-display")]
+        #[cfg(feature = "hardware-display")]
         match &self.backend {
-            Backend::Real(handle) => unsafe { note4c_epd_bridge_delete(handle.as_ptr()) },
+            Backend::Hardware(handle) => unsafe { note4c_epd_bridge_delete(handle.as_ptr()) },
         };
     }
 }

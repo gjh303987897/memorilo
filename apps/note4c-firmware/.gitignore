@@ -1,4 +1,5 @@
 /build/
+/build-device/
 /build-real/
 /build-todo/
 /target/
