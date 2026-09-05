@@ -50,7 +50,9 @@ The script deliberately:
 - requires an explicit COM port;
 - pins the Windows USB fixes in `esptool 5.4.0` through `uvx`;
 - uses the ESP-IDF flash layout and stub-compressed transfer;
-- exits ESP32-S3 force-download mode with esptool's `hard-reset` sequence;
+- uses the same `default-reset` pre-reset strategy as the previous ESP-IDF
+  CMake flash layout and exits force-download mode with esptool's `hard-reset`
+  sequence;
 - performs one serial session instead of probing the chip first;
 - verifies every written image before resetting the target;
 - rejects an application image that does not fit the selected app partition;

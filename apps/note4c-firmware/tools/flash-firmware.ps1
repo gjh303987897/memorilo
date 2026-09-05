@@ -127,7 +127,7 @@ if ([System.IO.Ports.SerialPort]::GetPortNames() -notcontains $Port) {
     --chip esp32s3 `
     --port $Port `
     --baud $Baud `
-    --before usb-reset `
+    --before default-reset `
     --after hard-reset `
     write-flash `
     --flash-mode dio `

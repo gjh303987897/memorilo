@@ -38,6 +38,7 @@ pub enum SleepTrigger {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AwakeReason {
     Active,
+    ExternalPower,
     DisplayWork,
     PersistenceWrite,
     Lease(SleepBlocker),
@@ -53,6 +54,7 @@ pub struct PowerCoordinator {
     idle_timeout: Duration,
     last_activity: Duration,
     manual_requested: bool,
+    external_power: bool,
     display_work: bool,
     persistence_write: bool,
     lease_deadlines: [Option<Duration>; SleepBlocker::ALL.len()],
@@ -64,6 +66,7 @@ impl PowerCoordinator {
             idle_timeout,
             last_activity: now,
             manual_requested: false,
+            external_power: false,
             display_work: false,
             persistence_write: false,
             lease_deadlines: [None; SleepBlocker::ALL.len()],
@@ -77,6 +80,10 @@ impl PowerCoordinator {
 
     pub fn request_manual_sleep(&mut self) {
         self.manual_requested = true;
+    }
+
+    pub fn set_external_power(&mut self, present: bool) {
+        self.external_power = present;
     }
 
     pub fn set_display_work(&mut self, active: bool) {
@@ -112,6 +119,9 @@ impl PowerCoordinator {
         };
         if trigger.is_none() {
             return SleepDecision::Awake(AwakeReason::Active);
+        }
+        if trigger == Some(SleepTrigger::Inactivity) && self.external_power {
+            return SleepDecision::Awake(AwakeReason::ExternalPower);
         }
         if self.display_work {
             return SleepDecision::Awake(AwakeReason::DisplayWork);
@@ -166,6 +176,22 @@ mod tests {
         power.set_display_work(false);
         assert_eq!(
             power.poll(Duration::from_secs(2)),
+            SleepDecision::Ready(SleepTrigger::Manual)
+        );
+    }
+
+    #[test]
+    fn external_power_blocks_inactivity_but_not_manual_sleep() {
+        let mut power = PowerCoordinator::new(Duration::from_secs(60), Duration::ZERO);
+        power.set_external_power(true);
+        assert_eq!(
+            power.poll(Duration::from_secs(60)),
+            SleepDecision::Awake(AwakeReason::ExternalPower)
+        );
+
+        power.request_manual_sleep();
+        assert_eq!(
+            power.poll(Duration::from_secs(61)),
             SleepDecision::Ready(SleepTrigger::Manual)
         );
     }

@@ -272,15 +272,16 @@ mod hardware {
             self.connection = connection;
         }
 
+        pub fn external_power_present(&mut self, now: Duration) -> bool {
+            if !self.charge_available {
+                return false;
+            }
+            !matches!(self.observe_charge(now), ChargeState::OnBattery)
+        }
+
         pub fn sample(&mut self, now: Duration) -> DeviceStatusSnapshot {
             let charge = if self.charge_available {
-                self.charge_tracker.observe(
-                    now,
-                    ChargeSignals {
-                        charging_active: unsafe { gpio_get_level(GPIO_CHARGE_DETECT) } == 0,
-                        full_active: unsafe { gpio_get_level(GPIO_CHARGE_FULL) } == 1,
-                    },
-                )
+                self.observe_charge(now)
             } else {
                 ChargeState::Unknown
             };
@@ -320,6 +321,16 @@ mod hardware {
                 rtc,
                 connection: self.connection,
             }
+        }
+
+        fn observe_charge(&mut self, now: Duration) -> ChargeState {
+            self.charge_tracker.observe(
+                now,
+                ChargeSignals {
+                    charging_active: unsafe { gpio_get_level(GPIO_CHARGE_DETECT) } == 0,
+                    full_active: unsafe { gpio_get_level(GPIO_CHARGE_FULL) } == 1,
+                },
+            )
         }
     }
 

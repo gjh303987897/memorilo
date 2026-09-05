@@ -620,6 +620,9 @@ mod firmware {
 
                 power.set_display_work(coordinator.has_pending_work());
                 power.set_persistence_write(persistence.has_pending_write());
+                power.set_external_power(
+                    status_service.external_power_present(diagnostics::uptime()),
+                );
                 if let SleepDecision::Ready(trigger) = power.poll(diagnostics::uptime()) {
                     log::info!("entering deep sleep trigger={trigger:?}; GPIO0 wakes device");
                     board.prepare_deep_sleep()?;
