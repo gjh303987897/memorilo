@@ -1168,9 +1168,14 @@ pub mod runtime {
             crt_bundle_attach: Some(esp_idf_sys::esp_crt_bundle_attach),
             ..HttpClientConfiguration::default()
         };
-        let mut connection = EspHttpClientConnection::new(&config)?;
-        connection.initiate_request(Method::Get, &url, &headers)?;
-        connection.initiate_response()?;
+        let mut connection = EspHttpClientConnection::new(&config)
+            .map_err(|error| TodoPullError::Transport(error.to_string()))?;
+        connection
+            .initiate_request(Method::Get, &url, &headers)
+            .map_err(|error| TodoPullError::Transport(error.to_string()))?;
+        connection
+            .initiate_response()
+            .map_err(|error| TodoPullError::Transport(error.to_string()))?;
         let status = connection.status();
         let response_etag = connection.header("etag").map(str::to_owned);
         match super::classify_todo_http_status(status as u16) {
@@ -1199,7 +1204,9 @@ pub mod runtime {
         let mut body = Vec::new();
         let mut chunk = [0_u8; 1024];
         loop {
-            let read = connection.read(&mut chunk)?;
+            let read = connection
+                .read(&mut chunk)
+                .map_err(|error| TodoPullError::Transport(error.to_string()))?;
             if read == 0 {
                 break;
             }

@@ -50,7 +50,7 @@ mod firmware {
         ProtocolErrorCode, PublicConfigEnvelope,
     };
     #[cfg(not(feature = "color-test"))]
-    use memorilo_device_firmware::todo_sync::Admission;
+    use memorilo_device_firmware::todo_sync::{Admission, TodoSyncEvent};
     #[cfg(not(feature = "color-test"))]
     use memorilo_device_firmware::ui;
     #[cfg(not(feature = "color-test"))]
@@ -340,8 +340,7 @@ mod firmware {
                             todo_sync.etag = etag.or(todo_sync.etag);
                             todo_sync.last_success_unix_seconds = unix_timestamp();
                             todo_sync.last_error = None;
-                            todo_sync.last_event =
-                                Some(crate::todo_sync::TodoSyncEvent::NotModified);
+                            todo_sync.last_event = Some(TodoSyncEvent::NotModified);
                             application
                                 .dispatch(ApplicationCommand::TodoSyncStatus(todo_sync.clone()));
                             persistence.schedule(application.persistent_state(), now);
@@ -354,11 +353,11 @@ mod firmware {
                                 if todo_sync.last_error.as_deref().is_some_and(|value| {
                                     value.contains("HTTP 401") || value.contains("HTTP 403")
                                 }) {
-                                    crate::todo_sync::TodoSyncEvent::AuthenticationFailure
+                                    TodoSyncEvent::AuthenticationFailure
                                 } else if todo_sync.snapshot.is_some() {
-                                    crate::todo_sync::TodoSyncEvent::OfflineCache
+                                    TodoSyncEvent::OfflineCache
                                 } else {
-                                    crate::todo_sync::TodoSyncEvent::Retrying
+                                    TodoSyncEvent::Retrying
                                 },
                             );
                             application
@@ -367,8 +366,7 @@ mod firmware {
                             network.publish_todos(todo_sync.clone())?;
                         }
                         NetworkRuntimeEvent::TodoNotification => {
-                            todo_sync.last_event =
-                                Some(crate::todo_sync::TodoSyncEvent::Notification);
+                            todo_sync.last_event = Some(TodoSyncEvent::Notification);
                             application
                                 .dispatch(ApplicationCommand::TodoSyncStatus(todo_sync.clone()));
                             network.publish_todos(todo_sync.clone())?;
