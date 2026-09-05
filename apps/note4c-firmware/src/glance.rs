@@ -362,5 +362,4 @@ mod tests {
             WeatherCondition::Unknown
         );
     }
-
 }

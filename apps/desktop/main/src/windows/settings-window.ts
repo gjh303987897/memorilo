@@ -1,10 +1,13 @@
 import type {
   DesktopDeviceGalleryTarget,
   DesktopDeviceGalleryUpload,
+  DesktopDeviceTodoPush,
   DesktopProvisioningPairingResponse,
 } from '@memorilo/desktop-api'
 import type { BrowserWindowConstructorOptions, IpcMainInvokeEvent } from 'electron'
 import type { LocalManagementCredentialStore } from '../storage/electron-local-management-credential-store'
+import type { TodoDevicePushService } from '../todo/todo-device-push-service'
+import type { TodoDeviceTargetStore } from '../todo/todo-device-target-store'
 import { join } from 'node:path'
 import process from 'node:process'
 import { desktopProvisioningChannels } from '@memorilo/desktop-api'
@@ -26,6 +29,8 @@ const bluetoothSelectionTimeoutMilliseconds = 15_000
 export function createSettingsWindowController(
   mainDirectory: string,
   localManagementCredentials: LocalManagementCredentialStore,
+  todoDeviceTargets?: TodoDeviceTargetStore,
+  todoDevicePush?: TodoDevicePushService,
 ): SettingsWindowController {
   let settingsWindow: BrowserWindow | null = null
   let pendingSelection: {
@@ -102,6 +107,35 @@ export function createSettingsWindowController(
   ipcMain.handle(desktopProvisioningChannels.loadGallery, async (event, input: unknown) => {
     requireSettingsSender(event)
     return Effect.runPromise(localManagement.loadGallery(requireGalleryTarget(input)))
+  })
+  ipcMain.handle(desktopProvisioningChannels.loadTodos, async (event, input: unknown) => {
+    requireSettingsSender(event)
+    return Effect.runPromise(localManagement.loadTodos(requireGalleryTarget(input)))
+  })
+  ipcMain.handle(desktopProvisioningChannels.pushTodos, async (event, input: unknown) => {
+    requireSettingsSender(event)
+    return Effect.runPromise(localManagement.pushTodos(requireTodoPush(input)))
+  })
+  ipcMain.handle(desktopProvisioningChannels.loadTodoTarget, async (event, deviceId: unknown) => {
+    requireSettingsSender(event)
+    const id = requireDeviceId(deviceId)
+    const targets = todoDeviceTargets ? await todoDeviceTargets.load() : []
+    return {
+      status: todoDevicePush?.statuses().find(status => status.deviceId === id) ?? null,
+      target: targets.find(target => target.deviceId === id) ?? null,
+    }
+  })
+  ipcMain.handle(desktopProvisioningChannels.saveTodoTarget, async (event, input: unknown) => {
+    requireSettingsSender(event)
+    if (!todoDeviceTargets || !todoDevicePush)
+      throw new Error('TODO device target storage is unavailable')
+    if (!isRecord(input) || typeof input.deviceId !== 'string' || !isOptionalAddress(input.address))
+      throw new TypeError('Invalid TODO device target')
+    const deviceId = requireDeviceId(input.deviceId)
+    const targets = input.address === null || input.address.trim().length === 0
+      ? await todoDeviceTargets.remove(deviceId)
+      : await todoDeviceTargets.replace({ address: input.address, deviceId })
+    todoDevicePush.setTargets(targets)
   })
   ipcMain.handle(desktopProvisioningChannels.uploadGalleryAsset, async (event, input: unknown) => {
     requireSettingsSender(event)
@@ -263,6 +297,10 @@ export function createSettingsWindowController(
     ipcMain.removeHandler(desktopProvisioningChannels.saveLocalManagementToken)
     ipcMain.removeHandler(desktopProvisioningChannels.clearLocalManagementToken)
     ipcMain.removeHandler(desktopProvisioningChannels.loadGallery)
+    ipcMain.removeHandler(desktopProvisioningChannels.loadTodos)
+    ipcMain.removeHandler(desktopProvisioningChannels.pushTodos)
+    ipcMain.removeHandler(desktopProvisioningChannels.loadTodoTarget)
+    ipcMain.removeHandler(desktopProvisioningChannels.saveTodoTarget)
     ipcMain.removeHandler(desktopProvisioningChannels.uploadGalleryAsset)
     ipcMain.removeHandler(desktopProvisioningChannels.deleteGalleryAsset)
     ipcMain.removeHandler(desktopProvisioningChannels.reorderGallery)
@@ -295,6 +333,17 @@ function requireGalleryUpload(value: unknown): DesktopDeviceGalleryUpload {
     createdAtUnixSeconds: value.createdAtUnixSeconds,
     name: value.name,
   }
+}
+
+function requireTodoPush(value: unknown): DesktopDeviceTodoPush {
+  const target = requireGalleryTarget(value)
+  if (!isRecord(value) || !isRecord(value.snapshot))
+    throw new TypeError('Invalid TODO snapshot push')
+  return { ...target, snapshot: value.snapshot as unknown as DesktopDeviceTodoPush['snapshot'] }
+}
+
+function isOptionalAddress(value: unknown): value is string | null {
+  return value === null || typeof value === 'string'
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -7,16 +7,46 @@ use serde::Serialize;
 use crate::framebuffer::FRAME_BYTES;
 use crate::gallery::{GALLERY_CAPACITY_BYTES, GalleryAssetId, GalleryCatalog};
 use crate::persistence::DeviceConfig;
+use crate::todo_sync::{SnapshotSource, TodoSyncState};
 
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 pub const MAX_RETRY_DELAY: Duration = Duration::from_secs(5 * 60);
 pub const MAX_MANAGEMENT_BODY_BYTES: usize = 1024;
+pub const MAX_TODO_BODY_BYTES: usize = crate::todo_sync::MAX_SNAPSHOT_BYTES;
+
+/// HTTP status classes used by the TODO transport. Keeping this mapping pure
+/// makes the retry and authentication policy independently testable from the
+/// ESP-IDF client implementation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TodoHttpStatusClass {
+    NotModified,
+    Success,
+    Authentication(u16),
+    RateLimited,
+    Client(u16),
+    Server(u16),
+    Unexpected(u16),
+}
+
+pub fn classify_todo_http_status(status: u16) -> TodoHttpStatusClass {
+    match status {
+        200 => TodoHttpStatusClass::Success,
+        304 => TodoHttpStatusClass::NotModified,
+        401 | 403 => TodoHttpStatusClass::Authentication(status),
+        429 => TodoHttpStatusClass::RateLimited,
+        400..=499 => TodoHttpStatusClass::Client(status),
+        500..=599 => TodoHttpStatusClass::Server(status),
+        other => TodoHttpStatusClass::Unexpected(other),
+    }
+}
 
 #[derive(Clone, Eq, PartialEq)]
 pub struct NetworkConfiguration {
     ssid: String,
     password: String,
+    timezone: String,
     management_token: Option<String>,
+    todo_sync: crate::todo_sync::TodoSyncConfig,
 }
 
 impl std::fmt::Debug for NetworkConfiguration {
@@ -29,6 +59,7 @@ impl std::fmt::Debug for NetworkConfiguration {
                 "management_token",
                 &self.management_token.as_ref().map(|_| "<redacted>"),
             )
+            .field("todo_sync", &self.todo_sync)
             .finish()
     }
 }
@@ -38,7 +69,9 @@ impl NetworkConfiguration {
         Some(Self {
             ssid: config.wifi.ssid.clone()?,
             password: config.wifi.password().unwrap_or_default().to_owned(),
+            timezone: config.timezone.clone(),
             management_token: config.local_management.token().map(str::to_owned),
+            todo_sync: config.todo_sync.clone(),
         })
     }
 
@@ -64,6 +97,7 @@ pub struct NetworkSnapshot {
     pub phase: NetworkPhase,
     pub ipv4: Option<String>,
     pub time_synchronized: bool,
+    pub mqtt_connected: bool,
     pub consecutive_failures: u8,
     pub retry_at_ms: Option<u64>,
 }
@@ -74,6 +108,7 @@ impl Default for NetworkSnapshot {
             phase: NetworkPhase::Disabled,
             ipv4: None,
             time_synchronized: false,
+            mqtt_connected: false,
             consecutive_failures: 0,
             retry_at_ms: None,
         }
@@ -175,9 +210,14 @@ impl NetworkPolicy {
         }
     }
 
+    pub fn mqtt_connected(&mut self, connected: bool) {
+        self.snapshot.mqtt_connected = connected;
+    }
+
     pub fn failed(&mut self, failure: NetworkFailure, now: Duration) -> Vec<NetworkAction> {
         self.snapshot.ipv4 = None;
         self.snapshot.time_synchronized = false;
+        self.snapshot.mqtt_connected = false;
         self.snapshot.consecutive_failures = self.snapshot.consecutive_failures.saturating_add(1);
 
         if failure == NetworkFailure::Authentication {
@@ -236,6 +276,8 @@ pub enum ManagementRequest {
     Refresh,
     NextPage,
     Sleep,
+    TodoGet,
+    TodoPush,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -272,6 +314,46 @@ pub struct GalleryManagementSnapshot {
     pub catalog: GalleryCatalog,
     pub mutation_revision: u64,
     pub last_error: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TodoManagementSnapshot<'a> {
+    pub snapshot: &'a Option<crate::todo_sync::TodoSnapshot>,
+    pub revision: Option<&'a str>,
+    pub source: Option<SnapshotSourceLabel>,
+    pub last_success_unix_seconds: Option<i64>,
+    pub last_error: &'a Option<String>,
+    pub last_event: Option<crate::todo_sync::TodoSyncEvent>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SnapshotSourceLabel {
+    ClientLanPush,
+    MqttTriggeredHttps,
+    PeriodicHttps,
+}
+
+impl From<SnapshotSource> for SnapshotSourceLabel {
+    fn from(source: SnapshotSource) -> Self {
+        match source {
+            SnapshotSource::ClientLanPush => Self::ClientLanPush,
+            SnapshotSource::MqttTriggeredHttps => Self::MqttTriggeredHttps,
+            SnapshotSource::PeriodicHttps => Self::PeriodicHttps,
+        }
+    }
+}
+
+pub fn encode_todo_status(state: &TodoSyncState) -> Result<Vec<u8>, serde_json::Error> {
+    serde_json::to_vec(&TodoManagementSnapshot {
+        snapshot: &state.snapshot,
+        revision: state.revision.as_deref(),
+        source: state.source.map(Into::into),
+        last_success_unix_seconds: state.last_success_unix_seconds,
+        last_error: &state.last_error,
+        last_event: state.last_event,
+    })
 }
 
 #[cfg(target_os = "espidf")]
@@ -403,6 +485,7 @@ pub fn parse_management_request(
     }
     let expected_method = match path {
         "/v1/status" | "/v1/gallery" => ManagementMethod::Get,
+        "/v1/todos" => method,
         _ => ManagementMethod::Post,
     };
     let request = match path {
@@ -415,6 +498,8 @@ pub fn parse_management_request(
         "/v1/commands/refresh" => Some(ManagementRequest::Refresh),
         "/v1/commands/next-page" => Some(ManagementRequest::NextPage),
         "/v1/commands/sleep" => Some(ManagementRequest::Sleep),
+        "/v1/todos" if method == ManagementMethod::Get => Some(ManagementRequest::TodoGet),
+        "/v1/todos" if method == ManagementMethod::Post => Some(ManagementRequest::TodoPush),
         _ => None,
     };
     let Some(request) = request else {
@@ -431,7 +516,17 @@ pub fn parse_management_request(
             error: Some(ManagementRequestError::InvalidBody),
         });
     }
-    if request != ManagementRequest::GalleryUpload && content_length > MAX_MANAGEMENT_BODY_BYTES {
+    if request == ManagementRequest::TodoPush && content_length > MAX_TODO_BODY_BYTES {
+        return Err(ManagementAudit {
+            request: Some(request),
+            accepted: false,
+            error: Some(ManagementRequestError::BodyTooLarge),
+        });
+    }
+    if request != ManagementRequest::GalleryUpload
+        && request != ManagementRequest::TodoPush
+        && content_length > MAX_MANAGEMENT_BODY_BYTES
+    {
         return Err(ManagementAudit {
             request: Some(request),
             accepted: false,
@@ -483,10 +578,15 @@ pub mod runtime {
     use anyhow::{Context, Result};
     use esp_idf_svc::eventloop::EspSystemEventLoop;
     use esp_idf_svc::http::Method;
+    use esp_idf_svc::http::client::{
+        Configuration as HttpClientConfiguration, EspHttpConnection as EspHttpClientConnection,
+        FollowRedirectsPolicy,
+    };
     use esp_idf_svc::http::server::{
         Configuration as HttpConfiguration, EspHttpConnection, EspHttpServer, Request,
     };
     use esp_idf_svc::io::{Read, Write};
+    use esp_idf_svc::mqtt::client::{EspMqttClient, EventPayload, MqttClientConfiguration, QoS};
     use esp_idf_svc::sntp::{EspSntp, SyncStatus};
     use esp_idf_svc::wifi::{AuthMethod, ClientConfiguration, Configuration, EspWifi, WifiEvent};
 
@@ -495,9 +595,10 @@ pub mod runtime {
         GalleryReorderBody, GallerySlideshowBody, ManagementAudit, ManagementMethod,
         ManagementRequest, ManagementRequestError, NetworkAction, NetworkConfiguration,
         NetworkFailure, NetworkPhase, NetworkPolicy, NetworkSnapshot, decode_gallery_name_header,
-        encode_gallery_status, encode_management_status, management_queue_audit,
-        parse_management_request,
+        encode_gallery_status, encode_management_status, encode_todo_status,
+        management_queue_audit, parse_management_request,
     };
+    use crate::todo_sync::{MAX_SNAPSHOT_BYTES, SnapshotSource, TodoSyncState};
 
     const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -506,6 +607,20 @@ pub mod runtime {
         Snapshot(NetworkSnapshot),
         Management(ManagementRequest),
         Gallery(GalleryMutation),
+        TodoSnapshot {
+            body: Vec<u8>,
+            source: SnapshotSource,
+            etag: Option<String>,
+        },
+        TodoNotModified {
+            source: SnapshotSource,
+            etag: Option<String>,
+        },
+        TodoNotification,
+        TodoError {
+            source: SnapshotSource,
+            message: String,
+        },
         Audit(ManagementAudit),
         Failed(&'static str),
         Stopped,
@@ -516,10 +631,32 @@ pub mod runtime {
         Shutdown,
     }
 
+    #[derive(Clone, Copy)]
+    enum MqttSignal {
+        Connected,
+        Disconnected,
+        Update,
+    }
+
+    struct TodoPullRequest {
+        generation: u64,
+        source: SnapshotSource,
+        settings: crate::todo_sync::TodoSyncConfig,
+        etag: Option<String>,
+        timezone: String,
+    }
+
+    struct TodoPullResponse {
+        generation: u64,
+        source: SnapshotSource,
+        result: std::result::Result<TodoPull, TodoPullError>,
+    }
+
     pub struct NetworkRuntime {
         command_tx: SyncSender<NetworkRuntimeCommand>,
         event_rx: Receiver<NetworkRuntimeEvent>,
         gallery: Arc<RwLock<GalleryManagementSnapshot>>,
+        todos: Arc<RwLock<TodoSyncState>>,
     }
 
     impl NetworkRuntime {
@@ -536,6 +673,8 @@ pub mod runtime {
                 ..GalleryManagementSnapshot::default()
             }));
             let runtime_gallery = Arc::clone(&gallery);
+            let todos = Arc::new(RwLock::new(TodoSyncState::default()));
+            let runtime_todos = Arc::clone(&todos);
             thread::Builder::new()
                 .name("memorilo-network".into())
                 .stack_size(12 * 1024)
@@ -547,6 +686,7 @@ pub mod runtime {
                         command_rx,
                         &event_tx,
                         runtime_gallery,
+                        runtime_todos,
                     ) {
                         log::error!("network service stopped unexpectedly: {error:#}");
                         let _ = event_tx.send(NetworkRuntimeEvent::Failed("network-runtime"));
@@ -558,6 +698,7 @@ pub mod runtime {
                 command_tx,
                 event_rx,
                 gallery,
+                todos,
             })
         }
 
@@ -597,6 +738,14 @@ pub mod runtime {
             snapshot.last_error = last_error;
             Ok(())
         }
+
+        pub fn publish_todos(&self, state: TodoSyncState) -> Result<()> {
+            *self
+                .todos
+                .write()
+                .map_err(|_| anyhow::anyhow!("todo status lock poisoned"))? = state;
+            Ok(())
+        }
     }
 
     fn run_network(
@@ -606,6 +755,7 @@ pub mod runtime {
         command_rx: Receiver<NetworkRuntimeCommand>,
         event_tx: &SyncSender<NetworkRuntimeEvent>,
         shared_gallery: Arc<RwLock<GalleryManagementSnapshot>>,
+        shared_todos: Arc<RwLock<TodoSyncState>>,
     ) -> Result<()> {
         let (disconnect_tx, disconnect_rx) = sync_channel(8);
         let _wifi_subscription = system_loop
@@ -619,6 +769,38 @@ pub mod runtime {
         let mut connect_deadline = None;
         let mut sntp: Option<EspSntp<'static>> = None;
         let mut management_server: Option<EspHttpServer<'static>> = None;
+        let (mqtt_tx, mqtt_rx) = sync_channel(8);
+        let mut mqtt_client: Option<EspMqttClient<'static>> = None;
+        let mut next_todo_pull: Option<Duration> = None;
+        let mut todo_etag: Option<String> = None;
+        let mut todo_pull_generation = 0_u64;
+        let mut todo_pull_in_flight = false;
+        let mut todo_retry_attempt = 0_u8;
+        let (todo_pull_tx, todo_pull_rx) = sync_channel::<TodoPullRequest>(1);
+        let (todo_result_tx, todo_result_rx) = sync_channel::<TodoPullResponse>(2);
+        thread::Builder::new()
+            .name("memorilo-todo-fetch".into())
+            .stack_size(12 * 1024)
+            .spawn(move || {
+                while let Ok(request) = todo_pull_rx.recv() {
+                    let result = pull_todo_snapshot(
+                        &request.settings,
+                        request.etag.as_deref(),
+                        &request.timezone,
+                    );
+                    if todo_result_tx
+                        .send(TodoPullResponse {
+                            generation: request.generation,
+                            source: request.source,
+                            result,
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            })
+            .context("TODO fetch worker creation failed")?;
         let shared_snapshot = Arc::new(RwLock::new(policy.snapshot().clone()));
 
         publish_snapshot(&policy, &shared_snapshot, event_tx)?;
@@ -631,6 +813,7 @@ pub mod runtime {
             &mut management_server,
             &shared_snapshot,
             &shared_gallery,
+            &shared_todos,
             event_tx,
         )?;
         publish_snapshot(&policy, &shared_snapshot, event_tx)?;
@@ -638,6 +821,10 @@ pub mod runtime {
         loop {
             match command_rx.recv_timeout(POLL_INTERVAL) {
                 Ok(NetworkRuntimeCommand::Reconfigure(next)) => {
+                    todo_pull_generation = todo_pull_generation.saturating_add(1);
+                    next_todo_pull = Some(crate::diagnostics::uptime());
+                    todo_etag = None;
+                    todo_retry_attempt = 0;
                     config = next;
                     let actions =
                         policy.reconfigure(config.is_some(), crate::diagnostics::uptime());
@@ -650,6 +837,7 @@ pub mod runtime {
                         &mut management_server,
                         &shared_snapshot,
                         &shared_gallery,
+                        &shared_todos,
                         event_tx,
                     )?;
                     publish_snapshot(&policy, &shared_snapshot, event_tx)?;
@@ -666,6 +854,50 @@ pub mod runtime {
             }
 
             let now = crate::diagnostics::uptime();
+            while let Ok(response) = todo_result_rx.try_recv() {
+                todo_pull_in_flight = false;
+                if response.generation != todo_pull_generation {
+                    continue;
+                }
+                match response.result {
+                    Ok(TodoPull::Snapshot { body, etag }) => {
+                        todo_retry_attempt = 0;
+                        todo_etag = etag.clone();
+                        let _ = event_tx.try_send(NetworkRuntimeEvent::TodoSnapshot {
+                            body,
+                            source: response.source,
+                            etag,
+                        });
+                    }
+                    Ok(TodoPull::NotModified { etag }) => {
+                        todo_retry_attempt = 0;
+                        todo_etag = etag.clone().or(todo_etag);
+                        let _ = event_tx.try_send(NetworkRuntimeEvent::TodoNotModified {
+                            source: response.source,
+                            etag,
+                        });
+                    }
+                    Err(error) => {
+                        let message = error.to_string();
+                        if matches!(error, TodoPullError::Authentication(_)) {
+                            // Credentials need BLE replacement; avoid hammering the server.
+                            next_todo_pull = Some(now + crate::todo_sync::MAX_POLL_INTERVAL);
+                        } else {
+                            let exponent = u32::from(todo_retry_attempt.min(6));
+                            let base =
+                                Duration::from_secs(5_u64 << exponent).min(super::MAX_RETRY_DELAY);
+                            let jitter = Duration::from_millis((now.as_millis() % 1_000) as u64);
+                            let delay = (base + jitter).min(super::MAX_RETRY_DELAY);
+                            todo_retry_attempt = todo_retry_attempt.saturating_add(1);
+                            next_todo_pull = Some(now + delay);
+                        }
+                        let _ = event_tx.try_send(NetworkRuntimeEvent::TodoError {
+                            source: response.source,
+                            message,
+                        });
+                    }
+                }
+            }
             let mut failure = None;
             while let Ok(reason) = disconnect_rx.try_recv() {
                 if matches!(
@@ -698,6 +930,7 @@ pub mod runtime {
                     &mut management_server,
                     &shared_snapshot,
                     &shared_gallery,
+                    &shared_todos,
                     event_tx,
                 )?;
                 publish_snapshot(&policy, &shared_snapshot, event_tx)?;
@@ -706,6 +939,9 @@ pub mod runtime {
                 failure = Some(NetworkFailure::Transport);
             }
             if let Some(failure) = failure {
+                mqtt_client = None;
+                next_todo_pull = None;
+                todo_pull_generation = todo_pull_generation.saturating_add(1);
                 let actions = policy.failed(failure, now);
                 execute_actions(
                     &mut wifi,
@@ -716,9 +952,111 @@ pub mod runtime {
                     &mut management_server,
                     &shared_snapshot,
                     &shared_gallery,
+                    &shared_todos,
                     event_tx,
                 )?;
                 publish_snapshot(&policy, &shared_snapshot, event_tx)?;
+            }
+
+            if policy.snapshot().phase == NetworkPhase::Online {
+                if mqtt_client.is_none() {
+                    if let Some(settings) = config.as_ref().map(|value| &value.todo_sync)
+                        && settings.enabled
+                        && let (Some(broker), Some(_)) =
+                            (&settings.mqtt_broker_url, &settings.mqtt_topic)
+                    {
+                        let signals = mqtt_tx.clone();
+                        let mqtt_config = MqttClientConfiguration {
+                            crt_bundle_attach: Some(esp_idf_sys::esp_crt_bundle_attach),
+                            network_timeout: Duration::from_secs(10),
+                            reconnect_timeout: Some(Duration::from_secs(5)),
+                            username: settings.mqtt_username.as_deref(),
+                            password: settings.mqtt_password(),
+                            ..MqttClientConfiguration::default()
+                        };
+                        match EspMqttClient::new_cb(broker, &mqtt_config, move |event| match event
+                            .payload()
+                        {
+                            EventPayload::Connected(_) => {
+                                let _ = signals.try_send(MqttSignal::Connected);
+                            }
+                            EventPayload::Disconnected => {
+                                let _ = signals.try_send(MqttSignal::Disconnected);
+                            }
+                            EventPayload::Received { .. } => {
+                                let _ = signals.try_send(MqttSignal::Update);
+                            }
+                            _ => {}
+                        }) {
+                            Ok(client) => mqtt_client = Some(client),
+                            Err(error) => log::warn!("MQTT setup failed: {error}"),
+                        }
+                    }
+                }
+                while let Ok(signal) = mqtt_rx.try_recv() {
+                    match signal {
+                        MqttSignal::Disconnected => {
+                            policy.mqtt_connected(false);
+                            publish_snapshot(&policy, &shared_snapshot, event_tx)?;
+                        }
+                        MqttSignal::Connected => {
+                            policy.mqtt_connected(true);
+                            publish_snapshot(&policy, &shared_snapshot, event_tx)?;
+                            if let (Some(client), Some(topic)) = (
+                                mqtt_client.as_mut(),
+                                config
+                                    .as_ref()
+                                    .and_then(|value| value.todo_sync.mqtt_topic.as_deref()),
+                            ) {
+                                if let Err(error) = client.subscribe(topic, QoS::AtLeastOnce) {
+                                    log::warn!("MQTT subscribe failed: {error}");
+                                }
+                            }
+                        }
+                        MqttSignal::Update => {
+                            next_todo_pull = Some(now);
+                            let _ = event_tx.try_send(NetworkRuntimeEvent::TodoNotification);
+                        }
+                    }
+                }
+                if let Some(settings) = config.as_ref().map(|value| &value.todo_sync)
+                    && settings.enabled
+                    && !todo_pull_in_flight
+                    && next_todo_pull.is_none_or(|deadline| now >= deadline)
+                {
+                    let source = if next_todo_pull == Some(now) {
+                        SnapshotSource::MqttTriggeredHttps
+                    } else {
+                        SnapshotSource::PeriodicHttps
+                    };
+                    let request = TodoPullRequest {
+                        generation: todo_pull_generation,
+                        source,
+                        settings: settings.clone(),
+                        etag: todo_etag.clone(),
+                        timezone: config
+                            .as_ref()
+                            .map(|value| value.timezone.clone())
+                            .unwrap_or_else(|| "UTC".into()),
+                    };
+                    match todo_pull_tx.try_send(request) {
+                        Ok(()) => {
+                            todo_pull_in_flight = true;
+                            next_todo_pull = Some(
+                                now + Duration::from_secs(u64::from(
+                                    settings.poll_interval_seconds,
+                                )),
+                            );
+                        }
+                        Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                            log::debug!("TODO fetch worker is busy; keeping the next pull due");
+                            next_todo_pull = Some(now);
+                        }
+                        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                            anyhow::bail!("TODO fetch worker channel closed");
+                        }
+                    }
+                }
             }
 
             if policy.snapshot().phase == NetworkPhase::Online
@@ -742,6 +1080,7 @@ pub mod runtime {
                     &mut management_server,
                     &shared_snapshot,
                     &shared_gallery,
+                    &shared_todos,
                     event_tx,
                 )?;
                 publish_snapshot(&policy, &shared_snapshot, event_tx)?;
@@ -762,6 +1101,158 @@ pub mod runtime {
         Ok(())
     }
 
+    enum TodoPull {
+        Snapshot { body: Vec<u8>, etag: Option<String> },
+        NotModified { etag: Option<String> },
+    }
+
+    #[derive(Debug)]
+    enum TodoPullError {
+        Authentication(u16),
+        RateLimited,
+        Client(String),
+        Server(u16),
+        Transport(String),
+    }
+
+    impl std::fmt::Display for TodoPullError {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Self::Authentication(status) => {
+                    write!(formatter, "TODO endpoint returned HTTP {status}")
+                }
+                Self::RateLimited => formatter.write_str("TODO endpoint returned HTTP 429"),
+                Self::Client(message) => formatter.write_str(message),
+                Self::Server(status) => write!(formatter, "TODO endpoint returned HTTP {status}"),
+                Self::Transport(message) => formatter.write_str(message),
+            }
+        }
+    }
+
+    impl std::error::Error for TodoPullError {}
+
+    impl From<anyhow::Error> for TodoPullError {
+        fn from(error: anyhow::Error) -> Self {
+            Self::Transport(error.to_string())
+        }
+    }
+
+    fn pull_todo_snapshot(
+        settings: &crate::todo_sync::TodoSyncConfig,
+        etag: Option<&str>,
+        timezone: &str,
+    ) -> std::result::Result<TodoPull, TodoPullError> {
+        let token = settings
+            .device_token()
+            .ok_or(TodoPullError::Authentication(401))?;
+        let view = match settings.view {
+            crate::todo_sync::TodoView::Today => "today",
+            crate::todo_sync::TodoView::All => "all",
+        };
+        let date = local_sync_date(timezone);
+        let url = format!(
+            "{}/api/device/v1/todos?view={view}&date={date}&limit=64",
+            settings.https_base_url.trim_end_matches('/')
+        );
+        let authorization = format!("Bearer {token}");
+        let mut headers = vec![
+            ("Authorization", authorization.as_str()),
+            ("Accept", "application/json"),
+        ];
+        if let Some(etag) = etag {
+            headers.push(("If-None-Match", etag));
+        }
+        let config = HttpClientConfiguration {
+            timeout: Some(Duration::from_secs(15)),
+            follow_redirects_policy: FollowRedirectsPolicy::FollowNone,
+            crt_bundle_attach: Some(esp_idf_sys::esp_crt_bundle_attach),
+            ..HttpClientConfiguration::default()
+        };
+        let mut connection = EspHttpClientConnection::new(&config)?;
+        connection.initiate_request(Method::Get, &url, &headers)?;
+        connection.initiate_response()?;
+        let status = connection.status();
+        let response_etag = connection.header("etag").map(str::to_owned);
+        match super::classify_todo_http_status(status as u16) {
+            super::TodoHttpStatusClass::NotModified => {
+                return Ok(TodoPull::NotModified {
+                    etag: response_etag,
+                });
+            }
+            super::TodoHttpStatusClass::Success => {}
+            super::TodoHttpStatusClass::Authentication(status) => {
+                return Err(TodoPullError::Authentication(status));
+            }
+            super::TodoHttpStatusClass::RateLimited => {
+                return Err(TodoPullError::RateLimited);
+            }
+            super::TodoHttpStatusClass::Client(status)
+            | super::TodoHttpStatusClass::Unexpected(status) => {
+                return Err(TodoPullError::Client(format!(
+                    "TODO endpoint returned HTTP {status}"
+                )));
+            }
+            super::TodoHttpStatusClass::Server(status) => {
+                return Err(TodoPullError::Server(status));
+            }
+        }
+        let mut body = Vec::new();
+        let mut chunk = [0_u8; 1024];
+        loop {
+            let read = connection.read(&mut chunk)?;
+            if read == 0 {
+                break;
+            }
+            if body.len() + read > MAX_SNAPSHOT_BYTES {
+                return Err(TodoPullError::Client(
+                    "TODO snapshot exceeds size limit".into(),
+                ));
+            }
+            body.extend_from_slice(&chunk[..read]);
+        }
+        Ok(TodoPull::Snapshot {
+            body,
+            etag: response_etag,
+        })
+    }
+
+    fn local_sync_date(timezone: &str) -> String {
+        let seconds = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_secs() as i64)
+            .unwrap_or(0);
+        // The server accepts an explicit date. UTC is also the device's
+        // fallback before a user-configured timezone has been applied.
+        let offset_minutes = match timezone {
+            "UTC" | "Etc/UTC" | "Europe/London" => 0,
+            "Asia/Shanghai" | "Asia/Singapore" | "Asia/Taipei" => 480,
+            "Asia/Tokyo" | "Asia/Seoul" => 540,
+            "America/Los_Angeles" => -480,
+            "America/New_York" => -300,
+            _ => 0,
+        };
+        let days = seconds
+            .saturating_add(i64::from(offset_minutes) * 60)
+            .div_euclid(86_400);
+        let (year, month, day) = civil_date_from_days(days);
+        format!("{year:04}-{month:02}-{day:02}")
+    }
+
+    fn civil_date_from_days(days: i64) -> (i32, u8, u8) {
+        let days = days + 719_468;
+        let era = days.div_euclid(146_097);
+        let day_of_era = days - era * 146_097;
+        let year_of_era =
+            (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+        let mut year = year_of_era + era * 400;
+        let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+        let month_prime = (5 * day_of_year + 2) / 153;
+        let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+        let month = month_prime + if month_prime < 10 { 3 } else { -9 };
+        year += i64::from(month <= 2);
+        (year as i32, month as u8, day as u8)
+    }
+
     fn execute_actions(
         wifi: &mut EspWifi<'static>,
         config: Option<&NetworkConfiguration>,
@@ -771,6 +1262,7 @@ pub mod runtime {
         management_server: &mut Option<EspHttpServer<'static>>,
         shared_snapshot: &Arc<RwLock<NetworkSnapshot>>,
         shared_gallery: &Arc<RwLock<GalleryManagementSnapshot>>,
+        shared_todos: &Arc<RwLock<TodoSyncState>>,
         event_tx: &SyncSender<NetworkRuntimeEvent>,
     ) -> Result<()> {
         for action in actions {
@@ -825,6 +1317,7 @@ pub mod runtime {
                             token,
                             Arc::clone(shared_snapshot),
                             Arc::clone(shared_gallery),
+                            Arc::clone(shared_todos),
                             event_tx.clone(),
                         )?);
                         log::info!("authenticated local management started");
@@ -859,6 +1352,7 @@ pub mod runtime {
         token: String,
         shared_snapshot: Arc<RwLock<NetworkSnapshot>>,
         shared_gallery: Arc<RwLock<GalleryManagementSnapshot>>,
+        shared_todos: Arc<RwLock<TodoSyncState>>,
         event_tx: SyncSender<NetworkRuntimeEvent>,
     ) -> Result<EspHttpServer<'static>> {
         let mut server = EspHttpServer::new(&HttpConfiguration {
@@ -874,6 +1368,7 @@ pub mod runtime {
             &token,
             Some(&shared_snapshot),
             None,
+            None,
             &event_tx,
         )?;
         register_endpoint(
@@ -885,6 +1380,31 @@ pub mod runtime {
             &token,
             None,
             Some(&shared_gallery),
+            None,
+            &event_tx,
+        )?;
+        register_endpoint(
+            &mut server,
+            "/v1/todos",
+            Method::Get,
+            ManagementMethod::Get,
+            ManagementRequest::TodoGet,
+            &token,
+            None,
+            None,
+            Some(&shared_todos),
+            &event_tx,
+        )?;
+        register_endpoint(
+            &mut server,
+            "/v1/todos",
+            Method::Post,
+            ManagementMethod::Post,
+            ManagementRequest::TodoPush,
+            &token,
+            None,
+            None,
+            None,
             &event_tx,
         )?;
         register_endpoint(
@@ -894,6 +1414,7 @@ pub mod runtime {
             ManagementMethod::Post,
             ManagementRequest::GalleryUpload,
             &token,
+            None,
             None,
             None,
             &event_tx,
@@ -910,6 +1431,7 @@ pub mod runtime {
                 ManagementMethod::Post,
                 request,
                 &token,
+                None,
                 None,
                 None,
                 &event_tx,
@@ -929,6 +1451,7 @@ pub mod runtime {
                 &token,
                 None,
                 None,
+                None,
                 &event_tx,
             )?;
         }
@@ -945,11 +1468,13 @@ pub mod runtime {
         token: &str,
         shared_snapshot: Option<&Arc<RwLock<NetworkSnapshot>>>,
         shared_gallery: Option<&Arc<RwLock<GalleryManagementSnapshot>>>,
+        shared_todos: Option<&Arc<RwLock<TodoSyncState>>>,
         event_tx: &SyncSender<NetworkRuntimeEvent>,
     ) -> Result<()> {
         let token = token.to_owned();
         let shared_snapshot = shared_snapshot.cloned();
         let shared_gallery = shared_gallery.cloned();
+        let shared_todos = shared_todos.cloned();
         let event_tx = event_tx.clone();
         server.fn_handler::<anyhow::Error, _>(
             http_method_path(path),
@@ -963,6 +1488,7 @@ pub mod runtime {
                     &token,
                     shared_snapshot.as_ref(),
                     shared_gallery.as_ref(),
+                    shared_todos.as_ref(),
                     &event_tx,
                 )
             },
@@ -982,6 +1508,7 @@ pub mod runtime {
         token: &str,
         shared_snapshot: Option<&Arc<RwLock<NetworkSnapshot>>>,
         shared_gallery: Option<&Arc<RwLock<GalleryManagementSnapshot>>>,
+        shared_todos: Option<&Arc<RwLock<TodoSyncState>>>,
         event_tx: &SyncSender<NetworkRuntimeEvent>,
     ) -> Result<()> {
         let content_length = request
@@ -1011,6 +1538,18 @@ pub mod runtime {
                         .read()
                         .map_err(|_| anyhow::anyhow!("gallery status lock poisoned"))?;
                     let body = encode_gallery_status(&snapshot)?;
+                    let _ = event_tx.try_send(NetworkRuntimeEvent::Audit(audit));
+                    request.into_status_response(200)?.write_all(&body)?;
+                    return Ok(());
+                }
+                if parsed == ManagementRequest::TodoGet {
+                    let Some(shared_todos) = shared_todos else {
+                        anyhow::bail!("todo endpoint registered without todo state");
+                    };
+                    let state = shared_todos
+                        .read()
+                        .map_err(|_| anyhow::anyhow!("todo status lock poisoned"))?;
+                    let body = encode_todo_status(&state)?;
                     let _ = event_tx.try_send(NetworkRuntimeEvent::Audit(audit));
                     request.into_status_response(200)?.write_all(&body)?;
                     return Ok(());
@@ -1070,6 +1609,28 @@ pub mod runtime {
                             return Ok(());
                         };
                         NetworkRuntimeEvent::Gallery(mutation)
+                    }
+                    ManagementRequest::TodoPush => {
+                        let mut body = vec![0_u8; content_length];
+                        if request.read_exact(&mut body).is_err() {
+                            respond_invalid_body(request, event_tx, audit)?;
+                            return Ok(());
+                        }
+                        let snapshot =
+                            serde_json::from_slice::<crate::todo_sync::TodoSnapshot>(&body);
+                        if snapshot.as_ref().is_err()
+                            || snapshot.as_ref().is_ok_and(|value| {
+                                crate::todo_sync::validate_snapshot(value).is_err()
+                            })
+                        {
+                            respond_invalid_body(request, event_tx, audit)?;
+                            return Ok(());
+                        }
+                        NetworkRuntimeEvent::TodoSnapshot {
+                            body,
+                            source: SnapshotSource::ClientLanPush,
+                            etag: None,
+                        }
                     }
                     _ => NetworkRuntimeEvent::Management(parsed),
                 };
@@ -1179,6 +1740,39 @@ mod tests {
     }
 
     #[test]
+    fn classifies_todo_http_outcomes_for_retry_policy() {
+        assert_eq!(classify_todo_http_status(200), TodoHttpStatusClass::Success);
+        assert_eq!(
+            classify_todo_http_status(304),
+            TodoHttpStatusClass::NotModified
+        );
+        assert_eq!(
+            classify_todo_http_status(401),
+            TodoHttpStatusClass::Authentication(401)
+        );
+        assert_eq!(
+            classify_todo_http_status(403),
+            TodoHttpStatusClass::Authentication(403)
+        );
+        assert_eq!(
+            classify_todo_http_status(429),
+            TodoHttpStatusClass::RateLimited
+        );
+        assert_eq!(
+            classify_todo_http_status(422),
+            TodoHttpStatusClass::Client(422)
+        );
+        assert_eq!(
+            classify_todo_http_status(503),
+            TodoHttpStatusClass::Server(503)
+        );
+        assert_eq!(
+            classify_todo_http_status(301),
+            TodoHttpStatusClass::Unexpected(301)
+        );
+    }
+
+    #[test]
     fn local_management_requires_a_long_bearer_and_bounds_requests() {
         assert_eq!(
             parse_management_request(
@@ -1236,6 +1830,7 @@ mod tests {
             phase: NetworkPhase::Online,
             ipv4: Some("192.0.2.42".into()),
             time_synchronized: true,
+            mqtt_connected: true,
             consecutive_failures: 0,
             retry_at_ms: None,
         };
@@ -1256,6 +1851,61 @@ mod tests {
         );
         assert!(!audit.accepted);
         assert_eq!(audit.error, Some(ManagementRequestError::Unavailable));
+    }
+
+    #[test]
+    fn todo_management_supports_bounded_push_and_readback_only() {
+        let authorization = format!("Bearer {TOKEN}");
+        assert_eq!(
+            parse_management_request(
+                ManagementMethod::Post,
+                "/v1/todos",
+                MAX_MANAGEMENT_BODY_BYTES + 1,
+                Some(&authorization),
+                TOKEN,
+            )
+            .unwrap()
+            .0,
+            ManagementRequest::TodoPush
+        );
+        assert_eq!(
+            parse_management_request(
+                ManagementMethod::Post,
+                "/v1/todos",
+                MAX_TODO_BODY_BYTES + 1,
+                Some(&authorization),
+                TOKEN,
+            )
+            .unwrap_err()
+            .error,
+            Some(ManagementRequestError::BodyTooLarge)
+        );
+        assert_eq!(
+            parse_management_request(
+                ManagementMethod::Get,
+                "/v1/todos",
+                0,
+                Some(&authorization),
+                TOKEN,
+            )
+            .unwrap()
+            .0,
+            ManagementRequest::TodoGet
+        );
+    }
+
+    #[test]
+    fn todo_status_exposes_snapshot_metadata_without_credentials() {
+        let mut state = TodoSyncState::default();
+        state.revision = Some("revision-1".into());
+        state.source = Some(SnapshotSource::ClientLanPush);
+        state.last_success_unix_seconds = Some(123);
+        let json = encode_todo_status(&state).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&json).unwrap();
+        assert_eq!(value["revision"], "revision-1");
+        assert_eq!(value["source"], "client-lan-push");
+        assert_eq!(value["lastSuccessUnixSeconds"], 123);
+        assert!(!String::from_utf8(json).unwrap().contains(TOKEN));
     }
 
     #[test]

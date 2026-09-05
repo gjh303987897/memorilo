@@ -491,7 +491,7 @@ impl RawDrawUiManager {
             );
             return UiRenderMetadata {
                 visible_items: 0..0,
-            page_count: 4,
+                page_count: 4,
             };
         };
         let shown = today.shifted_month(snapshot.glance.calendar_month_offset);
@@ -547,7 +547,7 @@ impl RawDrawUiManager {
             );
             return UiRenderMetadata {
                 visible_items: 0..0,
-            page_count: 4,
+                page_count: 4,
             };
         };
         let elapsed = today.day_of_year();
@@ -942,13 +942,6 @@ impl RawDrawUiManager {
             snapshot.display.requested_revision,
             snapshot.display.displayed_revision
         );
-        let ble = format!(
-            "{:?} / {:?}",
-            snapshot
-                .services
-                .phase(crate::application::ServiceId::Provisioning),
-            snapshot.settings.provisioning.phase
-        );
         let wifi = format!(
             "{:?} / {:?}",
             snapshot
@@ -956,6 +949,12 @@ impl RawDrawUiManager {
                 .phase(crate::application::ServiceId::Network),
             snapshot.status.connection
         );
+        let mqtt = if snapshot.network.mqtt_connected {
+            "connected"
+        } else {
+            "offline"
+        };
+        let sync = format_todo_sync_status(&snapshot.todo_sync);
         let left = [
             ("BUILD", env!("CARGO_PKG_VERSION").to_owned()),
             ("UPTIME", format!("{} ms", diagnostics.uptime_ms)),
@@ -968,8 +967,9 @@ impl RawDrawUiManager {
             ("BATTERY", battery),
             ("RTC", rtc),
             ("DISPLAY", display),
-            ("BLE", ble),
             ("WIFI", wifi),
+            ("MQTT", mqtt.to_owned()),
+            ("TODO SYNC", sync),
             (
                 "LAST ERROR",
                 diagnostics.last_error.unwrap_or("none").to_owned(),
@@ -1010,6 +1010,28 @@ impl RawDrawUiManager {
         };
         draw.text(Point::new(360, 8), &battery, self.theme.text);
     }
+}
+
+fn format_todo_sync_status(state: &crate::todo_sync::TodoSyncState) -> String {
+    let revision = state.revision.as_deref().unwrap_or("none");
+    let source = state
+        .source
+        .map(|value| format!("{value:?}"))
+        .unwrap_or_else(|| "none".into());
+    let outcome = state.last_error.as_deref().unwrap_or("ok");
+    let cache = if state.snapshot.is_none() {
+        "no-cache"
+    } else if state.model.items.is_empty() {
+        "empty"
+    } else {
+        "cached"
+    };
+    let event = state
+        .last_event
+        .map(|value| format!(" {value:?}"))
+        .unwrap_or_default();
+    let text = format!("{source} {cache} {revision} {outcome}{event}");
+    text.chars().take(30).collect()
 }
 
 fn format_memory(bytes: Option<u32>) -> String {
@@ -1154,7 +1176,7 @@ mod tests {
 
         let metadata = RawDrawUiManager::default().render(application.snapshot(), &mut framebuffer);
 
-        assert_eq!(metadata.visible_items, 0..12);
+        assert_eq!(metadata.visible_items, 0..13);
         assert!(framebuffer.iter().any(|byte| *byte != 0x55));
     }
 }

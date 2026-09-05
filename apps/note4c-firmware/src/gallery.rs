@@ -12,6 +12,7 @@ const INDEX_HEADER_BYTES: usize = 14;
 pub const GALLERY_CAPACITY_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_GALLERY_ASSETS: usize = 100;
 pub const MIN_SLIDESHOW_INTERVAL: Duration = Duration::from_secs(5 * 60);
+pub const OFFICIAL_ASSETS_PARTITION_LABEL: &str = "assets";
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct GalleryAssetId(pub u64);
@@ -318,10 +319,13 @@ pub struct EspPartitionGalleryStorage {
 impl EspPartitionGalleryStorage {
     pub fn new() -> Result<Self, GalleryError> {
         // The upstream firmware names this 8 MiB SPIFFS partition `assets`.
-        // We intentionally do not migrate the old custom `gallery` region.
+        // Older releases stored raw gallery records at the same offset under
+        // the custom `gallery` layout. Formatting only this partition when
+        // SPIFFS cannot mount clears that legacy region while preserving NVS,
+        // which contains TODO, Wi-Fi, BLE, and device configuration.
         let base_path = std::ffi::CString::new("/assets")
             .map_err(|error| GalleryError::Storage(error.to_string()))?;
-        let partition_label = std::ffi::CString::new("assets")
+        let partition_label = std::ffi::CString::new(OFFICIAL_ASSETS_PARTITION_LABEL)
             .map_err(|error| GalleryError::Storage(error.to_string()))?;
         let config = esp_idf_sys::esp_vfs_spiffs_conf_t {
             base_path: base_path.as_ptr(),

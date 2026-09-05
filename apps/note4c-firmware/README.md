@@ -22,12 +22,16 @@ contextual: Todo uses short Up/Down presses to paginate its read-only list,
 Gallery and Calendar use them for their local view, and Weather ignores them.
 GPIO0/Confirm opens or closes a gallery image or returns Calendar to the current
 month. Holding Up+Down opens the dedicated BLE pairing status page; all device
-configuration is edited in Memorilo. Gallery metadata and
-exact 30,000-byte frames live in the upstream-compatible 8 MiB `assets`
-SPIFFS partition with dual generation index slots. Confirm opens or closes the
-selected full-screen image; Up and Down continue to work while a physical
-refresh is running. Existing data in the former custom `gallery` region is not
-migrated.
+configuration is edited in Memorilo. Gallery metadata and exact 30,000-byte
+frames live in the upstream-compatible 8 MiB `assets` SPIFFS partition with
+dual generation index slots. Confirm opens or closes the selected full-screen
+image; Up and Down continue to work while a physical refresh is running. On an
+upgrade, the first mount uses `format_if_mount_failed` for this partition:
+incompatible data from the former custom `gallery` region is cleared in place,
+while NVS, Wi-Fi, BLE, TODO, and device configuration remain untouched.
+Existing gallery data is not migrated. Gallery mutations release their storage
+lease before returning, so they cannot permanently prevent sleep or TODO
+synchronization.
 Optional slideshow intervals start at five minutes and never acquire a
 permanent sleep lease. Memorilo performs contain/cover resize, four-color
 dithering, authenticated upload, delete, and reorder operations from its Device
@@ -110,8 +114,7 @@ The preparation path runs ESP-IDF's official partition generator over the
 checked-in CSV. It keeps NVS and the factory application at their existing
 offsets, reserves a 3 MiB factory slot, and places the upstream-compatible
 8 MiB `assets` SPIFFS partition at `0x800000`. Measurement and budget checks reject
-stale images and images that exceed the actual app partition. This factory-only
-layout is intentionally not treated as the secure OTA design.
+stale images and images that exceed the actual app partition.
 
 The serial monitor emits machine-searchable `DIAG` records at boot and around
 every physical refresh. Snapshot records include free and minimum heap,

@@ -3,9 +3,10 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::persistence::{AlmanacConfig, SelectionPolicy, WeatherConfig};
+use crate::todo_sync::TodoView;
 
 pub const PROTOCOL_VERSION: u16 = 1;
-pub const CONFIG_SCHEMA_VERSION: u16 = 1;
+pub const CONFIG_SCHEMA_VERSION: u16 = 2;
 pub const MAX_JSON_BYTES: usize = 4_096;
 pub const MAX_CHUNKS: usize = 32;
 pub const MAX_CHUNK_PAYLOAD_BYTES: usize = 384;
@@ -48,6 +49,15 @@ pub struct PublicConfigEnvelope {
     pub selection_policy: SelectionPolicy,
     pub weather: WeatherConfig,
     pub almanac: AlmanacConfig,
+    pub todo_sync_enabled: bool,
+    pub todo_sync_url: String,
+    pub todo_sync_token_is_set: bool,
+    pub todo_sync_poll_interval_seconds: u32,
+    pub todo_sync_view: TodoView,
+    pub todo_sync_mqtt_broker_url: Option<String>,
+    pub todo_sync_mqtt_topic: Option<String>,
+    pub todo_sync_mqtt_username: Option<String>,
+    pub todo_sync_mqtt_password_is_set: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -69,6 +79,24 @@ pub struct LocalManagementPatch {
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TodoSyncPatch {
+    pub enabled: Option<bool>,
+    pub https_base_url: Option<String>,
+    pub device_token: Option<String>,
+    #[serde(default)]
+    pub clear_device_token: bool,
+    pub poll_interval_seconds: Option<u32>,
+    pub view: Option<TodoView>,
+    pub mqtt_broker_url: Option<String>,
+    pub mqtt_topic: Option<String>,
+    pub mqtt_username: Option<String>,
+    pub mqtt_password: Option<String>,
+    #[serde(default)]
+    pub clear_mqtt_password: bool,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DeviceConfigPatch {
     pub device_name: Option<String>,
     pub wifi: Option<WifiPatch>,
@@ -78,6 +106,7 @@ pub struct DeviceConfigPatch {
     pub selection_policy: Option<SelectionPolicy>,
     pub weather: Option<WeatherConfig>,
     pub almanac: Option<AlmanacConfig>,
+    pub todo_sync: Option<TodoSyncPatch>,
     #[serde(flatten)]
     pub optional_extensions: BTreeMap<String, serde_json::Value>,
 }
@@ -415,6 +444,15 @@ mod tests {
             selection_policy: SelectionPolicy::Remember,
             weather: WeatherConfig::default(),
             almanac: AlmanacConfig::default(),
+            todo_sync_enabled: false,
+            todo_sync_url: String::new(),
+            todo_sync_token_is_set: false,
+            todo_sync_poll_interval_seconds: 900,
+            todo_sync_view: TodoView::Today,
+            todo_sync_mqtt_broker_url: None,
+            todo_sync_mqtt_topic: None,
+            todo_sync_mqtt_username: None,
+            todo_sync_mqtt_password_is_set: false,
         };
         let json = serde_json::to_string(&public).unwrap();
         assert!(!json.contains("password"));

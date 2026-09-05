@@ -3,6 +3,9 @@ import type {
   DesktopDeviceGalleryStatus,
   DesktopDeviceGalleryTarget,
   DesktopDeviceGalleryUpload,
+  DesktopDeviceTodoPush,
+  DesktopDeviceTodoTargetState,
+  DesktopDeviceTodoState,
   DesktopNoteExternalUpdate,
   DesktopP2pDiscoveredPeer,
   DesktopP2pLocalDevice,
@@ -34,9 +37,13 @@ export interface DesktopApi {
     generateLocalManagementToken: () => Promise<string>
     hasLocalManagementToken: (deviceId: string) => Promise<boolean>
     loadGallery: (target: DesktopDeviceGalleryTarget) => Promise<DesktopDeviceGalleryStatus>
+    loadTodos: (target: DesktopDeviceGalleryTarget) => Promise<DesktopDeviceTodoState>
+    loadTodoTarget: (deviceId: string) => Promise<DesktopDeviceTodoTargetState>
+    pushTodos: (input: DesktopDeviceTodoPush) => Promise<void>
     reorderGallery: (target: DesktopDeviceGalleryTarget, order: readonly number[]) => Promise<void>
     respondToPairing: (response: DesktopProvisioningPairingResponse) => Promise<void>
     saveLocalManagementToken: (deviceId: string, token: string) => Promise<void>
+    saveTodoTarget: (deviceId: string, address: string | null) => Promise<void>
     setGallerySlideshow: (target: DesktopDeviceGalleryTarget, intervalSeconds: number | null) => Promise<void>
     selectDevice: (deviceId: string) => Promise<void>
     subscribeDevices: (listener: (devices: readonly DesktopProvisioningDevice[]) => void) => () => void

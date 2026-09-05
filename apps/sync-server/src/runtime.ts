@@ -2,8 +2,10 @@ import type { SyncObjectStore, SyncRepository } from '@memorilo/sync'
 import type { Server } from 'node:http'
 import type { SyncServerPeer } from '../infrastructure/p2p/server-peer'
 import type { SyncServerConfig } from './config'
+import type { TodoNotificationPublisher } from './todo-notification-publisher'
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
+import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 import { createResourceScope } from '@memorilo/effect-lifecycle'
 import { createPostgresSyncDatabase } from '../infrastructure/database/postgres'
@@ -12,10 +14,11 @@ import { createFilesystemObjectStore } from '../infrastructure/object-store/file
 import { createS3ObjectStore } from '../infrastructure/object-store/s3'
 import { createSyncServerPeer, rebuildAuthoritativeState } from '../infrastructure/p2p/server-peer'
 import { createSyncServerApp } from './app'
-import { createDeviceTodoModule } from './device-todo'
+import { createDeviceTodoModule, deviceTodoRevision } from './device-todo'
 import { createSyncServerMetrics } from './metrics'
 import { createOrphanWorker } from './orphan-worker'
 import { createResetWorker } from './reset-worker'
+import { createTodoNotificationPublisher } from './todo-notification-publisher'
 import { loadSyncServerWebRenderer } from './web-renderer'
 
 export interface SyncServerRuntime {
@@ -50,6 +53,23 @@ export async function createSyncServerRuntime(config: SyncServerConfig, options:
     for (const account of await database.repository.listAccountStates())
       await rebuildAuthoritativeState(database.repository, account)
     const metrics = createSyncServerMetrics()
+    let todoNotificationPublisher: TodoNotificationPublisher | null = null
+    if (config.mqttTodoBrokerUrl !== undefined) {
+      todoNotificationPublisher = (await scope.acquire({
+        acquire: () => createTodoNotificationPublisher({
+          brokerUrl: config.mqttTodoBrokerUrl!,
+          clientId: `memorilo-sync-server-${process.pid}`,
+          listRecipients: async accountId => (await database.deviceTodo.listTokens(accountId))
+            .filter(token => token.revokedAt === null && token.expiresAt > Date.now())
+            .map(token => token.deviceId),
+          password: config.mqttTodoPassword,
+          topicPrefix: config.mqttTodoTopicPrefix,
+          username: config.mqttTodoUsername,
+        }),
+        close: publisher => publisher.close(),
+        name: 'TODO MQTT notification publisher',
+      })).resource
+    }
     const objectStore = (await scope.acquire({
       acquire: () => config.objectStore === 'filesystem'
         ? createFilesystemObjectStore({ root: config.filesystemRoot ?? join(config.dataDir, 'objects') })
@@ -105,6 +125,21 @@ export async function createSyncServerRuntime(config: SyncServerConfig, options:
         sessionTotalTimeoutMs: config.sessionTotalTimeoutMs,
         statePath: join(config.dataDir, 'peer', 'identity.json'),
         metrics: metrics.peerRecorder,
+        onAuthoritativeNotesChanged: (input) => {
+          if (todoNotificationPublisher === null)
+            return
+          void (async () => {
+            const snapshots = await database.repository.listNoteSnapshots(input.accountId, input.generation)
+            await todoNotificationPublisher?.publishChanged({
+              accountId: input.accountId,
+              changedAt: input.changedAt,
+              generation: input.generation,
+              revision: deviceTodoRevision(snapshots),
+            })
+          })().catch((error) => {
+            console.warn('Failed to publish TODO MQTT update hint', error)
+          })
+        },
       }),
       close: current => current.close(),
       name: 'sync peer',

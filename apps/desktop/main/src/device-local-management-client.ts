@@ -2,6 +2,9 @@ import type {
   DesktopDeviceGalleryStatus,
   DesktopDeviceGalleryTarget,
   DesktopDeviceGalleryUpload,
+  DesktopDeviceTodoPush,
+  DesktopDeviceTodoSnapshot,
+  DesktopDeviceTodoState,
 } from '@memorilo/desktop-api'
 import type { LocalManagementCredentialStore } from './storage/electron-local-management-credential-store'
 import { Buffer } from 'node:buffer'
@@ -10,6 +13,7 @@ import { Data, Effect } from 'effect'
 const imageBytes = 30_000
 const requestTimeoutMilliseconds = 15_000
 const maxResponseBytes = 64 * 1024
+const maxTodoSnapshotBytes = 32 * 1024
 
 // eslint-disable-next-line unicorn/throw-new-error
 export class DeviceLocalManagementError extends Data.TaggedError('DeviceLocalManagementError')<{
@@ -32,6 +36,29 @@ export class DeviceLocalManagementClient {
         return yield* Effect.fail(responseError(response.status))
       const body = yield* readBoundedJson(response)
       return parseGalleryStatus(body)
+    })
+  }
+
+  loadTodos(target: DesktopDeviceGalleryTarget): Effect.Effect<DesktopDeviceTodoState, DeviceLocalManagementError> {
+    const authorizedRequest = (path: string, init: RequestInit) => this.authorizedRequest(target, path, init)
+    return Effect.gen(function* () {
+      const response = yield* authorizedRequest('/v1/todos', { method: 'GET' })
+      if (response.status !== 200)
+        return yield* Effect.fail(responseError(response.status))
+      return parseTodoState(yield* readBoundedJson(response))
+    })
+  }
+
+  pushTodos(input: DesktopDeviceTodoPush): Effect.Effect<void, DeviceLocalManagementError> {
+    if (!isTodoSnapshot(input.snapshot))
+      return Effect.fail(invalidInput())
+    const body = JSON.stringify(input.snapshot)
+    if (Buffer.byteLength(body, 'utf8') > maxTodoSnapshotBytes)
+      return Effect.fail(invalidInput())
+    return this.mutate(input, '/v1/todos', {
+      body,
+      headers: { 'Content-Type': 'application/json' },
+      method: 'POST',
     })
   }
 
@@ -203,6 +230,44 @@ function parseGalleryStatus(value: unknown): DesktopDeviceGalleryStatus {
     maxAssets: value.maxAssets,
     mutationRevision: value.mutationRevision,
   }
+}
+
+function parseTodoState(value: unknown): DesktopDeviceTodoState {
+  if (!isRecord(value)
+    || (value.snapshot !== null && !isTodoSnapshot(value.snapshot))
+    || (value.revision !== null && typeof value.revision !== 'string')
+    || (value.source !== null && value.source !== 'client-lan-push' && value.source !== 'mqtt-triggered-https' && value.source !== 'periodic-https')
+    || (value.lastSuccessUnixSeconds !== null && !Number.isSafeInteger(value.lastSuccessUnixSeconds))
+    || (value.lastEvent !== null && value.lastEvent !== undefined && !['updated', 'empty', 'notification', 'not-modified', 'authentication-failure', 'retrying', 'offline-cache'].includes(value.lastEvent as string))
+    || (value.lastError !== null && typeof value.lastError !== 'string')) {
+    throw invalidResponse()
+  }
+  return value as unknown as DesktopDeviceTodoState
+}
+
+function isTodoSnapshot(value: unknown): value is DesktopDeviceTodoSnapshot {
+  return isRecord(value)
+    && typeof value.generatedAt === 'string'
+    && value.generatedAt.length <= 64
+    && typeof value.revision === 'string'
+    && value.revision.length > 0
+    && value.revision.length <= 128
+    && Array.isArray(value.items)
+    && value.items.length <= 64
+    && value.items.every(item => isRecord(item)
+      && typeof item.allDay === 'boolean'
+      && (item.dueDate === null || typeof item.dueDate === 'string')
+      && (item.dueTime === null || typeof item.dueTime === 'string')
+      && typeof item.id === 'string'
+      && item.id.length > 0
+      && item.id.length <= 256
+      && typeof item.noteTitle === 'string'
+      && (item.parentId === null || typeof item.parentId === 'string')
+      && typeof item.revision === 'string'
+      && (item.status === 'todo' || item.status === 'in-progress' || item.status === 'done')
+      && typeof item.text === 'string'
+      && item.text.length > 0
+      && typeof item.topicTitle === 'string')
 }
 
 function readBoundedJson(response: Response): Effect.Effect<unknown, DeviceLocalManagementError> {

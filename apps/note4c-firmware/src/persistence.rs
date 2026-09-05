@@ -6,11 +6,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::glance::WeatherReading;
 use crate::model::{Status, TodoId, TodoItem, TodoModel};
+use crate::todo_sync::{TodoSyncConfig, TodoSyncState};
 
 const MAGIC: [u8; 4] = *b"MRLO";
-const CURRENT_VERSION: u16 = 5;
+const CURRENT_VERSION: u16 = 6;
 const HEADER_BYTES: usize = 22;
-const MAX_BLOB_BYTES: usize = 8 * 1024;
+// TODO snapshots are retained alongside the rendered model and metadata.
+// Keep enough NVS room for the bounded 32 KiB transport payload without
+// silently dropping persistence when a valid snapshot is received.
+const MAX_BLOB_BYTES: usize = 128 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum SelectionPolicy {
@@ -129,6 +133,7 @@ pub struct DeviceConfig {
     pub selection_policy: SelectionPolicy,
     pub weather: WeatherConfig,
     pub almanac: AlmanacConfig,
+    pub todo_sync: TodoSyncConfig,
 }
 
 impl Default for DeviceConfig {
@@ -142,6 +147,7 @@ impl Default for DeviceConfig {
             selection_policy: SelectionPolicy::Remember,
             weather: WeatherConfig::default(),
             almanac: AlmanacConfig::default(),
+            todo_sync: TodoSyncConfig::normalized_default(),
         }
     }
 }
@@ -157,6 +163,10 @@ pub struct PublicDeviceConfig {
     pub selection_policy: SelectionPolicy,
     pub weather: WeatherConfig,
     pub almanac: AlmanacConfig,
+    pub todo_sync_enabled: bool,
+    pub todo_sync_view: crate::todo_sync::TodoView,
+    pub todo_sync_mqtt_configured: bool,
+    pub todo_sync_mqtt_password_is_set: bool,
 }
 
 impl DeviceConfig {
@@ -171,6 +181,10 @@ impl DeviceConfig {
             selection_policy: self.selection_policy.clone(),
             weather: self.weather.clone(),
             almanac: self.almanac.clone(),
+            todo_sync_enabled: self.todo_sync.enabled,
+            todo_sync_view: self.todo_sync.view,
+            todo_sync_mqtt_configured: self.todo_sync.mqtt_broker_url.is_some(),
+            todo_sync_mqtt_password_is_set: self.todo_sync.has_mqtt_password(),
         }
     }
 }
@@ -180,6 +194,8 @@ pub struct PersistentState {
     pub config: DeviceConfig,
     pub todos: TodoModel,
     pub weather_cache: Option<WeatherReading>,
+    #[serde(default)]
+    pub todo_sync: TodoSyncState,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -199,7 +215,7 @@ pub enum ValidationError {
     InvalidTodoDue { index: usize },
     InvalidTodoIndent { index: usize },
     DuplicateTodoId(TodoId),
-    InvalidSelection,
+    InvalidTodoSyncConfig,
 }
 
 impl fmt::Display for ValidationError {
@@ -257,6 +273,10 @@ pub fn validate(state: &PersistentState) -> Result<(), ValidationError> {
     if config.almanac.note.chars().count() > 160 || config.almanac.source.chars().count() > 80 {
         return Err(ValidationError::InvalidAlmanac);
     }
+    config
+        .todo_sync
+        .validate()
+        .map_err(|_| ValidationError::InvalidTodoSyncConfig)?;
     if state.weather_cache.as_ref().is_some_and(|reading| {
         !(-1_000..=700).contains(&reading.temperature_tenths_celsius)
             || !(-1_000..=700).contains(&reading.apparent_temperature_tenths_celsius)
@@ -281,14 +301,9 @@ pub fn validate(state: &PersistentState) -> Result<(), ValidationError> {
         if item.indent > 4 {
             return Err(ValidationError::InvalidTodoIndent { index });
         }
-        if !ids.insert(item.id) {
-            return Err(ValidationError::DuplicateTodoId(item.id));
+        if !ids.insert(item.id.clone()) {
+            return Err(ValidationError::DuplicateTodoId(item.id.clone()));
         }
-    }
-    if (state.todos.items.is_empty() && state.todos.selected != 0)
-        || (!state.todos.items.is_empty() && state.todos.selected >= state.todos.items.len())
-    {
-        return Err(ValidationError::InvalidSelection);
     }
     Ok(())
 }
@@ -526,6 +541,10 @@ fn decode(bytes: &[u8]) -> Result<DecodedState, RecoveryReason> {
             postcard::from_bytes(payload).map_err(|_| RecoveryReason::InvalidPayload)?,
             false,
         ),
+        5 => (
+            migrate_v5(postcard::from_bytes(payload).map_err(|_| RecoveryReason::InvalidPayload)?),
+            true,
+        ),
         4 => (
             migrate_v4(postcard::from_bytes(payload).map_err(|_| RecoveryReason::InvalidPayload)?),
             true,
@@ -570,20 +589,55 @@ struct StateV1 {
 #[derive(Deserialize, Serialize)]
 struct StateV2 {
     config: DeviceConfigV2,
-    todos: TodoModel,
+    todos: LegacyTodoModel,
 }
 
 #[derive(Deserialize, Serialize)]
 struct StateV3 {
     config: DeviceConfigV3,
-    todos: TodoModel,
+    todos: LegacyTodoModel,
 }
 
 #[derive(Deserialize, Serialize)]
 struct StateV4 {
     config: DeviceConfigV4,
-    todos: TodoModel,
+    todos: LegacyTodoModel,
     weather_cache: Option<WeatherReading>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct StateV5 {
+    config: DeviceConfigV5,
+    todos: LegacyTodoModel,
+    weather_cache: Option<WeatherReading>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct DeviceConfigV5 {
+    device_name: String,
+    wifi: WifiConfig,
+    local_management: LocalManagementConfig,
+    timezone: String,
+    idle_sleep_seconds: u32,
+    selection_policy: SelectionPolicy,
+    weather: WeatherConfig,
+    almanac: AlmanacConfig,
+}
+
+#[derive(Deserialize, Serialize)]
+struct LegacyTodoModel {
+    items: Vec<LegacyTodoItem>,
+    #[serde(default)]
+    selected: usize,
+}
+
+#[derive(Deserialize, Serialize)]
+struct LegacyTodoItem {
+    id: u64,
+    title: String,
+    due: String,
+    status: Status,
+    indent: u8,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -652,7 +706,7 @@ fn migrate_v1(state: StateV1) -> PersistentState {
                 .into_iter()
                 .enumerate()
                 .map(|(index, item)| TodoItem {
-                    id: TodoId(index as u64 + 1),
+                    id: TodoId(format!("legacy-{index}")),
                     title: item.title,
                     due: item.due,
                     status: if item.completed {
@@ -663,9 +717,9 @@ fn migrate_v1(state: StateV1) -> PersistentState {
                     indent: 0,
                 })
                 .collect(),
-            selected: state.selected,
         },
         weather_cache: None,
+        todo_sync: TodoSyncState::default(),
     }
 }
 
@@ -679,8 +733,9 @@ fn migrate_v2(state: StateV2) -> PersistentState {
             selection_policy: state.config.selection_policy,
             ..DeviceConfig::default()
         },
-        todos: state.todos,
+        todos: migrate_legacy_todos(state.todos),
         weather_cache: None,
+        todo_sync: TodoSyncState::default(),
     }
 }
 
@@ -695,8 +750,9 @@ fn migrate_v3(state: StateV3) -> PersistentState {
             selection_policy: state.config.selection_policy,
             ..DeviceConfig::default()
         },
-        todos: state.todos,
+        todos: migrate_legacy_todos(state.todos),
         weather_cache: None,
+        todo_sync: TodoSyncState::default(),
     }
 }
 
@@ -711,9 +767,47 @@ fn migrate_v4(state: StateV4) -> PersistentState {
             selection_policy: state.config.selection_policy,
             weather: state.config.weather,
             almanac: state.config.almanac,
+            todo_sync: TodoSyncConfig::normalized_default(),
         },
-        todos: state.todos,
+        todos: migrate_legacy_todos(state.todos),
         weather_cache: state.weather_cache,
+        todo_sync: TodoSyncState::default(),
+    }
+}
+
+fn migrate_v5(state: StateV5) -> PersistentState {
+    PersistentState {
+        config: DeviceConfig {
+            device_name: state.config.device_name,
+            wifi: state.config.wifi,
+            local_management: state.config.local_management,
+            timezone: state.config.timezone,
+            idle_sleep_seconds: state.config.idle_sleep_seconds,
+            selection_policy: state.config.selection_policy,
+            weather: state.config.weather,
+            almanac: state.config.almanac,
+            todo_sync: TodoSyncConfig::normalized_default(),
+        },
+        todos: migrate_legacy_todos(state.todos),
+        weather_cache: state.weather_cache,
+        todo_sync: TodoSyncState::default(),
+    }
+}
+
+fn migrate_legacy_todos(state: LegacyTodoModel) -> TodoModel {
+    TodoModel {
+        items: state
+            .items
+            .into_iter()
+            .enumerate()
+            .map(|(index, item)| TodoItem {
+                id: TodoId(format!("legacy-{}-{}", item.id, index)),
+                title: item.title,
+                due: item.due,
+                status: item.status,
+                indent: item.indent,
+            })
+            .collect(),
     }
 }
 
@@ -792,14 +886,19 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_preserves_configuration_todos_and_selection() {
+    fn round_trip_preserves_configuration_and_todos() {
         let mut state = PersistentState::default();
         state.config.device_name = "Desk display".into();
         state.config.wifi.ssid = Some("Office".into());
         state.config.wifi.set_password("correct horse").unwrap();
         state.config.timezone = "Europe/Paris".into();
         state.config.idle_sleep_seconds = 900;
-        state.todos.selected = 4;
+        state
+            .config
+            .todo_sync
+            .set_device_token("server-secret".into());
+        state.todo_sync.revision = Some("revision-1".into());
+        state.todo_sync.etag = Some("etag-1".into());
 
         let bytes = encode(&state, 8).unwrap();
         let decoded = decode(&bytes).unwrap();
@@ -807,6 +906,8 @@ mod tests {
         assert_eq!(decoded.state, state);
         assert_eq!(decoded.generation, 8);
         assert!(!decoded.migrated);
+        assert!(decoded.state.config.todo_sync.has_device_token());
+        assert!(!format!("{:?}", decoded.state.config).contains("server-secret"));
     }
 
     #[test]
@@ -826,7 +927,7 @@ mod tests {
         let decoded = decode(&encode_payload(1, 3, &payload).unwrap()).unwrap();
 
         assert!(decoded.migrated);
-        assert_eq!(decoded.state.todos.items[0].id, TodoId(1));
+        assert_eq!(decoded.state.todos.items[0].id, TodoId("legacy-0".into()));
         assert_eq!(decoded.state.todos.items[0].status, Status::Done);
     }
 
@@ -843,7 +944,20 @@ mod tests {
                 idle_sleep_seconds: 900,
                 selection_policy: SelectionPolicy::FirstOpen,
             },
-            todos: TodoModel::default(),
+            todos: LegacyTodoModel {
+                items: TodoModel::default()
+                    .items
+                    .into_iter()
+                    .map(|item| LegacyTodoItem {
+                        id: item.id.0.parse::<u64>().unwrap_or(0),
+                        title: item.title,
+                        due: item.due,
+                        status: item.status,
+                        indent: item.indent,
+                    })
+                    .collect(),
+                selected: 0,
+            },
         };
         let payload = postcard::to_stdvec(&v2).unwrap();
         let decoded = decode(&encode_payload(2, 4, &payload).unwrap()).unwrap();
@@ -917,13 +1031,31 @@ mod tests {
         let mut oversized = PersistentState::default();
         oversized.todos.items = (0..64)
             .map(|index| TodoItem {
-                id: TodoId(index + 1),
+                id: TodoId(format!("oversized-{index}")),
                 title: "a".repeat(160),
                 due: "b".repeat(32),
                 status: Status::Open,
                 indent: 0,
             })
             .collect();
+        oversized.todo_sync.snapshot = Some(crate::todo_sync::TodoSnapshot {
+            generated_at: "2026-01-01T00:00:00Z".into(),
+            items: (0..2048)
+                .map(|index| crate::todo_sync::TodoSnapshotItem {
+                    all_day: true,
+                    due_date: None,
+                    due_time: None,
+                    id: format!("snapshot-{index}"),
+                    note_title: "note".into(),
+                    parent_id: None,
+                    revision: "revision".into(),
+                    status: crate::todo_sync::SnapshotStatus::Todo,
+                    text: "a".repeat(160),
+                    topic_title: "topic".into(),
+                })
+                .collect(),
+            revision: "revision".into(),
+        });
         assert!(matches!(
             encode(&oversized, 1),
             Err(PersistenceError::BlobTooLarge { .. })

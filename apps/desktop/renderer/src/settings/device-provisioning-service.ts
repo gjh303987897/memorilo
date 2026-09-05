@@ -2,6 +2,9 @@ import type {
   DesktopDeviceGalleryStatus,
   DesktopDeviceGalleryTarget,
   DesktopDeviceGalleryUpload,
+  DesktopDeviceTodoPush,
+  DesktopDeviceTodoState,
+  DesktopDeviceTodoTargetState,
   DesktopProvisioningDevice,
   DesktopProvisioningPairingRequest,
   DesktopProvisioningPairingResponse,
@@ -79,9 +82,13 @@ interface PairingBridge {
   generateLocalManagementToken: () => Promise<string>
   hasLocalManagementToken: (deviceId: string) => Promise<boolean>
   loadGallery: (target: DesktopDeviceGalleryTarget) => Promise<DesktopDeviceGalleryStatus>
+  loadTodos: (target: DesktopDeviceGalleryTarget) => Promise<DesktopDeviceTodoState>
+  loadTodoTarget: (deviceId: string) => Promise<DesktopDeviceTodoTargetState>
+  pushTodos: (input: DesktopDeviceTodoPush) => Promise<void>
   reorderGallery: (target: DesktopDeviceGalleryTarget, order: readonly number[]) => Promise<void>
   respondToPairing: (response: DesktopProvisioningPairingResponse) => Promise<void>
   saveLocalManagementToken: (deviceId: string, token: string) => Promise<void>
+  saveTodoTarget: (deviceId: string, address: string | null) => Promise<void>
   setGallerySlideshow: (target: DesktopDeviceGalleryTarget, intervalSeconds: number | null) => Promise<void>
   selectDevice: (deviceId: string) => Promise<void>
   subscribeDevices: (listener: (devices: readonly DesktopProvisioningDevice[]) => void) => () => void
@@ -97,9 +104,13 @@ export interface DeviceProvisioningClient {
   hasLocalManagementToken: (deviceId: string) => Effect.Effect<boolean, DeviceProvisioningError>
   deleteGalleryAsset: (target: DesktopDeviceGalleryTarget, id: number) => Effect.Effect<void, DeviceProvisioningError>
   loadGallery: (target: DesktopDeviceGalleryTarget) => Effect.Effect<DesktopDeviceGalleryStatus, DeviceProvisioningError>
+  loadTodos: (target: DesktopDeviceGalleryTarget) => Effect.Effect<DesktopDeviceTodoState, DeviceProvisioningError>
+  loadTodoTarget: (deviceId: string) => Effect.Effect<DesktopDeviceTodoTargetState, DeviceProvisioningError>
+  pushTodos: (input: DesktopDeviceTodoPush) => Effect.Effect<void, DeviceProvisioningError>
   reorderGallery: (target: DesktopDeviceGalleryTarget, order: readonly number[]) => Effect.Effect<void, DeviceProvisioningError>
   respondToPairing: (response: DesktopProvisioningPairingResponse) => Effect.Effect<void, DeviceProvisioningError>
   saveLocalManagementToken: (deviceId: string, token: string) => Effect.Effect<void, DeviceProvisioningError>
+  saveTodoTarget: (deviceId: string, address: string | null) => Effect.Effect<void, DeviceProvisioningError>
   setGallerySlideshow: (target: DesktopDeviceGalleryTarget, intervalSeconds: number | null) => Effect.Effect<void, DeviceProvisioningError>
   selectDevice: (device: DesktopProvisioningDevice) => Effect.Effect<void, DeviceProvisioningError>
   subscribeDevices: (listener: (devices: readonly DesktopProvisioningDevice[]) => void) => () => void
@@ -325,6 +336,18 @@ export class DeviceProvisioningService {
     return this.managementEffect(() => this.bridge.loadGallery(target))
   }
 
+  loadTodos(target: DesktopDeviceGalleryTarget): Effect.Effect<DesktopDeviceTodoState, DeviceProvisioningError> {
+    return this.managementEffect(() => this.bridge.loadTodos(target))
+  }
+
+  loadTodoTarget(deviceId: string): Effect.Effect<DesktopDeviceTodoTargetState, DeviceProvisioningError> {
+    return this.managementEffect(() => this.bridge.loadTodoTarget(deviceId))
+  }
+
+  pushTodos(input: DesktopDeviceTodoPush): Effect.Effect<void, DeviceProvisioningError> {
+    return this.managementEffect(() => this.bridge.pushTodos(input))
+  }
+
   reorderGallery(target: DesktopDeviceGalleryTarget, order: readonly number[]): Effect.Effect<void, DeviceProvisioningError> {
     return this.managementEffect(() => this.bridge.reorderGallery(target, order))
   }
@@ -335,6 +358,10 @@ export class DeviceProvisioningService {
 
   saveLocalManagementToken(deviceId: string, token: string): Effect.Effect<void, DeviceProvisioningError> {
     return this.credentialEffect(() => this.bridge.saveLocalManagementToken(deviceId, token))
+  }
+
+  saveTodoTarget(deviceId: string, address: string | null): Effect.Effect<void, DeviceProvisioningError> {
+    return this.managementEffect(() => this.bridge.saveTodoTarget(deviceId, address))
   }
 
   setGallerySlideshow(
@@ -391,6 +418,19 @@ function applyConfigPatch(
     ...(patch.timezone === undefined ? {} : { timezone: patch.timezone }),
     ...(patch.weather === undefined ? {} : { weather: patch.weather }),
     ...(patch.almanac === undefined ? {} : { almanac: patch.almanac }),
+    ...(patch.todoSync?.enabled === undefined ? {} : { todoSyncEnabled: patch.todoSync.enabled }),
+    ...(patch.todoSync?.httpsBaseUrl === undefined ? {} : { todoSyncUrl: patch.todoSync.httpsBaseUrl }),
+    ...(patch.todoSync?.clearDeviceToken !== true && patch.todoSync?.deviceToken === undefined
+      ? {}
+      : { todoSyncTokenIsSet: patch.todoSync?.clearDeviceToken !== true }),
+    ...(patch.todoSync?.pollIntervalSeconds === undefined ? {} : { todoSyncPollIntervalSeconds: patch.todoSync.pollIntervalSeconds }),
+    ...(patch.todoSync?.view === undefined ? {} : { todoSyncView: patch.todoSync.view }),
+    ...(patch.todoSync?.mqttBrokerUrl === undefined ? {} : { todoSyncMqttBrokerUrl: patch.todoSync.mqttBrokerUrl }),
+    ...(patch.todoSync?.mqttTopic === undefined ? {} : { todoSyncMqttTopic: patch.todoSync.mqttTopic }),
+    ...(patch.todoSync?.mqttUsername === undefined ? {} : { todoSyncMqttUsername: patch.todoSync.mqttUsername }),
+    ...(patch.todoSync?.clearMqttPassword !== true && patch.todoSync?.mqttPassword === undefined
+      ? {}
+      : { todoSyncMqttPasswordIsSet: patch.todoSync?.clearMqttPassword !== true }),
     ...(patch.wifi?.ssid === undefined ? {} : { wifiSsid: patch.wifi.ssid }),
     ...(patch.wifi?.password === undefined && patch.wifi?.clearPassword !== true
       ? {}

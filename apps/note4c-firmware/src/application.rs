@@ -7,6 +7,7 @@ use crate::model::TodoModel;
 use crate::network::NetworkSnapshot;
 use crate::persistence::{DeviceConfig, PersistentState};
 use crate::provisioning::{ProvisioningPhase, ProvisioningSnapshot};
+use crate::todo_sync::TodoSyncState;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PageId {
@@ -115,6 +116,7 @@ pub struct ApplicationSnapshot {
     pub page: PageId,
     pub todo_page: usize,
     pub todos: TodoModel,
+    pub todo_sync: TodoSyncState,
     pub render_revision: u64,
     pub services: ServiceSnapshot,
     pub display: DisplaySnapshot,
@@ -185,6 +187,7 @@ pub enum ApplicationCommand {
     DiagnosticsUpdated(RuntimeDiagnostics),
     NetworkUpdated(NetworkSnapshot),
     TodosSynced(TodoModel),
+    TodoSyncStatus(TodoSyncState),
     GalleryUpdated(GalleryCatalog),
     GalleryFrameLoaded(Option<Vec<u8>>),
     GalleryFailed(String),
@@ -249,6 +252,7 @@ impl Application {
                 page: PageId::Todos,
                 todo_page: 0,
                 todos: state.todos,
+                todo_sync: state.todo_sync,
                 render_revision: 0,
                 services: ServiceSnapshot { phases },
                 display: DisplaySnapshot {
@@ -286,6 +290,7 @@ impl Application {
             config: self.snapshot.config.clone(),
             todos: self.snapshot.todos.clone(),
             weather_cache: self.snapshot.glance.weather.reading.clone(),
+            todo_sync: self.snapshot.todo_sync.clone(),
         }
     }
 
@@ -349,6 +354,10 @@ impl Application {
                 Transition::default()
             }
             ApplicationCommand::TodosSynced(todos) => self.todos_synced(todos),
+            ApplicationCommand::TodoSyncStatus(status) => {
+                self.snapshot.todo_sync = status;
+                Transition::default()
+            }
             ApplicationCommand::GalleryUpdated(catalog) => self.gallery_updated(catalog),
             ApplicationCommand::GalleryFrameLoaded(frame) => {
                 self.snapshot.gallery.fullscreen_frame = frame;
@@ -392,11 +401,9 @@ impl Application {
                     (snapshot.todo_page as isize + delta).rem_euclid(page_count as isize) as usize;
             });
         }
-        if !matches!(
-            self.snapshot.page,
-            PageId::Gallery | PageId::Calendar
-        ) || (self.snapshot.page == PageId::Gallery
-            && self.snapshot.gallery.catalog.assets.is_empty())
+        if !matches!(self.snapshot.page, PageId::Gallery | PageId::Calendar)
+            || (self.snapshot.page == PageId::Gallery
+                && self.snapshot.gallery.catalog.assets.is_empty())
         {
             return Transition::default();
         }
@@ -416,8 +423,7 @@ impl Application {
                     .saturating_add(delta as i16)
                     .clamp(-1_200, 1_200);
             }
-            PageId::Weather
-            | PageId::Provisioning => {}
+            PageId::Weather | PageId::Provisioning => {}
             PageId::Diagnostics => {}
         })
     }
@@ -451,9 +457,7 @@ impl Application {
         self.mutate(|snapshot| match snapshot.page {
             PageId::Todos => {}
             PageId::Gallery => {}
-            PageId::Calendar
-            | PageId::Weather
-            => {}
+            PageId::Calendar | PageId::Weather => {}
             PageId::Provisioning => {}
             PageId::Diagnostics => {}
         })
@@ -811,13 +815,12 @@ mod tests {
 
         let synced = TodoModel {
             items: vec![TodoItem {
-                id: TodoId(100),
+                id: TodoId("remote-100".into()),
                 title: "Synced from Memorilo".into(),
                 due: "today".into(),
                 status: Status::Open,
                 indent: 0,
             }],
-            selected: 0,
         };
         let transition = application.dispatch(ApplicationCommand::TodosSynced(synced.clone()));
         assert_eq!(application.snapshot().todos, synced);

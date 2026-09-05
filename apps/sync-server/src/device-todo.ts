@@ -1,6 +1,5 @@
 import type { TaskStatus } from '@memorilo/editor/task'
 import type {
-  SyncDeviceTodoAction,
   SyncDeviceTodoScope,
   SyncDeviceTodoStore,
   SyncDeviceTodoToken,
@@ -10,7 +9,7 @@ import type {
 import { Buffer } from 'node:buffer'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { createEditorNote } from '@memorilo/editor/note'
-import { parseTaskDueDate, parseTaskTime, readTaskStatus, transitionTaskAttrs } from '@memorilo/editor/task'
+import { parseTaskDueDate, parseTaskTime, readTaskStatus } from '@memorilo/editor/task'
 import { Effect } from 'effect'
 import { noteSnapshotRevision } from '../infrastructure/database/shared'
 
@@ -58,22 +57,7 @@ export interface DeviceTodoSnapshot {
   readonly revision: string
 }
 
-export interface DeviceTodoActionResult {
-  readonly duplicate: boolean
-  readonly operationId: string
-  readonly revision: string
-  readonly status: TaskStatus
-  readonly todoId: string
-}
-
 export interface DeviceTodoModule {
-  readonly applyAction: (input: {
-    readonly action: SyncDeviceTodoAction
-    readonly baseRevision: string
-    readonly operationId: string
-    readonly token: string
-    readonly todoId: string
-  }) => Effect.Effect<DeviceTodoActionResult, DeviceTodoError>
   readonly issueToken: (input: {
     readonly accountId: string
     readonly deviceName: string
@@ -127,24 +111,6 @@ function todoId(identity: TodoIdentity): string {
   return Buffer.from(JSON.stringify([identity.noteId, identity.topicId, identity.blockId]), 'utf8').toString('base64url')
 }
 
-function decodeTodoId(value: string): TodoIdentity {
-  if (value.length === 0 || value.length > 1024)
-    throw new DeviceTodoError('invalid_request', 'Todo id is invalid')
-  let decoded: unknown
-  try {
-    decoded = JSON.parse(Buffer.from(value, 'base64url').toString('utf8'))
-  }
-  catch (error) {
-    throw new DeviceTodoError('invalid_request', 'Todo id is invalid', { cause: error })
-  }
-  if (!Array.isArray(decoded)
-    || decoded.length !== 3
-    || decoded.some(part => typeof part !== 'string' || part.length === 0 || part.length > 512)) {
-    throw new DeviceTodoError('invalid_request', 'Todo id is invalid')
-  }
-  return { blockId: decoded[2] as string, noteId: decoded[0] as string, topicId: decoded[1] as string }
-}
-
 function validDate(value: string): boolean {
   if (!isoDatePattern.test(value))
     return false
@@ -161,7 +127,7 @@ function noteRevision(snapshot: SyncNoteSnapshotRecord): string {
   return revision
 }
 
-function accountRevision(snapshots: readonly SyncNoteSnapshotRecord[]): string {
+export function deviceTodoRevision(snapshots: readonly SyncNoteSnapshotRecord[]): string {
   const hash = createHash('sha256')
   for (const snapshot of snapshots)
     hash.update(snapshot.noteId).update('\0').update(noteRevision(snapshot)).update('\0')
@@ -281,8 +247,8 @@ export function createDeviceTodoModule(options: DeviceTodoModuleOptions): Device
       if (!Number.isSafeInteger(input.expiresAt) || input.expiresAt <= now())
         throw new DeviceTodoError('invalid_request', 'Device token expiry must be in the future')
       const scopes = [...new Set(input.scopes)]
-      if (scopes.length === 0 || scopes.some(scope => scope !== 'todos:read' && scope !== 'todos:write'))
-        throw new DeviceTodoError('invalid_request', 'Device Todo scopes are invalid')
+      if (scopes.length !== 1 || scopes[0] !== 'todos:read')
+        throw new DeviceTodoError('invalid_request', 'Device Todo is read-only and requires the todos:read scope')
       await accountState(input.accountId)
       const token = `${deviceTokenPrefix}${randomBytes(32).toString('base64url')}`
       const credential = await options.store.createToken({
@@ -312,64 +278,7 @@ export function createDeviceTodoModule(options: DeviceTodoModuleOptions): Device
       return {
         generatedAt: new Date(now()).toISOString(),
         items: todos.slice(0, input.limit).map(publicTodo),
-        revision: accountRevision(snapshots),
-      }
-    }),
-    applyAction: input => attempt(async () => {
-      if (input.operationId.length < 1 || input.operationId.length > 128
-        || input.baseRevision.length !== 64
-        || (input.action !== 'complete' && input.action !== 'reopen')) {
-        throw new DeviceTodoError('invalid_request', 'Device Todo action payload is invalid')
-      }
-      const identity = decodeTodoId(input.todoId)
-      const credential = await authorize(input.token, 'todos:write')
-      const state = await accountState(credential.accountId)
-      const snapshot = await options.repository.getNoteSnapshot(credential.accountId, state.generation, identity.noteId)
-      if (!snapshot)
-        throw new DeviceTodoError('todo_not_found', 'Todo does not exist')
-      const note = createEditorNote({ id: identity.noteId, snapshot: new Uint8Array(Buffer.from(snapshot.snapshot, 'base64url')) })
-      const topic = note.getTopicContent(identity.topicId)
-      const block = topic.blocks.find(candidate => candidate.id === identity.blockId)
-      if (!block || block.kind !== 'task')
-        throw new DeviceTodoError('todo_not_found', 'Todo does not exist')
-      const before = note.getVersion()
-      const nextStatus: TaskStatus = input.action === 'complete' ? 'done' : 'todo'
-      note.applyTopicBlockEdits({
-        edits: [{
-          attributes: { ...block.attributes, ...transitionTaskAttrs(block.attributes, nextStatus, now()) },
-          blockId: identity.blockId,
-          operation: 'update-block-attributes',
-        }],
-        topicId: identity.topicId,
-      })
-      const update = Buffer.from(note.exportUpdates(before)).toString('base64url')
-      const inputHash = createHash('sha256').update(JSON.stringify({
-        action: input.action,
-        baseRevision: input.baseRevision,
-        todoId: input.todoId,
-      })).digest('hex')
-      const committed = await options.store.commitAction({
-        accountId: credential.accountId,
-        action: input.action,
-        blockId: identity.blockId,
-        createdAt: now(),
-        deviceId: credential.deviceId,
-        expectedRevision: input.baseRevision,
-        generation: state.generation,
-        inputHash,
-        noteId: identity.noteId,
-        operationId: input.operationId,
-        topicId: identity.topicId,
-        update,
-      })
-      if (committed.status === 'stale')
-        throw new DeviceTodoError('revision_conflict', 'Todo changed while the action was committed', { currentRevision: committed.currentRevision })
-      return {
-        duplicate: committed.status === 'duplicate',
-        operationId: input.operationId,
-        revision: committed.record.resultRevision,
-        status: nextStatus,
-        todoId: input.todoId,
+        revision: deviceTodoRevision(snapshots),
       }
     }),
   }

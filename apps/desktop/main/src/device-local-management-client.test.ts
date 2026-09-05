@@ -67,6 +67,25 @@ describe('device local management client', () => {
     expect(request).not.toHaveBeenCalled()
   })
 
+  it('pushes and reads bounded read-only TODO snapshots', async () => {
+    const snapshot = {
+      generatedAt: '2026-09-05T00:00:00Z',
+      items: [{ allDay: true, dueDate: '2026-09-05', dueTime: null, id: 'task-1', noteTitle: 'Note', parentId: null, revision: 'item-r1', status: 'todo' as const, text: 'Buy milk', topicTitle: 'Topic' }],
+      revision: 'snapshot-r1',
+    }
+    const request = vi.fn(async (_url: Parameters<typeof fetch>[0], init?: RequestInit) => init?.method === 'POST'
+      ? new Response(null, { status: 202 })
+      : new Response(JSON.stringify({ lastError: null, lastEvent: 'updated', lastSuccessUnixSeconds: 1, revision: snapshot.revision, snapshot, source: 'client-lan-push' }), { status: 200 }))
+    const client = new DeviceLocalManagementClient(credentialStore(token), request as typeof fetch)
+    const target = { address: '192.168.4.23', deviceId: 'device-1' }
+
+    await Effect.runPromise(client.pushTodos({ ...target, snapshot }))
+    const state = await Effect.runPromise(client.loadTodos(target))
+
+    expect(state.snapshot?.items[0]?.text).toBe('Buy milk')
+    expect(request).toHaveBeenCalledWith(new URL('http://192.168.4.23/v1/todos'), expect.objectContaining({ method: 'POST' }))
+  })
+
   it('fails without exposing or inventing a missing credential', async () => {
     const client = new DeviceLocalManagementClient(credentialStore(null), vi.fn() as typeof fetch)
     await expect(Effect.runPromise(client.loadGallery({

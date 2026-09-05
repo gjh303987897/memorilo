@@ -277,6 +277,53 @@ pub fn apply_config(
     if let Some(almanac) = &patch.almanac {
         candidate.config.almanac = almanac.clone();
     }
+    if let Some(todo_sync) = &patch.todo_sync {
+        if todo_sync.clear_device_token && todo_sync.device_token.is_some() {
+            return Err(ProtocolErrorCode::InvalidRequest);
+        }
+        if let Some(enabled) = todo_sync.enabled {
+            candidate.config.todo_sync.enabled = enabled;
+        }
+        if let Some(url) = &todo_sync.https_base_url {
+            candidate.config.todo_sync.https_base_url = url.trim().to_owned();
+        }
+        if todo_sync.clear_device_token {
+            candidate.config.todo_sync.clear_device_token();
+        }
+        if let Some(token) = &todo_sync.device_token {
+            candidate.config.todo_sync.set_device_token(token.clone());
+        }
+        if let Some(interval) = todo_sync.poll_interval_seconds {
+            candidate.config.todo_sync.poll_interval_seconds = interval;
+        }
+        if let Some(view) = todo_sync.view {
+            candidate.config.todo_sync.view = view;
+        }
+        if let Some(url) = &todo_sync.mqtt_broker_url {
+            candidate.config.todo_sync.mqtt_broker_url =
+                (!url.trim().is_empty()).then(|| url.trim().to_owned());
+        }
+        if let Some(topic) = &todo_sync.mqtt_topic {
+            candidate.config.todo_sync.mqtt_topic =
+                (!topic.trim().is_empty()).then(|| topic.trim().to_owned());
+        }
+        if todo_sync.clear_mqtt_password && todo_sync.mqtt_password.is_some() {
+            return Err(ProtocolErrorCode::InvalidRequest);
+        }
+        if todo_sync.clear_mqtt_password {
+            candidate.config.todo_sync.clear_mqtt_password();
+        }
+        if let Some(username) = &todo_sync.mqtt_username {
+            candidate.config.todo_sync.mqtt_username =
+                (!username.trim().is_empty()).then(|| username.trim().to_owned());
+        }
+        if let Some(password) = &todo_sync.mqtt_password {
+            candidate
+                .config
+                .todo_sync
+                .set_mqtt_password(password.clone());
+        }
+    }
     if let Some(wifi) = &patch.wifi {
         if wifi.clear_password && wifi.password.is_some() {
             return Err(ProtocolErrorCode::InvalidRequest);

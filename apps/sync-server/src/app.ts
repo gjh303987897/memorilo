@@ -20,6 +20,7 @@ import { hashDeviceCredential, hashPairingSharedSecret, newDeviceCredential } fr
 import { DeviceTodoError } from './device-todo'
 import { createSyncServerMetrics } from './metrics'
 import { createRateLimiter } from './rate-limiter'
+import { todoNotificationTopic } from './todo-notification-publisher'
 
 interface SyncServerVariables {
   readonly config: SyncServerConfig
@@ -447,7 +448,18 @@ export function createSyncServerApp(config: SyncServerConfig, services: SyncServ
     if (!result.ok)
       return context.json({ code: result.error.code }, result.error.code === 'invalid_request' ? 400 : 409)
     await recordAudit({ accountId: account.accountId, action: 'device.todo-token.issue', actorId: account.accountId, actorType: 'browser', details: { deviceId: result.value.credential.deviceId }, outcome: 'success', remoteAddress: context.get('remoteAddress'), requestId: context.get('requestId') })
-    return context.json({ credential: result.value.token, device: { deviceId: result.value.credential.deviceId, deviceName: result.value.credential.deviceName }, expiresAt: result.value.credential.expiresAt, scopes: result.value.credential.scopes }, 201)
+    return context.json({
+      credential: result.value.token,
+      device: {
+        deviceId: result.value.credential.deviceId,
+        deviceName: result.value.credential.deviceName,
+        mqttTopic: config.mqttTodoBrokerUrl === undefined
+          ? null
+          : todoNotificationTopic(config.mqttTodoTopicPrefix, result.value.credential.deviceId),
+      },
+      expiresAt: result.value.credential.expiresAt,
+      scopes: result.value.credential.scopes,
+    }, 201)
   })
   app.get('/api/devices/todo-tokens', async (context) => {
     const account = await browserAuth.current(context.req.raw)
@@ -490,32 +502,6 @@ export function createSyncServerApp(config: SyncServerConfig, services: SyncServ
     context.header('cache-control', 'private, max-age=0')
     if (context.req.header('if-none-match') === tag)
       return new Response(null, { status: 304, headers: { etag: tag } })
-    return context.json(result.value)
-  })
-  app.post('/api/device/v1/todo-actions', async (context) => {
-    if (!deviceTodo)
-      return context.json({ code: 'device_todo_unavailable' }, 503)
-    let body: { action?: unknown, baseRevision?: unknown, operationId?: unknown, todoId?: unknown }
-    try {
-      body = await context.req.json()
-    }
-    catch {
-      return context.json({ code: 'invalid_request' }, 400)
-    }
-    const token = context.req.header('authorization')?.startsWith('Bearer ')
-      ? context.req.header('authorization')!.slice(7)
-      : ''
-    const result = await runDeviceTodo(deviceTodo.applyAction({
-      action: body.action as never,
-      baseRevision: typeof body.baseRevision === 'string' ? body.baseRevision : '',
-      operationId: typeof body.operationId === 'string' ? body.operationId : '',
-      token,
-      todoId: typeof body.todoId === 'string' ? body.todoId : '',
-    }))
-    if (!result.ok) {
-      const status = result.error.code === 'unauthorized' ? 401 : result.error.code === 'forbidden' ? 403 : result.error.code === 'revision_conflict' ? 409 : result.error.code === 'todo_not_found' ? 404 : 400
-      return context.json({ code: result.error.code, ...(result.error.currentRevision === undefined ? {} : { currentRevision: result.error.currentRevision }) }, status)
-    }
     return context.json(result.value)
   })
   app.post('/api/devices/pairing', async (context) => {

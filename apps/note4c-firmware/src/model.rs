@@ -7,8 +7,11 @@ pub enum Status {
     Done,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-pub struct TodoId(pub u64);
+/// Opaque identity assigned by the authoritative TODO projection.
+///
+/// The firmware never interprets this value or derives authorization from it.
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub struct TodoId(pub String);
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct TodoItem {
@@ -22,18 +25,6 @@ pub struct TodoItem {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct TodoModel {
     pub items: Vec<TodoItem>,
-    #[serde(default)]
-    pub selected: usize,
-}
-
-impl TodoModel {
-    pub fn move_selection(&mut self, delta: isize) {
-        if self.items.is_empty() || delta == 0 {
-            return;
-        }
-        self.selected =
-            (self.selected as isize + delta).rem_euclid(self.items.len() as isize) as usize;
-    }
 }
 
 impl Default for TodoModel {
@@ -41,49 +32,48 @@ impl Default for TodoModel {
         Self {
             items: vec![
                 TodoItem {
-                    id: TodoId(1),
+                    id: TodoId("demo-1".into()),
                     title: "同步设计评审".into(),
                     due: "09:30".into(),
                     status: Status::Done,
                     indent: 0,
                 },
                 TodoItem {
-                    id: TodoId(2),
+                    id: TodoId("demo-2".into()),
                     title: "准备设备原型".into(),
                     due: "11:00".into(),
                     status: Status::Doing,
                     indent: 0,
                 },
                 TodoItem {
-                    id: TodoId(3),
+                    id: TodoId("demo-3".into()),
                     title: "Wire display adapter".into(),
                     due: "today".into(),
                     status: Status::Open,
                     indent: 1,
                 },
                 TodoItem {
-                    id: TodoId(4),
+                    id: TodoId("demo-4".into()),
                     title: "验证按键去抖".into(),
                     due: String::new(),
                     status: Status::Open,
                     indent: 1,
                 },
                 TodoItem {
-                    id: TodoId(5),
+                    id: TodoId("demo-5".into()),
                     title: "Write demo notes".into(),
                     due: "tomorrow".into(),
                     status: Status::Open,
                     indent: 0,
                 },
                 TodoItem {
-                    id: TodoId(6),
+                    id: TodoId("demo-6".into()),
                     title: "Archive old sketches".into(),
                     due: String::new(),
                     status: Status::Done,
                     indent: 0,
                 },
             ],
-            selected: 1,
         }
     }
 }

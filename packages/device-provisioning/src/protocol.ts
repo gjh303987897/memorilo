@@ -1,5 +1,5 @@
 export const PROTOCOL_VERSION = 1
-export const CONFIG_SCHEMA_VERSION = 1
+export const CONFIG_SCHEMA_VERSION = 2
 export const MAX_JSON_BYTES = 4096
 export const MAX_CHUNKS = 32
 export const MAX_CHUNK_PAYLOAD_BYTES = 384
@@ -42,7 +42,18 @@ export interface PublicConfigEnvelope {
   selectionPolicy: SelectionPolicy
   weather?: WeatherConfig
   almanac?: AlmanacConfig
+  todoSyncEnabled: boolean
+  todoSyncUrl: string
+  todoSyncTokenIsSet: boolean
+  todoSyncPollIntervalSeconds: number
+  todoSyncView: TodoView
+  todoSyncMqttBrokerUrl?: string
+  todoSyncMqttTopic?: string
+  todoSyncMqttUsername?: string
+  todoSyncMqttPasswordIsSet?: boolean
 }
+
+export type TodoView = 'today' | 'all'
 
 export interface WeatherConfig {
   enabled: boolean
@@ -69,6 +80,19 @@ export interface DeviceConfigPatch {
   selectionPolicy?: SelectionPolicy
   weather?: WeatherConfig
   almanac?: AlmanacConfig
+  todoSync?: {
+    enabled?: boolean
+    httpsBaseUrl?: string
+    deviceToken?: string
+    clearDeviceToken?: boolean
+    pollIntervalSeconds?: number
+    view?: TodoView
+    mqttBrokerUrl?: string
+    mqttTopic?: string
+    mqttUsername?: string
+    mqttPassword?: string
+    clearMqttPassword?: boolean
+  }
   [optionalExtension: string]: unknown
 }
 
@@ -281,6 +305,17 @@ export function parsePublicConfigEnvelope(json: Uint8Array): PublicConfigEnvelop
     || (value.selectionPolicy !== 'Remember' && value.selectionPolicy !== 'FirstOpen')
     || (value.weather !== undefined && !isWeatherConfig(value.weather))
     || (value.almanac !== undefined && !isAlmanacConfig(value.almanac))) {
+    throw new ProvisioningProtocolError('invalid-request')
+  }
+  if (typeof value.todoSyncEnabled !== 'boolean'
+    || typeof value.todoSyncUrl !== 'string'
+    || typeof value.todoSyncTokenIsSet !== 'boolean'
+    || !Number.isSafeInteger(value.todoSyncPollIntervalSeconds)
+    || (value.todoSyncView !== 'today' && value.todoSyncView !== 'all')
+    || (value.todoSyncMqttBrokerUrl !== undefined && typeof value.todoSyncMqttBrokerUrl !== 'string')
+    || (value.todoSyncMqttTopic !== undefined && typeof value.todoSyncMqttTopic !== 'string')
+    || (value.todoSyncMqttUsername !== undefined && typeof value.todoSyncMqttUsername !== 'string')
+    || (value.todoSyncMqttPasswordIsSet !== undefined && typeof value.todoSyncMqttPasswordIsSet !== 'boolean')) {
     throw new ProvisioningProtocolError('invalid-request')
   }
   return {

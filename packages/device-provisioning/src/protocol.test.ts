@@ -72,7 +72,7 @@ describe('provisioning protocol', () => {
   it('models public configuration without readable password material', () => {
     const publicConfig: PublicConfigEnvelope = {
       protocolVersion: 1,
-      configSchemaVersion: 1,
+      configSchemaVersion: 2,
       revision: 3,
       deviceName: 'Desk',
       wifiSsid: 'Office',
@@ -83,6 +83,11 @@ describe('provisioning protocol', () => {
       selectionPolicy: 'Remember',
       weather: { enabled: true, latitudeE6: 31_230_400, locationName: 'Shanghai', longitudeE6: 121_473_700 },
       almanac: { note: 'User note', source: 'Personal calendar' },
+      todoSyncEnabled: false,
+      todoSyncUrl: '',
+      todoSyncTokenIsSet: false,
+      todoSyncPollIntervalSeconds: 900,
+      todoSyncView: 'today',
     }
 
     expect(JSON.stringify(publicConfig)).not.toContain('password')
@@ -99,13 +104,13 @@ describe('provisioning protocol', () => {
     expect(parse({
       capabilities: ['config-v1'],
       configRevision: 2,
-      configSchemaVersion: 1,
+      configSchemaVersion: 2,
       deviceId: 'device-1',
       firmwareVersion: '0.1.0',
       protocolVersion: 1,
     }, parseDeviceInfoEnvelope).deviceId).toBe('device-1')
     expect(parse({
-      configSchemaVersion: 1,
+      configSchemaVersion: 2,
       deviceName: 'Desk',
       idleSleepSeconds: 600,
       localManagementTokenIsSet: false,
@@ -116,6 +121,11 @@ describe('provisioning protocol', () => {
       wifiPasswordIsSet: false,
       weather: { enabled: true, latitudeE6: 31_230_400, locationName: 'Shanghai', longitudeE6: 121_473_700 },
       almanac: { note: 'User note', source: 'Personal calendar' },
+      todoSyncEnabled: false,
+      todoSyncUrl: '',
+      todoSyncTokenIsSet: false,
+      todoSyncPollIntervalSeconds: 900,
+      todoSyncView: 'today',
     }, parsePublicConfigEnvelope).weather?.locationName).toBe('Shanghai')
     expect(parse({
       protocolVersion: 1,

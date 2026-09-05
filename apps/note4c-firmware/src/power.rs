@@ -202,4 +202,19 @@ mod tests {
             SleepDecision::Ready(SleepTrigger::Inactivity)
         );
     }
+
+    #[test]
+    fn gallery_storage_lease_is_released_after_a_mutation() {
+        let mut power = PowerCoordinator::new(Duration::from_secs(60), Duration::ZERO);
+        power.acquire_lease(
+            SleepBlocker::Storage,
+            Duration::ZERO,
+            Duration::from_secs(30),
+        );
+        power.release_lease(SleepBlocker::Storage);
+        assert_eq!(
+            power.poll(Duration::from_secs(60)),
+            SleepDecision::Ready(SleepTrigger::Inactivity)
+        );
+    }
 }

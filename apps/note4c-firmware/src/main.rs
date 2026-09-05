@@ -50,6 +50,8 @@ mod firmware {
         ProtocolErrorCode, PublicConfigEnvelope,
     };
     #[cfg(not(feature = "color-test"))]
+    use memorilo_device_firmware::todo_sync::Admission;
+    #[cfg(not(feature = "color-test"))]
     use memorilo_device_firmware::ui;
     #[cfg(not(feature = "color-test"))]
     use memorilo_device_firmware::weather::{
@@ -140,6 +142,9 @@ mod firmware {
                 ],
                 loaded.state,
             );
+            let mut todo_sync = application.snapshot().todo_sync.clone();
+            todo_sync.model = application.snapshot().todos.clone();
+            network.publish_todos(todo_sync.clone())?;
             application.dispatch(ApplicationCommand::StatusUpdated(
                 status_service.sample(diagnostics::uptime()),
             ));
@@ -229,7 +234,9 @@ mod firmware {
                                 | ManagementRequest::GalleryUpload
                                 | ManagementRequest::GalleryDelete
                                 | ManagementRequest::GalleryReorder
-                                | ManagementRequest::GallerySlideshow => None,
+                                | ManagementRequest::GallerySlideshow
+                                | ManagementRequest::TodoGet
+                                | ManagementRequest::TodoPush => None,
                                 ManagementRequest::Refresh => Some(ApplicationCommand::Refresh),
                                 ManagementRequest::NextPage => Some(ApplicationCommand::NextPage),
                                 ManagementRequest::Sleep => Some(ApplicationCommand::RequestSleep),
@@ -292,6 +299,79 @@ mod firmware {
                                 &refresh_tx,
                                 transition.render,
                             )?;
+                        }
+                        NetworkRuntimeEvent::TodoSnapshot { body, source, etag } => {
+                            match todo_sync.admit_json(&body, source, unix_timestamp()) {
+                                Admission::Accepted { model, .. } => {
+                                    todo_sync.etag = etag;
+                                    let transition = application
+                                        .dispatch(ApplicationCommand::TodosSynced(model));
+                                    application.dispatch(ApplicationCommand::TodoSyncStatus(
+                                        todo_sync.clone(),
+                                    ));
+                                    persistence.schedule(application.persistent_state(), now);
+                                    network.publish_todos(todo_sync.clone())?;
+                                    queue_render(
+                                        &mut application,
+                                        &mut coordinator,
+                                        &refresh_tx,
+                                        transition.render,
+                                    )?;
+                                }
+                                Admission::Unchanged => {
+                                    todo_sync.etag = etag;
+                                    application.dispatch(ApplicationCommand::TodoSyncStatus(
+                                        todo_sync.clone(),
+                                    ));
+                                    network.publish_todos(todo_sync.clone())?;
+                                }
+                                Admission::Rejected(error) => {
+                                    log::warn!("rejected TODO snapshot from {source:?}: {error}");
+                                    application.dispatch(ApplicationCommand::TodoSyncStatus(
+                                        todo_sync.clone(),
+                                    ));
+                                    persistence.schedule(application.persistent_state(), now);
+                                    network.publish_todos(todo_sync.clone())?;
+                                }
+                            }
+                        }
+                        NetworkRuntimeEvent::TodoNotModified { source, etag } => {
+                            todo_sync.source = Some(source);
+                            todo_sync.etag = etag.or(todo_sync.etag);
+                            todo_sync.last_success_unix_seconds = unix_timestamp();
+                            todo_sync.last_error = None;
+                            todo_sync.last_event =
+                                Some(crate::todo_sync::TodoSyncEvent::NotModified);
+                            application
+                                .dispatch(ApplicationCommand::TodoSyncStatus(todo_sync.clone()));
+                            persistence.schedule(application.persistent_state(), now);
+                            network.publish_todos(todo_sync.clone())?;
+                        }
+                        NetworkRuntimeEvent::TodoError { source, message } => {
+                            todo_sync.source = Some(source);
+                            todo_sync.last_error = Some(message);
+                            todo_sync.last_event = Some(
+                                if todo_sync.last_error.as_deref().is_some_and(|value| {
+                                    value.contains("HTTP 401") || value.contains("HTTP 403")
+                                }) {
+                                    crate::todo_sync::TodoSyncEvent::AuthenticationFailure
+                                } else if todo_sync.snapshot.is_some() {
+                                    crate::todo_sync::TodoSyncEvent::OfflineCache
+                                } else {
+                                    crate::todo_sync::TodoSyncEvent::Retrying
+                                },
+                            );
+                            application
+                                .dispatch(ApplicationCommand::TodoSyncStatus(todo_sync.clone()));
+                            persistence.schedule(application.persistent_state(), now);
+                            network.publish_todos(todo_sync.clone())?;
+                        }
+                        NetworkRuntimeEvent::TodoNotification => {
+                            todo_sync.last_event =
+                                Some(crate::todo_sync::TodoSyncEvent::Notification);
+                            application
+                                .dispatch(ApplicationCommand::TodoSyncStatus(todo_sync.clone()));
+                            network.publish_todos(todo_sync.clone())?;
                         }
                         NetworkRuntimeEvent::Audit(audit) => log::info!(
                             "local management request={:?} accepted={} error={:?}",
@@ -738,6 +818,38 @@ mod firmware {
             selection_policy: config.selection_policy,
             weather: config.weather,
             almanac: config.almanac,
+            todo_sync_enabled: config.todo_sync_enabled,
+            todo_sync_url: application
+                .snapshot()
+                .config
+                .todo_sync
+                .https_base_url
+                .clone(),
+            todo_sync_token_is_set: application.snapshot().config.todo_sync.has_device_token(),
+            todo_sync_poll_interval_seconds: application
+                .snapshot()
+                .config
+                .todo_sync
+                .poll_interval_seconds,
+            todo_sync_view: config.todo_sync_view,
+            todo_sync_mqtt_broker_url: application
+                .snapshot()
+                .config
+                .todo_sync
+                .mqtt_broker_url
+                .clone(),
+            todo_sync_mqtt_topic: application.snapshot().config.todo_sync.mqtt_topic.clone(),
+            todo_sync_mqtt_username: application
+                .snapshot()
+                .config
+                .todo_sync
+                .mqtt_username
+                .clone(),
+            todo_sync_mqtt_password_is_set: application
+                .snapshot()
+                .config
+                .todo_sync
+                .has_mqtt_password(),
         }
     }
 
@@ -746,6 +858,13 @@ mod firmware {
         let mut mac = [0_u8; 6];
         esp_idf_sys::esp!(unsafe { esp_idf_sys::esp_efuse_mac_get_default(mac.as_mut_ptr()) })?;
         Ok(mac.iter().map(|byte| format!("{byte:02x}")).collect())
+    }
+
+    fn unix_timestamp() -> Option<i64> {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .and_then(|duration| i64::try_from(duration.as_secs()).ok())
     }
 
     #[cfg(not(feature = "color-test"))]

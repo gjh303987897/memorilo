@@ -39,6 +39,7 @@
     "hono": "4.13.2",
     "loro-crdt": "1.13.8",
     "lucide-react": "^0.468.0",
+    "mqtt": "^5.15.2",
     "postgres": "^3.4.9",
     "react": "19.2.8",
     "react-dom": "19.2.8",

@@ -1,8 +1,8 @@
-import { createEditorNote } from '@memorilo/editor/note'
-import { createHash } from 'node:crypto'
+import { Buffer } from 'node:buffer'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createEditorNote } from '@memorilo/editor/note'
 import { Effect } from 'effect'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createSqliteSyncDatabase } from '../infrastructure/database/sqlite'
@@ -15,7 +15,7 @@ describe('device Todo module', () => {
     await Promise.all(directories.splice(0).map(directory => rm(directory, { force: true, recursive: true })))
   })
 
-  it('projects today tasks and applies idempotent complete/reopen actions', async () => {
+  it('projects tasks through a read-only device credential', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'memorilo-device-todo-'))
     directories.push(directory)
     const database = createSqliteSyncDatabase({ filename: join(directory, 'sync.sqlite') })
@@ -30,20 +30,13 @@ describe('device Todo module', () => {
       topicId: topic.id,
     })
     const snapshot = Buffer.from(note.exportSnapshot()).toString('base64url')
-    const merged = await database.repository.mergeNoteSnapshot!('account-1', 0, 'note-1', snapshot, 2)
+    await database.repository.mergeNoteSnapshot!('account-1', 0, 'note-1', snapshot, 2)
     const module = createDeviceTodoModule({ repository: database.repository, store: database.deviceTodo, now: () => Date.parse('2026-09-01T08:00:00Z') })
-    const issued = await Effect.runPromise(module.issueToken({ accountId: 'account-1', deviceName: 'NOTE4', expiresAt: Date.parse('2027-01-01T00:00:00Z'), scopes: ['todos:read', 'todos:write'] }))
+    const issued = await Effect.runPromise(module.issueToken({ accountId: 'account-1', deviceName: 'E-paper', expiresAt: Date.parse('2027-01-01T00:00:00Z'), scopes: ['todos:read'] }))
     const listed = await Effect.runPromise(module.list({ date: '2026-09-01', limit: 20, token: issued.token, view: 'today' }))
     expect(listed.items).toHaveLength(1)
-    const item = listed.items[0]!
-    const operationId = 'operation-1'
-    const applied = await Effect.runPromise(module.applyAction({ action: 'complete', baseRevision: item.revision, operationId, token: issued.token, todoId: item.id }))
-    expect(applied.status).toBe('done')
-    await expect(Effect.runPromise(module.applyAction({ action: 'complete', baseRevision: item.revision, operationId, token: issued.token, todoId: item.id }))).resolves.toMatchObject({ duplicate: true, status: 'done' })
-    const after = await Effect.runPromise(module.list({ date: '2026-09-01', limit: 20, token: issued.token, view: 'all' }))
-    expect(after.items[0]?.status).toBe('done')
-    expect(merged.snapshot).not.toBe('')
-    expect(createHash('sha256').update(merged.snapshot).digest('hex')).toBe(item.revision)
+    expect(listed.items[0]).toMatchObject({ status: 'todo', text: 'Buy milk' })
+    await expect(Effect.runPromise(module.issueToken({ accountId: 'account-1', deviceName: 'Writable', expiresAt: Date.parse('2027-01-01T00:00:00Z'), scopes: ['todos:write'] }))).rejects.toMatchObject({ code: 'invalid_request' })
     database.close()
   })
 })

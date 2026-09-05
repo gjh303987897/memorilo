@@ -36,6 +36,11 @@ describe('device settings', () => {
           timezone: 'Asia/Shanghai',
           wifiPasswordIsSet: true,
           wifiSsid: 'Study',
+          todoSyncEnabled: false,
+          todoSyncUrl: '',
+          todoSyncTokenIsSet: false,
+          todoSyncPollIntervalSeconds: 900,
+          todoSyncView: 'today',
         },
         info: {
           capabilities: ['config-v1'],
@@ -57,8 +62,11 @@ describe('device settings', () => {
     const generateLocalManagementToken = vi.fn(() => Effect.succeed('a'.repeat(32)))
     const hasLocalManagementToken = vi.fn(() => Effect.succeed(false))
     const loadGallery = vi.fn(() => Effect.fail(new DeviceProvisioningError({ code: 'local-management' })))
+    const loadTodos = vi.fn(() => Effect.fail(new DeviceProvisioningError({ code: 'local-management' })))
+    const pushTodos = vi.fn(() => Effect.void)
     const reorderGallery = vi.fn(() => Effect.void)
     const saveLocalManagementToken = vi.fn(() => Effect.void)
+    const saveTodoTarget = vi.fn(() => Effect.void)
     const setGallerySlideshow = vi.fn(() => Effect.void)
     const uploadGalleryAsset = vi.fn(() => Effect.void)
     const client: DeviceProvisioningClient = {
@@ -72,9 +80,13 @@ describe('device settings', () => {
       generateLocalManagementToken,
       hasLocalManagementToken,
       loadGallery,
+      loadTodos,
+      loadTodoTarget: vi.fn(() => Effect.succeed({ status: null, target: null })),
+      pushTodos,
       reorderGallery,
       respondToPairing,
       saveLocalManagementToken,
+      saveTodoTarget,
       setGallerySlideshow,
       selectDevice,
       subscribeDevices: (listener) => {
@@ -115,6 +127,7 @@ describe('device settings', () => {
     expect(rendered.getByLabelText('Wi-Fi password')).toHaveValue('')
 
     fireEvent.change(name, { target: { value: 'Kitchen display' } })
+    fireEvent.change(rendered.getByRole('textbox', { name: 'Memorilo LAN address' }), { target: { value: '192.168.4.23' } })
     fireEvent.change(rendered.getByRole('spinbutton', { name: 'Sleep after idle seconds' }), { target: { value: '900' } })
     fireEvent.click(rendered.getByRole('button', { name: 'Generate access token' }))
     await waitFor(() => expect(rendered.getByText(/A new write-only token will be installed/)).toBeInTheDocument())
@@ -125,6 +138,7 @@ describe('device settings', () => {
       localManagement: { token: 'a'.repeat(32) },
     })))
     expect(saveLocalManagementToken).toHaveBeenCalledWith('device-1', 'a'.repeat(32))
+    expect(saveTodoTarget).toHaveBeenCalledWith('device-1', '192.168.4.23')
     expect(rendered.getByText('Settings applied successfully.')).toBeInTheDocument()
 
     rendered.unmount()
