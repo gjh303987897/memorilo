@@ -1,3 +1,5 @@
+export type { TaskStatus } from '../schema/task-schema'
+export { parseTaskDueDate, parseTaskTime, readTaskStatus, transitionTaskAttrs } from '../schema/task-schema'
 export type {
   TaskActionMutation,
   TaskActionPlan,
@@ -26,5 +28,3 @@ export {
   taskRepeatContinuesOn,
 } from './task-recurrence'
 export type { TaskRecurrencePreviewOptions } from './task-recurrence'
-export type { TaskStatus } from '../schema/task-schema'
-export { parseTaskDueDate, parseTaskTime, readTaskStatus, transitionTaskAttrs } from '../schema/task-schema'
