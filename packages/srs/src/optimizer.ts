@@ -1,3 +1,4 @@
+import type { FsrsOptimizerConfiguration, RatingHistory, ReviewRating } from './types'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js'
 import {
@@ -6,7 +7,6 @@ import {
   FSRSBindingReview,
 } from '@open-spaced-repetition/binding'
 import { validateOptimizerConfiguration } from './fsrs'
-import type { FsrsOptimizerConfiguration, RatingHistory, ReviewRating } from './types'
 import { reviewRatingRanks } from './types'
 
 function ratingNumber(rating: ReviewRating): number {
