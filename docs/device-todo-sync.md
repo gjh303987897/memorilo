@@ -29,3 +29,6 @@ Local note changes are debounced and coalesced before a bounded snapshot is gene
 The device's authenticated `/v1/status` and `/v1/todos` responses expose the current revision, source, last successful timestamp, broker connectivity, last event, and a redacted error code. They never expose HTTPS, MQTT, Wi-Fi, or local-management credentials.
 
 When the network is unavailable, the last valid snapshot remains on screen. A `304 Not Modified` and a semantically identical snapshot do not trigger an e-paper refresh. MQTT reconnects are independent of button input, BLE, local HTTP, and sleep handling.
+
+The remaining hardware acceptance procedure is documented in
+[`docs/device-todo-sync-hardware-acceptance.md`](device-todo-sync-hardware-acceptance.md).
