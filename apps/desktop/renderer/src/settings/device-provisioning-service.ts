@@ -2,6 +2,7 @@ import type {
   DesktopDeviceGalleryStatus,
   DesktopDeviceGalleryTarget,
   DesktopDeviceGalleryUpload,
+  DesktopDeviceStatus,
   DesktopDeviceTodoPush,
   DesktopDeviceTodoState,
   DesktopDeviceTodoTargetState,
@@ -82,9 +83,13 @@ interface PairingBridge {
   generateLocalManagementToken: () => Promise<string>
   hasLocalManagementToken: (deviceId: string) => Promise<boolean>
   loadGallery: (target: DesktopDeviceGalleryTarget) => Promise<DesktopDeviceGalleryStatus>
+  loadStatus: (target: DesktopDeviceGalleryTarget) => Promise<DesktopDeviceStatus>
   loadTodos: (target: DesktopDeviceGalleryTarget) => Promise<DesktopDeviceTodoState>
   loadTodoTarget: (deviceId: string) => Promise<DesktopDeviceTodoTargetState>
   pushTodos: (input: DesktopDeviceTodoPush) => Promise<void>
+  refreshDevice: (target: DesktopDeviceGalleryTarget) => Promise<void>
+  nextDevicePage: (target: DesktopDeviceGalleryTarget) => Promise<void>
+  sleepDevice: (target: DesktopDeviceGalleryTarget) => Promise<void>
   reorderGallery: (target: DesktopDeviceGalleryTarget, order: readonly number[]) => Promise<void>
   respondToPairing: (response: DesktopProvisioningPairingResponse) => Promise<void>
   saveLocalManagementToken: (deviceId: string, token: string) => Promise<void>
@@ -104,9 +109,13 @@ export interface DeviceProvisioningClient {
   hasLocalManagementToken: (deviceId: string) => Effect.Effect<boolean, DeviceProvisioningError>
   deleteGalleryAsset: (target: DesktopDeviceGalleryTarget, id: number) => Effect.Effect<void, DeviceProvisioningError>
   loadGallery: (target: DesktopDeviceGalleryTarget) => Effect.Effect<DesktopDeviceGalleryStatus, DeviceProvisioningError>
+  loadStatus: (target: DesktopDeviceGalleryTarget) => Effect.Effect<DesktopDeviceStatus, DeviceProvisioningError>
   loadTodos: (target: DesktopDeviceGalleryTarget) => Effect.Effect<DesktopDeviceTodoState, DeviceProvisioningError>
   loadTodoTarget: (deviceId: string) => Effect.Effect<DesktopDeviceTodoTargetState, DeviceProvisioningError>
   pushTodos: (input: DesktopDeviceTodoPush) => Effect.Effect<void, DeviceProvisioningError>
+  refreshDevice: (target: DesktopDeviceGalleryTarget) => Effect.Effect<void, DeviceProvisioningError>
+  nextDevicePage: (target: DesktopDeviceGalleryTarget) => Effect.Effect<void, DeviceProvisioningError>
+  sleepDevice: (target: DesktopDeviceGalleryTarget) => Effect.Effect<void, DeviceProvisioningError>
   reorderGallery: (target: DesktopDeviceGalleryTarget, order: readonly number[]) => Effect.Effect<void, DeviceProvisioningError>
   respondToPairing: (response: DesktopProvisioningPairingResponse) => Effect.Effect<void, DeviceProvisioningError>
   saveLocalManagementToken: (deviceId: string, token: string) => Effect.Effect<void, DeviceProvisioningError>
@@ -336,6 +345,10 @@ export class DeviceProvisioningService {
     return this.managementEffect(() => this.bridge.loadGallery(target))
   }
 
+  loadStatus(target: DesktopDeviceGalleryTarget): Effect.Effect<DesktopDeviceStatus, DeviceProvisioningError> {
+    return this.managementEffect(() => this.bridge.loadStatus(target))
+  }
+
   loadTodos(target: DesktopDeviceGalleryTarget): Effect.Effect<DesktopDeviceTodoState, DeviceProvisioningError> {
     return this.managementEffect(() => this.bridge.loadTodos(target))
   }
@@ -346,6 +359,18 @@ export class DeviceProvisioningService {
 
   pushTodos(input: DesktopDeviceTodoPush): Effect.Effect<void, DeviceProvisioningError> {
     return this.managementEffect(() => this.bridge.pushTodos(input))
+  }
+
+  refreshDevice(target: DesktopDeviceGalleryTarget): Effect.Effect<void, DeviceProvisioningError> {
+    return this.managementEffect(() => this.bridge.refreshDevice(target))
+  }
+
+  nextDevicePage(target: DesktopDeviceGalleryTarget): Effect.Effect<void, DeviceProvisioningError> {
+    return this.managementEffect(() => this.bridge.nextDevicePage(target))
+  }
+
+  sleepDevice(target: DesktopDeviceGalleryTarget): Effect.Effect<void, DeviceProvisioningError> {
+    return this.managementEffect(() => this.bridge.sleepDevice(target))
   }
 
   reorderGallery(target: DesktopDeviceGalleryTarget, order: readonly number[]): Effect.Effect<void, DeviceProvisioningError> {

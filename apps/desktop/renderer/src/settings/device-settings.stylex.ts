@@ -1,6 +1,71 @@
 import * as stylex from '@stylexjs/stylex'
 
 export const deviceSettingsStyles = stylex.create({
+  remoteSection: {
+    display: 'grid',
+    gap: 18,
+    padding: 20,
+    borderTopWidth: 1,
+    borderTopStyle: 'solid',
+    borderTopColor: 'var(--ui-divider)',
+  },
+  remoteHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
+  remoteTitle: {
+    margin: 0,
+    fontSize: 14,
+    lineHeight: '20px',
+    fontWeight: 600,
+    letterSpacing: 0,
+    color: 'var(--ui-text)',
+  },
+  remoteMetrics: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))',
+    gap: 20,
+    margin: 0,
+  },
+  remoteMetric: {
+    display: 'grid',
+    alignContent: 'start',
+    gap: 6,
+    minWidth: 0,
+  },
+  remoteMetricLabel: {
+    fontSize: 12,
+    lineHeight: '18px',
+    color: 'var(--ui-text-muted)',
+  },
+  remoteMetricValue: {
+    margin: 0,
+    fontSize: 14,
+    lineHeight: '22px',
+    fontWeight: 550,
+    color: 'var(--ui-text)',
+    overflowWrap: 'anywhere',
+    fontVariantNumeric: 'tabular-nums',
+  },
+  remoteActions: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    paddingTop: 16,
+    borderTopWidth: 1,
+    borderTopStyle: 'solid',
+    borderTopColor: 'var(--ui-divider)',
+  },
+  remoteFeedback: {
+    fontSize: 12,
+    lineHeight: '18px',
+    minHeight: 18,
+  },
   root: {
     display: 'grid',
     gap: 10,

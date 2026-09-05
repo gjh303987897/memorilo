@@ -42,6 +42,21 @@ export interface DesktopDeviceGalleryTarget {
   readonly deviceId: string
 }
 
+export type DesktopDeviceNetworkPhase = 'authentication-failed' | 'backoff' | 'connecting' | 'disabled' | 'idle' | 'online'
+
+export interface DesktopDeviceStatus {
+  readonly firmwareVersion: string
+  readonly network: {
+    readonly consecutiveFailures: number
+    readonly ipv4: string | null
+    readonly mqttConnected: boolean
+    readonly phase: DesktopDeviceNetworkPhase
+    readonly retryAtMs: number | null
+    readonly timeSynchronized: boolean
+  }
+  readonly uptimeMs: number
+}
+
 export interface DesktopDeviceGalleryUpload extends DesktopDeviceGalleryTarget {
   readonly bytes: Uint8Array
   readonly createdAtUnixSeconds: number
@@ -102,6 +117,7 @@ export const desktopProvisioningChannels = {
   generateLocalManagementToken: 'memorilo:device-provisioning:generate-local-management-token',
   hasLocalManagementToken: 'memorilo:device-provisioning:has-local-management-token',
   loadGallery: 'memorilo:device-provisioning:load-gallery',
+  loadStatus: 'memorilo:device-provisioning:load-status',
   loadTodos: 'memorilo:device-provisioning:load-todos',
   loadTodoTarget: 'memorilo:device-provisioning:load-todo-target',
   pairingRequested: 'memorilo:device-provisioning:pairing-requested',
@@ -112,5 +128,8 @@ export const desktopProvisioningChannels = {
   selectDevice: 'memorilo:device-provisioning:select-device',
   uploadGalleryAsset: 'memorilo:device-provisioning:upload-gallery-asset',
   pushTodos: 'memorilo:device-provisioning:push-todos',
+  refreshDevice: 'memorilo:device-provisioning:refresh-device',
+  nextDevicePage: 'memorilo:device-provisioning:next-device-page',
+  sleepDevice: 'memorilo:device-provisioning:sleep-device',
   saveTodoTarget: 'memorilo:device-provisioning:save-todo-target',
 } as const

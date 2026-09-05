@@ -10,7 +10,8 @@ mod firmware {
     use anyhow::{Context, Result, ensure};
     #[cfg(not(feature = "color-test"))]
     use memorilo_device_firmware::application::{
-        Application, ApplicationCommand, PowerRequest, RenderIntent, ServiceId, ServiceRequest,
+        Application, ApplicationCommand, PageId, PowerRequest, RenderIntent, ServiceId,
+        ServiceRequest,
     };
     use memorilo_device_firmware::board::Board;
     #[cfg(not(feature = "color-test"))]
@@ -26,6 +27,8 @@ mod firmware {
     use memorilo_device_firmware::framebuffer::render_color_test;
     #[cfg(not(feature = "color-test"))]
     use memorilo_device_firmware::gallery::{EspPartitionGalleryStorage, GalleryRepository};
+    #[cfg(not(feature = "color-test"))]
+    use memorilo_device_firmware::gallery_idle::GalleryIdleFullscreen;
     #[cfg(not(feature = "color-test"))]
     use memorilo_device_firmware::input::{ButtonId, Gesture, GestureRecognizer, route_gesture};
     #[cfg(not(feature = "color-test"))]
@@ -180,6 +183,7 @@ mod firmware {
             let (result_tx, result_rx) = channel();
             spawn_display_task(refresh_rx, result_tx, display)?;
             let mut coordinator = DisplayCoordinator::new(DisplayPolicy::default());
+            let mut gallery_idle = GalleryIdleFullscreen::default();
             let mut slideshow_due: Option<Duration> = None;
             let mut gesture_recognizer = GestureRecognizer::default();
             let mut provisioning = ProvisioningSession::new(persistence.generation());
@@ -535,7 +539,13 @@ mod firmware {
                 let button_state = board.button_state();
                 for gesture in gesture_recognizer.update(diagnostics::uptime(), button_state) {
                     log::info!("input gesture={gesture:?}");
-                    power.note_activity(diagnostics::uptime());
+                    let input_at = diagnostics::uptime();
+                    power.note_activity(input_at);
+                    gallery_idle.update(
+                        input_at,
+                        gallery_auto_fullscreen_eligible(&application),
+                        true,
+                    );
                     let Some(command) = route_gesture(application.snapshot().page, gesture) else {
                         continue;
                     };
@@ -618,6 +628,24 @@ mod firmware {
                     );
                 }
 
+                if gallery_idle.update(
+                    diagnostics::uptime(),
+                    gallery_auto_fullscreen_eligible(&application),
+                    false,
+                ) {
+                    log::info!("gallery idle timeout elapsed; entering fullscreen");
+                    let transition =
+                        application.dispatch(ApplicationCommand::EnterGalleryFullscreen);
+                    sync_gallery_frame(&mut application, &mut gallery);
+                    queue_render(
+                        &mut application,
+                        &mut coordinator,
+                        &refresh_tx,
+                        transition.render,
+                    )?;
+                    slideshow_due = None;
+                }
+
                 power.set_display_work(coordinator.has_pending_work());
                 power.set_persistence_write(persistence.has_pending_write());
                 power.set_external_power(
@@ -653,6 +681,13 @@ mod firmware {
             Gesture::Repeat(ButtonId::Down) => "down-repeat",
             Gesture::UpDownChordLongPress => "up+down-long",
         }
+    }
+
+    #[cfg(not(feature = "color-test"))]
+    fn gallery_auto_fullscreen_eligible(application: &Application) -> bool {
+        application.snapshot().page == PageId::Gallery
+            && !application.snapshot().gallery.fullscreen
+            && !application.snapshot().gallery.catalog.assets.is_empty()
     }
 
     #[cfg(not(feature = "color-test"))]

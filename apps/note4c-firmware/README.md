@@ -21,7 +21,9 @@ Calendar, and Weather; it has no on-device Settings page. Short presses remain
 contextual: Todo uses short Up/Down presses to paginate its read-only list,
 Gallery and Calendar use them for their local view, and Weather ignores them.
 GPIO0/Confirm opens or closes a gallery image or returns Calendar to the current
-month. Holding Up+Down opens the dedicated BLE pairing status page; all device
+month. A non-empty Gallery enters the selected image full-screen after 30 seconds
+without input; GPIO0/Confirm exits it, while Up and Down keep switching images.
+Holding Up+Down opens the dedicated BLE pairing status page; all device
 configuration is edited in Memorilo. Gallery metadata and exact 30,000-byte
 frames live in the upstream-compatible 8 MiB `assets` SPIFFS partition with
 dual generation index slots. Confirm opens or closes the selected full-screen

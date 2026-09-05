@@ -356,6 +356,18 @@ mod tests {
             Some(ApplicationCommand::ActivateSelection)
         );
         assert_eq!(
+            route_gesture(PageId::Gallery, Gesture::Tap(ButtonId::Ok)),
+            Some(ApplicationCommand::ActivateSelection)
+        );
+        assert_eq!(
+            route_gesture(PageId::Gallery, Gesture::Tap(ButtonId::Up)),
+            Some(ApplicationCommand::SelectPrevious)
+        );
+        assert_eq!(
+            route_gesture(PageId::Gallery, Gesture::Tap(ButtonId::Down)),
+            Some(ApplicationCommand::SelectNext)
+        );
+        assert_eq!(
             route_gesture(PageId::Todos, Gesture::Repeat(ButtonId::Down)),
             None
         );

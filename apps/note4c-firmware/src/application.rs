@@ -189,6 +189,7 @@ pub enum ApplicationCommand {
     TodosSynced(TodoModel),
     TodoSyncStatus(TodoSyncState),
     GalleryUpdated(GalleryCatalog),
+    EnterGalleryFullscreen,
     GalleryFrameLoaded(Option<Vec<u8>>),
     GalleryFailed(String),
     WeatherFetching,
@@ -359,6 +360,7 @@ impl Application {
                 Transition::default()
             }
             ApplicationCommand::GalleryUpdated(catalog) => self.gallery_updated(catalog),
+            ApplicationCommand::EnterGalleryFullscreen => self.enter_gallery_fullscreen(),
             ApplicationCommand::GalleryFrameLoaded(frame) => {
                 self.snapshot.gallery.fullscreen_frame = frame;
                 Transition::default()
@@ -461,6 +463,16 @@ impl Application {
             PageId::Provisioning => {}
             PageId::Diagnostics => {}
         })
+    }
+
+    fn enter_gallery_fullscreen(&mut self) -> Transition {
+        if self.snapshot.page != PageId::Gallery
+            || self.snapshot.gallery.fullscreen
+            || self.snapshot.gallery.catalog.assets.is_empty()
+        {
+            return Transition::default();
+        }
+        self.mutate(|snapshot| snapshot.gallery.fullscreen = true)
     }
 
     fn previous_page(&mut self) -> Transition {
@@ -974,6 +986,47 @@ mod tests {
         assert_eq!(application.snapshot().gallery.selected, 0);
         application.dispatch(ApplicationCommand::NextPage);
         assert_eq!(application.snapshot().page, PageId::Gallery);
+        assert!(!application.snapshot().gallery.fullscreen);
+    }
+
+    #[test]
+    fn gallery_idle_fullscreen_keeps_navigation_and_boot_exits() {
+        use crate::gallery::{GalleryAssetId, GalleryAssetMetadata, GalleryCatalog};
+
+        let asset = |id, name: &str| GalleryAssetMetadata {
+            id: GalleryAssetId(id),
+            name: name.into(),
+            created_at_unix_seconds: 0,
+            checksum: id as u32,
+            byte_length: crate::framebuffer::FRAME_BYTES as u32,
+        };
+        let mut application = Application::new([]);
+        application.start();
+
+        assert!(
+            application
+                .dispatch(ApplicationCommand::EnterGalleryFullscreen)
+                .render
+                .is_none()
+        );
+        application.dispatch(ApplicationCommand::GalleryUpdated(GalleryCatalog {
+            assets: vec![asset(1, "one"), asset(2, "two")],
+            slideshow_interval_seconds: None,
+        }));
+        application.dispatch(ApplicationCommand::NextPage);
+
+        let entered = application.dispatch(ApplicationCommand::EnterGalleryFullscreen);
+        assert!(entered.render.is_some());
+        assert!(application.snapshot().gallery.fullscreen);
+
+        application.dispatch(ApplicationCommand::SelectNext);
+        assert_eq!(application.snapshot().gallery.selected, 1);
+        assert!(application.snapshot().gallery.fullscreen);
+        application.dispatch(ApplicationCommand::SelectPrevious);
+        assert_eq!(application.snapshot().gallery.selected, 0);
+        assert!(application.snapshot().gallery.fullscreen);
+
+        application.dispatch(ApplicationCommand::ActivateSelection);
         assert!(!application.snapshot().gallery.fullscreen);
     }
 

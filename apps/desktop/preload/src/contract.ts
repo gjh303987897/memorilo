@@ -3,6 +3,7 @@ import type {
   DesktopDeviceGalleryStatus,
   DesktopDeviceGalleryTarget,
   DesktopDeviceGalleryUpload,
+  DesktopDeviceStatus,
   DesktopDeviceTodoPush,
   DesktopDeviceTodoState,
   DesktopDeviceTodoTargetState,
@@ -37,9 +38,13 @@ export interface DesktopApi {
     generateLocalManagementToken: () => Promise<string>
     hasLocalManagementToken: (deviceId: string) => Promise<boolean>
     loadGallery: (target: DesktopDeviceGalleryTarget) => Promise<DesktopDeviceGalleryStatus>
+    loadStatus: (target: DesktopDeviceGalleryTarget) => Promise<DesktopDeviceStatus>
     loadTodos: (target: DesktopDeviceGalleryTarget) => Promise<DesktopDeviceTodoState>
     loadTodoTarget: (deviceId: string) => Promise<DesktopDeviceTodoTargetState>
     pushTodos: (input: DesktopDeviceTodoPush) => Promise<void>
+    refreshDevice: (target: DesktopDeviceGalleryTarget) => Promise<void>
+    nextDevicePage: (target: DesktopDeviceGalleryTarget) => Promise<void>
+    sleepDevice: (target: DesktopDeviceGalleryTarget) => Promise<void>
     reorderGallery: (target: DesktopDeviceGalleryTarget, order: readonly number[]) => Promise<void>
     respondToPairing: (response: DesktopProvisioningPairingResponse) => Promise<void>
     saveLocalManagementToken: (deviceId: string, token: string) => Promise<void>

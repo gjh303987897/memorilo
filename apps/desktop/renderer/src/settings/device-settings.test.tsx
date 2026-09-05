@@ -62,8 +62,12 @@ describe('device settings', () => {
     const generateLocalManagementToken = vi.fn(() => Effect.succeed('a'.repeat(32)))
     const hasLocalManagementToken = vi.fn(() => Effect.succeed(false))
     const loadGallery = vi.fn(() => Effect.fail(new DeviceProvisioningError({ code: 'local-management' })))
+    const loadStatus = vi.fn(() => Effect.fail(new DeviceProvisioningError({ code: 'local-management' })))
     const loadTodos = vi.fn(() => Effect.fail(new DeviceProvisioningError({ code: 'local-management' })))
     const pushTodos = vi.fn(() => Effect.void)
+    const refreshDevice = vi.fn(() => Effect.void)
+    const nextDevicePage = vi.fn(() => Effect.void)
+    const sleepDevice = vi.fn(() => Effect.void)
     const reorderGallery = vi.fn(() => Effect.void)
     const saveLocalManagementToken = vi.fn(() => Effect.void)
     const saveTodoTarget = vi.fn(() => Effect.void)
@@ -80,9 +84,13 @@ describe('device settings', () => {
       generateLocalManagementToken,
       hasLocalManagementToken,
       loadGallery,
+      loadStatus,
       loadTodos,
       loadTodoTarget: vi.fn(() => Effect.succeed({ status: null, target: null })),
       pushTodos,
+      refreshDevice,
+      nextDevicePage,
+      sleepDevice,
       reorderGallery,
       respondToPairing,
       saveLocalManagementToken,

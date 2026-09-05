@@ -2,6 +2,7 @@ import type {
   DesktopDeviceGalleryStatus,
   DesktopDeviceGalleryTarget,
   DesktopDeviceGalleryUpload,
+  DesktopDeviceStatus,
   DesktopDeviceTodoPush,
   DesktopDeviceTodoSnapshot,
   DesktopDeviceTodoState,
@@ -36,6 +37,16 @@ export class DeviceLocalManagementClient {
         return yield* Effect.fail(responseError(response.status))
       const body = yield* readBoundedJson(response)
       return parseGalleryStatus(body)
+    })
+  }
+
+  loadStatus(target: DesktopDeviceGalleryTarget): Effect.Effect<DesktopDeviceStatus, DeviceLocalManagementError> {
+    const authorizedRequest = (path: string, init: RequestInit) => this.authorizedRequest(target, path, init)
+    return Effect.gen(function* () {
+      const response = yield* authorizedRequest('/v1/status', { method: 'GET' })
+      if (response.status !== 200)
+        return yield* Effect.fail(responseError(response.status))
+      return parseDeviceStatus(yield* readBoundedJson(response))
     })
   }
 
@@ -103,6 +114,22 @@ export class DeviceLocalManagementClient {
       return Effect.fail(invalidInput())
     }
     return this.jsonMutation(target, '/v1/gallery/slideshow', { intervalSeconds })
+  }
+
+  refreshDevice(target: DesktopDeviceGalleryTarget): Effect.Effect<void, DeviceLocalManagementError> {
+    return this.command(target, '/v1/commands/refresh')
+  }
+
+  nextDevicePage(target: DesktopDeviceGalleryTarget): Effect.Effect<void, DeviceLocalManagementError> {
+    return this.command(target, '/v1/commands/next-page')
+  }
+
+  sleepDevice(target: DesktopDeviceGalleryTarget): Effect.Effect<void, DeviceLocalManagementError> {
+    return this.command(target, '/v1/commands/sleep')
+  }
+
+  private command(target: DesktopDeviceGalleryTarget, path: string): Effect.Effect<void, DeviceLocalManagementError> {
+    return this.mutate(target, path, { method: 'POST' })
   }
 
   private jsonMutation(
@@ -230,6 +257,20 @@ function parseGalleryStatus(value: unknown): DesktopDeviceGalleryStatus {
     maxAssets: value.maxAssets,
     mutationRevision: value.mutationRevision,
   }
+}
+
+function parseDeviceStatus(value: unknown): DesktopDeviceStatus {
+  if (!isRecord(value) || typeof value.firmwareVersion !== 'string' || !Number.isSafeInteger(value.uptimeMs)
+    || !isRecord(value.network)
+    || !['authentication-failed', 'backoff', 'connecting', 'disabled', 'idle', 'online'].includes(value.network.phase as string)
+    || (value.network.ipv4 !== null && typeof value.network.ipv4 !== 'string')
+    || typeof value.network.timeSynchronized !== 'boolean'
+    || typeof value.network.mqttConnected !== 'boolean'
+    || !Number.isSafeInteger(value.network.consecutiveFailures)
+    || (value.network.retryAtMs !== null && !Number.isSafeInteger(value.network.retryAtMs))) {
+    throw invalidResponse()
+  }
+  return value as unknown as DesktopDeviceStatus
 }
 
 function parseTodoState(value: unknown): DesktopDeviceTodoState {

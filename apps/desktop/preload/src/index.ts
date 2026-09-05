@@ -25,9 +25,13 @@ const deviceProvisioning: DesktopApi['deviceProvisioning'] = {
   generateLocalManagementToken: () => ipcRenderer.invoke(desktopProvisioningChannels.generateLocalManagementToken),
   hasLocalManagementToken: deviceId => ipcRenderer.invoke(desktopProvisioningChannels.hasLocalManagementToken, deviceId),
   loadGallery: target => ipcRenderer.invoke(desktopProvisioningChannels.loadGallery, target),
+  loadStatus: target => ipcRenderer.invoke(desktopProvisioningChannels.loadStatus, target),
   loadTodos: target => ipcRenderer.invoke(desktopProvisioningChannels.loadTodos, target),
   loadTodoTarget: deviceId => ipcRenderer.invoke(desktopProvisioningChannels.loadTodoTarget, deviceId),
   pushTodos: input => ipcRenderer.invoke(desktopProvisioningChannels.pushTodos, input),
+  refreshDevice: target => ipcRenderer.invoke(desktopProvisioningChannels.refreshDevice, target),
+  nextDevicePage: target => ipcRenderer.invoke(desktopProvisioningChannels.nextDevicePage, target),
+  sleepDevice: target => ipcRenderer.invoke(desktopProvisioningChannels.sleepDevice, target),
   reorderGallery: (target, order) => ipcRenderer.invoke(
     desktopProvisioningChannels.reorderGallery,
     { ...target, order },

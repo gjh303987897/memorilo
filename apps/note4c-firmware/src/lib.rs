@@ -4,6 +4,7 @@ pub mod diagnostics;
 pub mod display_coordinator;
 pub mod framebuffer;
 pub mod gallery;
+pub mod gallery_idle;
 pub mod glance;
 pub mod input;
 pub mod model;

@@ -108,6 +108,10 @@ export function createSettingsWindowController(
     requireSettingsSender(event)
     return Effect.runPromise(localManagement.loadGallery(requireGalleryTarget(input)))
   })
+  ipcMain.handle(desktopProvisioningChannels.loadStatus, async (event, input: unknown) => {
+    requireSettingsSender(event)
+    return Effect.runPromise(localManagement.loadStatus(requireGalleryTarget(input)))
+  })
   ipcMain.handle(desktopProvisioningChannels.loadTodos, async (event, input: unknown) => {
     requireSettingsSender(event)
     return Effect.runPromise(localManagement.loadTodos(requireGalleryTarget(input)))
@@ -115,6 +119,18 @@ export function createSettingsWindowController(
   ipcMain.handle(desktopProvisioningChannels.pushTodos, async (event, input: unknown) => {
     requireSettingsSender(event)
     return Effect.runPromise(localManagement.pushTodos(requireTodoPush(input)))
+  })
+  ipcMain.handle(desktopProvisioningChannels.refreshDevice, async (event, input: unknown) => {
+    requireSettingsSender(event)
+    return Effect.runPromise(localManagement.refreshDevice(requireGalleryTarget(input)))
+  })
+  ipcMain.handle(desktopProvisioningChannels.nextDevicePage, async (event, input: unknown) => {
+    requireSettingsSender(event)
+    return Effect.runPromise(localManagement.nextDevicePage(requireGalleryTarget(input)))
+  })
+  ipcMain.handle(desktopProvisioningChannels.sleepDevice, async (event, input: unknown) => {
+    requireSettingsSender(event)
+    return Effect.runPromise(localManagement.sleepDevice(requireGalleryTarget(input)))
   })
   ipcMain.handle(desktopProvisioningChannels.loadTodoTarget, async (event, deviceId: unknown) => {
     requireSettingsSender(event)
@@ -297,8 +313,12 @@ export function createSettingsWindowController(
     ipcMain.removeHandler(desktopProvisioningChannels.saveLocalManagementToken)
     ipcMain.removeHandler(desktopProvisioningChannels.clearLocalManagementToken)
     ipcMain.removeHandler(desktopProvisioningChannels.loadGallery)
+    ipcMain.removeHandler(desktopProvisioningChannels.loadStatus)
     ipcMain.removeHandler(desktopProvisioningChannels.loadTodos)
     ipcMain.removeHandler(desktopProvisioningChannels.pushTodos)
+    ipcMain.removeHandler(desktopProvisioningChannels.refreshDevice)
+    ipcMain.removeHandler(desktopProvisioningChannels.nextDevicePage)
+    ipcMain.removeHandler(desktopProvisioningChannels.sleepDevice)
     ipcMain.removeHandler(desktopProvisioningChannels.loadTodoTarget)
     ipcMain.removeHandler(desktopProvisioningChannels.saveTodoTarget)
     ipcMain.removeHandler(desktopProvisioningChannels.uploadGalleryAsset)

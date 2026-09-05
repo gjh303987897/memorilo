@@ -86,6 +86,40 @@ describe('device local management client', () => {
     expect(request).toHaveBeenCalledWith(new URL('http://192.168.4.23/v1/todos'), expect.objectContaining({ method: 'POST' }))
   })
 
+  it('reads device status and sends authenticated remote commands', async () => {
+    const request = vi.fn(async (_url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      if (init?.method === 'GET') {
+        return new Response(JSON.stringify({
+          firmwareVersion: '0.3.0',
+          network: {
+            consecutiveFailures: 0,
+            ipv4: '192.168.4.23',
+            mqttConnected: true,
+            phase: 'online',
+            retryAtMs: null,
+            timeSynchronized: true,
+          },
+          uptimeMs: 42_000,
+        }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ accepted: true }), { status: 202 })
+    })
+    const client = new DeviceLocalManagementClient(credentialStore(token), request as typeof fetch)
+    const target = { address: '192.168.4.23', deviceId: 'device-1' }
+
+    await expect(Effect.runPromise(client.loadStatus(target))).resolves.toMatchObject({
+      network: { ipv4: '192.168.4.23', mqttConnected: true, phase: 'online' },
+    })
+    await Effect.runPromise(client.refreshDevice(target))
+    await Effect.runPromise(client.nextDevicePage(target))
+    await Effect.runPromise(client.sleepDevice(target))
+
+    expect(request).toHaveBeenCalledWith(new URL('http://192.168.4.23/v1/status'), expect.objectContaining({ method: 'GET' }))
+    expect(request).toHaveBeenCalledWith(new URL('http://192.168.4.23/v1/commands/refresh'), expect.objectContaining({ method: 'POST' }))
+    expect(request).toHaveBeenCalledWith(new URL('http://192.168.4.23/v1/commands/next-page'), expect.objectContaining({ method: 'POST' }))
+    expect(request).toHaveBeenCalledWith(new URL('http://192.168.4.23/v1/commands/sleep'), expect.objectContaining({ method: 'POST' }))
+  })
+
   it('fails without exposing or inventing a missing credential', async () => {
     const client = new DeviceLocalManagementClient(credentialStore(null), vi.fn() as typeof fetch)
     await expect(Effect.runPromise(client.loadGallery({

@@ -10,6 +10,8 @@ export type {
   DesktopDeviceGalleryStatus,
   DesktopDeviceGalleryTarget,
   DesktopDeviceGalleryUpload,
+  DesktopDeviceNetworkPhase,
+  DesktopDeviceStatus,
   DesktopDeviceTodoItem,
   DesktopDeviceTodoPush,
   DesktopDeviceTodoPushStatus,
