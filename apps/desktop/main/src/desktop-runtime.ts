@@ -275,7 +275,7 @@ export async function createDesktopRuntime(options: DesktopRuntimeOptions): Prom
     })
     const editorStorage = editor.resource
     const todoDevicePushClient = new DeviceLocalManagementClient(localManagementCredentialStore)
-    const todoDeviceTargetStore = createTodoDeviceTargetStore(join(userDataPath, 'devices', 'todo-targets.json'))
+    const todoDeviceTargetStore = createTodoDeviceTargetStore(join(dataDirectory, 'devices', 'todo-targets.json'))
     const persistedTodoDeviceTargets = await todoDeviceTargetStore.load()
     const todoDevicePush = (await scope.acquire({
       acquire: () => createTodoDevicePushService({
