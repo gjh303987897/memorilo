@@ -1,5 +1,6 @@
 import type { IpcMainInvokeEvent } from 'electron'
 import { EventEmitter } from 'node:events'
+import process from 'node:process'
 import { desktopProvisioningChannels } from '@memorilo/desktop-api'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -80,17 +81,28 @@ function ipcHandler(channel: string): (event: IpcMainInvokeEvent, argument: unkn
 }
 
 beforeEach(() => {
+  vi.spyOn(process, 'platform', 'get').mockReturnValue('win32')
   mocks.createWindow.mockReset()
   mocks.ipcHandle.mockReset()
   mocks.ipcRemoveHandler.mockReset()
 })
 
 afterEach(() => {
+  vi.restoreAllMocks()
   vi.useRealTimers()
   vi.unstubAllEnvs()
 })
 
 describe('settings window Bluetooth provisioning', () => {
+  it('leaves pairing to the operating system on macOS', () => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('darwin')
+    const harness = createWindowHarness()
+    mocks.createWindow.mockReturnValue(harness.window)
+    const controller = createSettingsWindowController('/app/main', createCredentialStore())
+    controller.show()
+    expect(harness.session.setBluetoothPairingHandler).not.toHaveBeenCalled()
+    controller.close()
+  })
   it('routes validated device selection and PIN responses', async () => {
     const harness = createWindowHarness()
     mocks.createWindow.mockReturnValue(harness.window)

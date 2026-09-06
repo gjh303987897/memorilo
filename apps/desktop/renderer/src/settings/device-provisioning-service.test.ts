@@ -9,8 +9,8 @@ import type {
 import { decodeFrame, encodeFrames, parseApplyConfigEnvelope, reassembleFrames } from '@memorilo/device-provisioning'
 import { Effect } from 'effect'
 
-import { describe, expect, it, vi } from 'vitest'
-import { DeviceProvisioningService } from './device-provisioning-service'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { DeviceProvisioningConnection, DeviceProvisioningService } from './device-provisioning-service'
 
 class FakeCharacteristic extends EventTarget implements BluetoothCharacteristicAdapter {
   value: DataView | null = null
@@ -56,8 +56,86 @@ function dataView(value: Uint8Array): DataView {
   return new DataView(value.buffer, value.byteOffset, value.byteLength)
 }
 
+afterEach(() => vi.useRealTimers())
+
+function stalledConnection() {
+  const events = new EventTarget()
+  const apply = new FakeCharacteristic()
+  const status = new FakeCharacteristic()
+  let releaseWrite!: () => void
+  const write = vi.spyOn(apply, 'writeValueWithResponse').mockImplementation(() => new Promise<void>((resolve) => {
+    releaseWrite = resolve
+  }))
+  const server: BluetoothServerAdapter = {
+    connected: true,
+    disconnect: vi.fn(() => { server.connected = false }),
+    getPrimaryService: vi.fn(),
+  }
+  const connection = new DeviceProvisioningConnection({
+    name: 'Memorilo-a1b2',
+    info: { capabilities: ['config-v1'], configRevision: 1, configSchemaVersion: 2, deviceId: 'device-1', firmwareVersion: '0.1.0', protocolVersion: 1 },
+    config: {
+      configSchemaVersion: 2,
+      deviceName: 'Desk',
+      idleSleepSeconds: 600,
+      localManagementTokenIsSet: false,
+      protocolVersion: 1,
+      revision: 1,
+      selectionPolicy: 'Remember',
+      timezone: 'UTC',
+      wifiPasswordIsSet: false,
+      todoSyncEnabled: false,
+      todoSyncUrl: '',
+      todoSyncTokenIsSet: false,
+      todoSyncPollIntervalSeconds: 900,
+      todoSyncView: 'today',
+    },
+  }, events, server, apply, status)
+  return { connection, events, releaseWrite: () => releaseWrite(), server, status, write }
+}
+
 describe('deviceProvisioningService', () => {
-  it('connects through the injected adapter, applies framed config, and closes resources', async () => {
+  it('bounds a stalled GATT write and stops subsequent chunks after timeout', async () => {
+    vi.useFakeTimers()
+    const harness = stalledConnection()
+    const result = Effect.runPromise(harness.connection.apply({ deviceName: 'x'.repeat(300) }).pipe(Effect.result))
+    await vi.advanceTimersByTimeAsync(15_001)
+    expect(await result).toMatchObject({ _tag: 'Failure', failure: { code: 'timeout' } })
+    expect(harness.server.disconnect).toHaveBeenCalledOnce()
+    harness.releaseWrite()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(harness.write).toHaveBeenCalledOnce()
+  })
+
+  it('interrupts pending writes and notifies subscribers when the device disconnects', async () => {
+    const harness = stalledConnection()
+    const disconnected = vi.fn()
+    harness.connection.subscribeDisconnected(disconnected)
+    const result = Effect.runPromise(harness.connection.apply({ deviceName: 'Desk' }).pipe(Effect.result))
+    await vi.waitFor(() => expect(harness.write).toHaveBeenCalledOnce())
+    harness.server.connected = false
+    harness.events.dispatchEvent(new Event('gattserverdisconnected'))
+    expect(await result).toMatchObject({ _tag: 'Failure', failure: { code: 'connection-failed' } })
+    expect(harness.connection.connected).toBe(false)
+    expect(disconnected).toHaveBeenCalledOnce()
+    await Effect.runPromise(harness.connection.close())
+    expect(disconnected).toHaveBeenCalledOnce()
+    harness.releaseWrite()
+  })
+
+  it('disconnects and cancels later writes when the caller interrupts apply', async () => {
+    const harness = stalledConnection()
+    const controller = new AbortController()
+    const result = Effect.runPromiseExit(harness.connection.apply({ deviceName: 'x'.repeat(300) }), { signal: controller.signal })
+    await vi.waitFor(() => expect(harness.write).toHaveBeenCalledOnce())
+    controller.abort()
+    expect(await result).toMatchObject({ _tag: 'Failure' })
+    expect(harness.server.disconnect).toHaveBeenCalledOnce()
+    harness.releaseWrite()
+    await Promise.resolve()
+    expect(harness.write).toHaveBeenCalledOnce()
+  })
+  it.each(['normal', 'selection', 'connect', 'service', 'characteristics', 'notifications', 'read'])('owns GATT resources during %s', async (stage) => {
     const info = new FakeCharacteristic(framed({
       capabilities: ['config-v1'],
       configRevision: 2,
@@ -97,9 +175,11 @@ describe('deviceProvisioningService', () => {
     }
     const forget = vi.fn(async () => undefined)
     const device: BluetoothDeviceAdapter = {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
       forget,
       gatt: { connect: vi.fn(async () => server) },
-      name: 'Memorilo Setup',
+      name: 'Memorilo-a1b2',
     }
     const adapter: BluetoothAdapter = {
       requestDevice: vi.fn(async () => device),
@@ -129,6 +209,44 @@ describe('deviceProvisioningService', () => {
       uploadGalleryAsset: vi.fn(async () => undefined),
     }
     const provisioning = new DeviceProvisioningService(adapter, bridge)
+    if (stage !== 'normal') {
+      let release!: () => void
+      const pending = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      const stall = async <T>(value: T): Promise<T> => {
+        await pending
+        return value
+      }
+      const blocked = stage === 'selection'
+        ? vi.spyOn(adapter, 'requestDevice').mockImplementation(() => stall(device))
+        : stage === 'connect'
+          ? vi.spyOn(device.gatt!, 'connect').mockImplementation(() => stall(server))
+          : stage === 'service'
+            ? vi.spyOn(server, 'getPrimaryService').mockImplementation(() => stall(service))
+            : stage === 'characteristics'
+              ? vi.spyOn(service, 'getCharacteristic').mockImplementation(() => stall(characteristics[characteristicIndex++]!))
+              : stage === 'notifications'
+                ? vi.spyOn(status, 'startNotifications').mockImplementation(() => stall(status))
+                : vi.spyOn(info, 'readValue').mockImplementation(() => stall(info.value!))
+      const controller = new AbortController()
+      const result = Effect.runPromiseExit(provisioning.connect(), { signal: controller.signal })
+      await vi.waitFor(() => expect(blocked).toHaveBeenCalled())
+      controller.abort()
+      expect(await result).toMatchObject({ _tag: 'Failure' })
+      if (stage !== 'selection' && stage !== 'connect')
+        expect(disconnect).toHaveBeenCalledOnce()
+      release()
+      await vi.waitFor(() => expect(blocked.mock.settledResults[0]?.type).toBe('fulfilled'))
+      await vi.waitFor(() => {
+        if (stage === 'selection')
+          expect(device.gatt!.connect).not.toHaveBeenCalled()
+        else
+          expect(disconnect).toHaveBeenCalledOnce()
+      })
+      expect(device.addEventListener).not.toHaveBeenCalled()
+      return
+    }
     const connection = await Effect.runPromise(provisioning.connect())
 
     expect(connection.device.info.deviceId).toBe('device-1')

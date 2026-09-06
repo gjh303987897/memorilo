@@ -27,7 +27,7 @@ import {
   PROVISIONING_UUIDS,
   reassembleFrames,
 } from '@memorilo/device-provisioning'
-import { Data, Effect } from 'effect'
+import { Data, Deferred, Effect } from 'effect'
 
 const characteristicChunkBytes = 180
 const applyTimeoutMilliseconds = 15_000
@@ -65,6 +65,8 @@ export interface BluetoothServerAdapter {
 }
 
 export interface BluetoothDeviceAdapter {
+  addEventListener: (type: 'gattserverdisconnected', listener: () => void) => void
+  removeEventListener: (type: 'gattserverdisconnected', listener: () => void) => void
   forget?: () => Promise<void>
   gatt?: {
     connect: () => Promise<BluetoothServerAdapter>
@@ -128,6 +130,8 @@ export interface DeviceProvisioningClient {
 }
 
 export interface DeviceProvisioningSession {
+  readonly connected: boolean
+  subscribeDisconnected: (listener: () => void) => () => void
   readonly device: ProvisionedDevice
   apply: (patch: DeviceConfigPatch) => Effect.Effect<ApplyStatusEnvelope, DeviceProvisioningError>
   close: () => Effect.Effect<void>
@@ -136,11 +140,10 @@ export interface DeviceProvisioningSession {
 
 export class DeviceProvisioningConnection {
   private currentDevice: ProvisionedDevice
-  private readonly statusWaiters = new Map<string, {
-    reject: (error: unknown) => void
-    resolve: (status: ApplyStatusEnvelope) => void
-    timer: ReturnType<typeof setTimeout>
-  }>()
+  private readonly statusWaiters = new Map<string, Deferred.Deferred<ApplyStatusEnvelope, DeviceProvisioningError>>()
+  private readonly disconnected = Deferred.makeUnsafe<never, DeviceProvisioningError>()
+  private readonly disconnectListeners = new Set<() => void>()
+  private closed = false
 
   constructor(
     device: ProvisionedDevice,
@@ -151,6 +154,20 @@ export class DeviceProvisioningConnection {
   ) {
     this.currentDevice = device
     this.statusCharacteristic.addEventListener('characteristicvaluechanged', this.handleStatus)
+    this.bluetoothDevice.addEventListener('gattserverdisconnected', this.handleDisconnected)
+  }
+
+  get connected(): boolean {
+    return !this.closed && this.server.connected
+  }
+
+  subscribeDisconnected(listener: () => void): () => void {
+    this.disconnectListeners.add(listener)
+    if (!this.connected)
+      listener()
+    return () => {
+      this.disconnectListeners.delete(listener)
+    }
   }
 
   get device(): ProvisionedDevice {
@@ -158,12 +175,16 @@ export class DeviceProvisioningConnection {
   }
 
   apply(patch: DeviceConfigPatch): Effect.Effect<ApplyStatusEnvelope, DeviceProvisioningError> {
-    return Effect.tryPromise({
-      catch: cause => cause instanceof DeviceProvisioningError
-        ? cause
-        : toProvisioningError('connection-failed', cause),
-      try: async () => {
+    return Effect.acquireUseRelease(
+      Effect.sync(() => {
         const requestId = globalThis.crypto.randomUUID()
+        const status = Deferred.makeUnsafe<ApplyStatusEnvelope, DeviceProvisioningError>()
+        this.statusWaiters.set(requestId, status)
+        return { requestId, status }
+      }),
+      ({ requestId, status }) => Effect.gen({ self: this }, function* () {
+        if (!this.connected)
+          return yield* Effect.fail(new DeviceProvisioningError({ code: 'connection-failed' }))
         const request: ApplyConfigEnvelope = {
           baseRevision: this.device.config.revision,
           config: patch,
@@ -171,46 +192,63 @@ export class DeviceProvisioningConnection {
           requestId,
           requiredCapabilities: ['config-v1'],
         }
-        const status = this.waitForStatus(requestId)
-        try {
-          const json = new TextEncoder().encode(JSON.stringify(request))
-          for (const frame of encodeFrames(randomRequestToken(), json, characteristicChunkBytes)) {
-            const writeBuffer = new Uint8Array(frame.byteLength)
-            writeBuffer.set(frame)
-            await this.applyCharacteristic.writeValueWithResponse(writeBuffer)
+        const exchange = Effect.gen({ self: this }, function* () {
+          const frames = yield* Effect.try({
+            try: () => encodeFrames(randomRequestToken(), new TextEncoder().encode(JSON.stringify(request)), characteristicChunkBytes),
+            catch: cause => toProvisioningError('protocol-error', cause),
+          })
+          for (const frame of frames) {
+            yield* Effect.tryPromise({
+              try: () => this.applyCharacteristic.writeValueWithResponse(new Uint8Array(frame)),
+              catch: cause => toProvisioningError('connection-failed', cause),
+            })
           }
-          const result = await status
+          const result = yield* Deferred.await(status)
           if (result.status !== 'accepted') {
-            throw new DeviceProvisioningError({
+            return yield* Effect.fail(new DeviceProvisioningError({
               code: 'apply-rejected',
               cause: result.error,
-            })
+            }))
           }
           this.currentDevice = {
             ...this.currentDevice,
             config: applyConfigPatch(this.currentDevice.config, patch, result.revision),
           }
           return result
-        }
-        catch (error) {
-          this.cancelStatusWaiter(requestId)
-          throw error
-        }
-      },
-    })
+        })
+        return yield* exchange.pipe(
+          Effect.raceFirst(Deferred.await(this.disconnected)),
+          Effect.timeoutOrElse({
+            duration: applyTimeoutMilliseconds,
+            onTimeout: () => Effect.fail(new DeviceProvisioningError({ code: 'timeout' })),
+          }),
+        )
+      }),
+      ({ requestId }) => Effect.sync(() => { this.statusWaiters.delete(requestId) }),
+    ).pipe(
+      Effect.onError(() => this.close()),
+      Effect.onInterrupt(() => this.close()),
+    )
   }
 
   close(): Effect.Effect<void> {
     return Effect.sync(() => {
-      this.statusCharacteristic.removeEventListener('characteristicvaluechanged', this.handleStatus)
-      for (const waiter of this.statusWaiters.values()) {
-        clearTimeout(waiter.timer)
-        waiter.reject(new DeviceProvisioningError({ code: 'connection-failed' }))
-      }
-      this.statusWaiters.clear()
+      this.handleDisconnected()
       if (this.server.connected)
         this.server.disconnect()
     })
+  }
+
+  private readonly handleDisconnected = (): void => {
+    if (this.closed)
+      return
+    this.closed = true
+    this.statusCharacteristic.removeEventListener('characteristicvaluechanged', this.handleStatus)
+    this.bluetoothDevice.removeEventListener('gattserverdisconnected', this.handleDisconnected)
+    Deferred.doneUnsafe(this.disconnected, Effect.fail(new DeviceProvisioningError({ code: 'connection-failed' })))
+    for (const listener of this.disconnectListeners)
+      listener()
+    this.disconnectListeners.clear()
   }
 
   forget(): Effect.Effect<void, DeviceProvisioningError> {
@@ -233,35 +271,15 @@ export class DeviceProvisioningConnection {
       const waiter = this.statusWaiters.get(status.requestId)
       if (!waiter)
         return
-      clearTimeout(waiter.timer)
       this.statusWaiters.delete(status.requestId)
-      waiter.resolve(status)
+      Deferred.doneUnsafe(waiter, Effect.succeed(status))
     }
     catch (error) {
       for (const waiter of this.statusWaiters.values()) {
-        clearTimeout(waiter.timer)
-        waiter.reject(toProvisioningError('protocol-error', error))
+        Deferred.doneUnsafe(waiter, Effect.fail(toProvisioningError('protocol-error', error)))
       }
       this.statusWaiters.clear()
     }
-  }
-
-  private waitForStatus(requestId: string): Promise<ApplyStatusEnvelope> {
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.statusWaiters.delete(requestId)
-        reject(new DeviceProvisioningError({ code: 'timeout' }))
-      }, applyTimeoutMilliseconds)
-      this.statusWaiters.set(requestId, { reject, resolve, timer })
-    })
-  }
-
-  private cancelStatusWaiter(requestId: string): void {
-    const waiter = this.statusWaiters.get(requestId)
-    if (!waiter)
-      return
-    clearTimeout(waiter.timer)
-    this.statusWaiters.delete(requestId)
   }
 }
 
@@ -272,49 +290,65 @@ export class DeviceProvisioningService {
   ) {}
 
   connect(): Effect.Effect<DeviceProvisioningConnection, DeviceProvisioningError> {
-    return Effect.tryPromise({
-      catch: cause => cause instanceof DeviceProvisioningError
-        ? cause
-        : toProvisioningError('connection-failed', cause),
-      try: async () => {
-        const bluetoothDevice = await this.adapter.requestDevice({
-          filters: [{ services: [PROVISIONING_UUIDS.service] }],
-        })
-        if (!bluetoothDevice.gatt)
-          throw new DeviceProvisioningError({ code: 'connection-failed' })
-        let server: BluetoothServerAdapter | null = null
-        try {
-          server = await bluetoothDevice.gatt.connect()
-          const service = await server.getPrimaryService(PROVISIONING_UUIDS.service)
-          const [infoCharacteristic, configCharacteristic, applyCharacteristic, statusCharacteristic]
-            = await Promise.all([
-              service.getCharacteristic(PROVISIONING_UUIDS.deviceInfo),
-              service.getCharacteristic(PROVISIONING_UUIDS.publicConfig),
-              service.getCharacteristic(PROVISIONING_UUIDS.configApply),
-              service.getCharacteristic(PROVISIONING_UUIDS.status),
-            ])
-          await statusCharacteristic.startNotifications()
-          const [infoValue, configValue] = await Promise.all([
-            infoCharacteristic.readValue(),
-            configCharacteristic.readValue(),
-          ])
-          const info = parseDeviceInfoEnvelope(decodeEnvelope(viewBytes(infoValue)))
-          const config = parsePublicConfigEnvelope(decodeEnvelope(viewBytes(configValue)))
-          return new DeviceProvisioningConnection(
-            { config, info, name: bluetoothDevice.name ?? config.deviceName },
-            bluetoothDevice,
-            server,
-            applyCharacteristic,
-            statusCharacteristic,
-          )
-        }
-        catch (error) {
-          if (server?.connected)
-            server.disconnect()
-          throw error
-        }
-      },
+    const request = <T>(run: (signal: AbortSignal) => Promise<T>) => Effect.tryPromise({
+      try: run,
+      catch: cause => toProvisioningError('connection-failed', cause),
     })
+    return Effect.acquireUseRelease(
+      Effect.sync(() => ({ server: null as BluetoothServerAdapter | null, transferred: false })),
+      resource => Effect.gen({ self: this }, function* () {
+        const bluetoothDevice = yield* request(() => this.adapter.requestDevice({
+          filters: [{ services: [PROVISIONING_UUIDS.service] }],
+        }))
+        if (!bluetoothDevice.gatt)
+          return yield* Effect.fail(new DeviceProvisioningError({ code: 'connection-failed' }))
+        const gatt = bluetoothDevice.gatt
+        const server = yield* request(async (signal) => {
+          const connected = await gatt.connect()
+          // Web Bluetooth cannot abort connect(); reclaim a server that arrives after cancellation.
+          if (signal.aborted) {
+            if (connected.connected)
+              connected.disconnect()
+          }
+          else {
+            resource.server = connected
+          }
+          return connected
+        })
+        const service = yield* request(() => server.getPrimaryService(PROVISIONING_UUIDS.service))
+        const [infoCharacteristic, configCharacteristic, applyCharacteristic, statusCharacteristic] = yield* Effect.all([
+          request(() => service.getCharacteristic(PROVISIONING_UUIDS.deviceInfo)),
+          request(() => service.getCharacteristic(PROVISIONING_UUIDS.publicConfig)),
+          request(() => service.getCharacteristic(PROVISIONING_UUIDS.configApply)),
+          request(() => service.getCharacteristic(PROVISIONING_UUIDS.status)),
+        ], { concurrency: 'unbounded' })
+        yield* request(() => statusCharacteristic.startNotifications())
+        const [infoValue, configValue] = yield* Effect.all([
+          request(() => infoCharacteristic.readValue()),
+          request(() => configCharacteristic.readValue()),
+        ], { concurrency: 'unbounded' })
+        return yield* Effect.try({
+          try: () => {
+            const info = parseDeviceInfoEnvelope(decodeEnvelope(viewBytes(infoValue)))
+            const config = parsePublicConfigEnvelope(decodeEnvelope(viewBytes(configValue)))
+            const connection = new DeviceProvisioningConnection(
+              { config, info, name: bluetoothDevice.name ?? config.deviceName },
+              bluetoothDevice,
+              server,
+              applyCharacteristic,
+              statusCharacteristic,
+            )
+            resource.transferred = true
+            return connection
+          },
+          catch: cause => toProvisioningError('protocol-error', cause),
+        })
+      }),
+      resource => Effect.sync(() => {
+        if (!resource.transferred && resource.server?.connected)
+          resource.server.disconnect()
+      }),
+    )
   }
 
   selectDevice(device: DesktopProvisioningDevice): Effect.Effect<void, DeviceProvisioningError> {

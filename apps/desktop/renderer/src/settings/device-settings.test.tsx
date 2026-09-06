@@ -9,7 +9,12 @@ import { DeviceProvisioningError } from './device-provisioning-service'
 import { DeviceSettings } from './device-settings'
 
 describe('device settings', () => {
-  it('scans, pairs, edits, applies, and closes the selected device', async () => {
+  it.each(['normal', 'unmount-connection', 'cancel-connection', 'unmount-credentials', 'unmount-target', 'cancel-credentials'])('owns the connection throughout %s', async (scenario) => {
+    let releaseLookup!: () => void
+    const lookup = new Promise<void>((resolve) => {
+      releaseLookup = resolve
+    })
+    let disconnectedListener: (() => void) | undefined
     let devicesListener: ((devices: readonly DesktopProvisioningDevice[]) => void) | undefined
     let pairingListener: ((request: DesktopProvisioningPairingRequest) => void) | undefined
     let resolveConnection!: (session: DeviceProvisioningSession) => void
@@ -22,6 +27,13 @@ describe('device settings', () => {
     const close = vi.fn(() => Effect.void)
     const forget = vi.fn(() => Effect.void)
     const session: DeviceProvisioningSession = {
+      connected: true,
+      subscribeDisconnected: (listener) => {
+        disconnectedListener = listener
+        return () => {
+          disconnectedListener = undefined
+        }
+      },
       apply,
       close,
       device: {
@@ -60,7 +72,19 @@ describe('device settings', () => {
     const clearLocalManagementToken = vi.fn(() => Effect.void)
     const deleteGalleryAsset = vi.fn(() => Effect.void)
     const generateLocalManagementToken = vi.fn(() => Effect.succeed('a'.repeat(32)))
-    const hasLocalManagementToken = vi.fn(() => Effect.succeed(false))
+    const hasLocalManagementToken = vi.fn(() => scenario.endsWith('credentials')
+      ? Effect.promise(async () => {
+          await lookup
+          return false
+        })
+      : Effect.succeed(false))
+    let savedAddress: string | null = null
+    const loadTodoTarget = vi.fn(() => scenario === 'unmount-target'
+      ? Effect.promise(async () => {
+          await lookup
+          return { status: null, target: null }
+        })
+      : Effect.succeed({ status: null, target: savedAddress ? { address: savedAddress, deviceId: 'device-1' } : null }))
     const loadGallery = vi.fn(() => Effect.fail(new DeviceProvisioningError({ code: 'local-management' })))
     const loadStatus = vi.fn(() => Effect.fail(new DeviceProvisioningError({ code: 'local-management' })))
     const loadTodos = vi.fn(() => Effect.fail(new DeviceProvisioningError({ code: 'local-management' })))
@@ -70,23 +94,26 @@ describe('device settings', () => {
     const sleepDevice = vi.fn(() => Effect.void)
     const reorderGallery = vi.fn(() => Effect.void)
     const saveLocalManagementToken = vi.fn(() => Effect.void)
-    const saveTodoTarget = vi.fn(() => Effect.void)
+    const saveTodoTarget = vi.fn((_deviceId: string, address: string | null) => Effect.sync(() => {
+      savedAddress = address
+    }))
     const setGallerySlideshow = vi.fn(() => Effect.void)
     const uploadGalleryAsset = vi.fn(() => Effect.void)
+    const interrupted = vi.fn()
     const client: DeviceProvisioningClient = {
       cancelSelection,
       clearLocalManagementToken,
       connect: () => Effect.tryPromise({
         catch: cause => new DeviceProvisioningError({ cause, code: 'connection-failed' }),
-        try: () => new Promise((resolve) => { resolveConnection = resolve }),
-      }),
+        try: () => new Promise<DeviceProvisioningSession>((resolve) => { resolveConnection = resolve }),
+      }).pipe(Effect.onInterrupt(() => Effect.sync(interrupted))),
       deleteGalleryAsset,
       generateLocalManagementToken,
       hasLocalManagementToken,
       loadGallery,
       loadStatus,
       loadTodos,
-      loadTodoTarget: vi.fn(() => Effect.succeed({ status: null, target: null })),
+      loadTodoTarget,
       pushTodos,
       refreshDevice,
       nextDevicePage,
@@ -129,7 +156,35 @@ describe('device settings', () => {
       requestId: 'pairing-1',
     }))
 
+    if (scenario.endsWith('connection')) {
+      if (scenario === 'cancel-connection')
+        fireEvent.click(rendered.getByRole('button', { name: 'Cancel' }))
+      else
+        rendered.unmount()
+      await waitFor(() => expect(interrupted).toHaveBeenCalledOnce())
+      expect(hasLocalManagementToken).not.toHaveBeenCalled()
+      if (scenario === 'cancel-connection')
+        rendered.unmount()
+      return
+    }
     await act(async () => resolveConnection(session))
+    if (scenario !== 'normal') {
+      await waitFor(() => expect(scenario === 'unmount-target' ? loadTodoTarget : hasLocalManagementToken).toHaveBeenCalled())
+      if (scenario === 'cancel-credentials')
+        fireEvent.click(rendered.getByRole('button', { name: 'Cancel' }))
+      else
+        rendered.unmount()
+      await waitFor(() => expect(close).toHaveBeenCalledOnce())
+      await act(async () => releaseLookup())
+      expect(close).toHaveBeenCalledOnce()
+      if (scenario.endsWith('credentials'))
+        expect(loadTodoTarget).not.toHaveBeenCalled()
+      if (scenario === 'cancel-credentials') {
+        expect(rendered.queryByRole('textbox', { name: 'Device name' })).not.toBeInTheDocument()
+        rendered.unmount()
+      }
+      return
+    }
     const name = await rendered.findByRole('textbox', { name: 'Device name' })
     expect(name).toHaveValue('Desk display')
     expect(rendered.getByLabelText('Wi-Fi password')).toHaveValue('')
@@ -148,6 +203,21 @@ describe('device settings', () => {
     expect(saveLocalManagementToken).toHaveBeenCalledWith('device-1', 'a'.repeat(32))
     expect(saveTodoTarget).toHaveBeenCalledWith('device-1', '192.168.4.23')
     expect(rendered.getByText('Settings applied successfully.')).toBeInTheDocument()
+
+    act(() => {
+      Object.defineProperty(session, 'connected', { value: false })
+      disconnectedListener?.()
+    })
+    expect(rendered.getByRole('button', { name: 'Apply settings' })).toBeDisabled()
+    expect(rendered.getByRole('button', { name: 'Scan for device' })).toBeEnabled()
+    expect(rendered.getByText('Disconnected')).toBeInTheDocument()
+    expect(rendered.getByRole('textbox', { name: 'Device name' })).toBeInTheDocument()
+    expect(rendered.getByRole('button', { name: 'Load status' })).toBeEnabled()
+    fireEvent.click(rendered.getByRole('button', { name: 'Next page' }))
+    await waitFor(() => expect(nextDevicePage).toHaveBeenCalledWith({
+      address: '192.168.4.23',
+      deviceId: 'device-1',
+    }))
 
     rendered.unmount()
     expect(close).toHaveBeenCalledOnce()

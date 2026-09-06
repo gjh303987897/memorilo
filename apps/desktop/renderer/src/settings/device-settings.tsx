@@ -93,6 +93,7 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
   const [pairing, setPairing] = useState<DesktopProvisioningPairingRequest | null>(null)
   const [pairingPin, setPairingPin] = useState('')
   const [connection, setConnection] = useState<DeviceProvisioningSession | null>(null)
+  const [bleConnected, setBleConnected] = useState(false)
   const [form, setForm] = useState<DeviceFormState>(emptyForm)
   const [localManagementCredentialStored, setLocalManagementCredentialStored] = useState(false)
   const [pendingLocalManagement, setPendingLocalManagement] = useState<PendingLocalManagementChange | null>(null)
@@ -101,7 +102,9 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
   const [remotePhase, setRemotePhase] = useState<'idle' | 'loading' | 'commanding' | 'error' | 'success'>('idle')
   const [errorCode, setErrorCode] = useState<DeviceProvisioningError['code'] | 'invalid-config' | null>(null)
   const operation = useRef(0)
+  const scanControllerRef = useRef<AbortController | null>(null)
   const connectionRef = useRef<DeviceProvisioningSession | null>(null)
+  const unsubscribeDisconnectRef = useRef<(() => void) | null>(null)
   const pairingRef = useRef<DesktopProvisioningPairingRequest | null>(null)
 
   useEffect(() => {
@@ -117,6 +120,8 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
     })
     return () => {
       operation.current += 1
+      scanControllerRef.current?.abort()
+      scanControllerRef.current = null
       unsubscribeDevices()
       unsubscribePairing()
       const pendingPairing = pairingRef.current
@@ -128,6 +133,9 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
       }
       void Effect.runPromise(service.cancelSelection()).catch(() => undefined)
       const activeConnection = connectionRef.current
+      connectionRef.current = null
+      unsubscribeDisconnectRef.current?.()
+      unsubscribeDisconnectRef.current = null
       if (activeConnection)
         void Effect.runPromise(activeConnection.close())
     }
@@ -135,36 +143,61 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
 
   const startScan = async (): Promise<void> => {
     const currentOperation = ++operation.current
+    scanControllerRef.current?.abort()
+    const controller = new AbortController()
+    scanControllerRef.current = controller
+    unsubscribeDisconnectRef.current?.()
+    unsubscribeDisconnectRef.current = null
+    const previousConnection = connectionRef.current
+    connectionRef.current = null
+    if (previousConnection)
+      await Effect.runPromise(previousConnection.close())
+    if (operation.current !== currentOperation)
+      return
+    setConnection(null)
+    setBleConnected(false)
     setDevices([])
     setPairing(null)
     pairingRef.current = null
     setErrorCode(null)
     setPhase('scanning')
     try {
-      const nextConnection = await Effect.runPromise(service.connect())
+      const nextConnection = await Effect.runPromise(service.connect(), { signal: controller.signal })
       if (operation.current !== currentOperation) {
         await Effect.runPromise(nextConnection.close())
         return
       }
+      connectionRef.current = nextConnection
       let credentialStored: boolean
       try {
         credentialStored = await Effect.runPromise(
           service.hasLocalManagementToken(nextConnection.device.info.deviceId),
+          { signal: controller.signal },
         )
       }
       catch (error) {
-        await Effect.runPromise(nextConnection.close())
+        if (connectionRef.current === nextConnection) {
+          connectionRef.current = null
+          await Effect.runPromise(nextConnection.close())
+        }
         throw error
       }
+      if (operation.current !== currentOperation)
+        return
       let todoTarget: DesktopDeviceTodoTargetState = { status: null, target: null }
       try {
-        todoTarget = await Effect.runPromise(service.loadTodoTarget(nextConnection.device.info.deviceId))
+        todoTarget = await Effect.runPromise(service.loadTodoTarget(nextConnection.device.info.deviceId), { signal: controller.signal })
       }
       catch {
         todoTarget = { status: null, target: null }
       }
-      connectionRef.current = nextConnection
+      if (operation.current !== currentOperation)
+        return
       setConnection(nextConnection)
+      setBleConnected(nextConnection.connected)
+      unsubscribeDisconnectRef.current = nextConnection.subscribeDisconnected(() => {
+        setBleConnected(false)
+      })
       setForm({ ...formFromConfig(nextConnection.device.config), todoLanAddress: todoTarget.target?.address ?? '' })
       setTodoPushStatus(todoTarget.status)
       setLocalManagementCredentialStored(credentialStored)
@@ -175,6 +208,10 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
       if (operation.current !== currentOperation)
         return
       handleError(error, setErrorCode, setPhase)
+    }
+    finally {
+      if (scanControllerRef.current === controller)
+        scanControllerRef.current = null
     }
   }
 
@@ -202,8 +239,11 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
       pairingRef.current = null
       setPairing(null)
       setPhase(confirmed ? 'connecting' : 'idle')
-      if (!confirmed)
+      if (!confirmed) {
         operation.current += 1
+        scanControllerRef.current?.abort()
+        scanControllerRef.current = null
+      }
     }
     catch (error) {
       handleError(error, setErrorCode, setPhase)
@@ -212,6 +252,15 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
 
   const cancelScan = async (): Promise<void> => {
     operation.current += 1
+    scanControllerRef.current?.abort()
+    scanControllerRef.current = null
+    unsubscribeDisconnectRef.current?.()
+    unsubscribeDisconnectRef.current = null
+    const activeConnection = connectionRef.current
+    connectionRef.current = null
+    if (activeConnection)
+      await Effect.runPromise(activeConnection.close())
+    setBleConnected(false)
     const pendingPairing = pairingRef.current
     try {
       if (pendingPairing) {
@@ -234,7 +283,7 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
   }
 
   const applyConfiguration = async (): Promise<void> => {
-    if (!connection)
+    if (!connection || !connection.connected)
       return
     const idleSleepSeconds = Number(form.idleSleepSeconds)
     const latitude = Number(form.weatherLatitude)
@@ -359,6 +408,9 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
 
   const disconnect = async (): Promise<void> => {
     operation.current += 1
+    unsubscribeDisconnectRef.current?.()
+    unsubscribeDisconnectRef.current = null
+    setBleConnected(false)
     const activeConnection = connectionRef.current
     connectionRef.current = null
     setConnection(null)
@@ -374,6 +426,9 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
 
   const forget = async (): Promise<void> => {
     operation.current += 1
+    unsubscribeDisconnectRef.current?.()
+    unsubscribeDisconnectRef.current = null
+    setBleConnected(false)
     const activeConnection = connectionRef.current
     connectionRef.current = null
     setConnection(null)
@@ -409,8 +464,8 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
   const remoteBusy = remotePhase === 'loading' || remotePhase === 'commanding' || phase === 'applying'
   const remoteEnabled = localManagementCredentialStored && pendingLocalManagement?.kind !== 'clear' && form.todoLanAddress.trim().length > 0
   const statusKey = statusTranslationKey(phase, errorCode)
-  const scanDisabled = phase !== 'error' && phase !== 'idle' && phase !== 'timeout'
   const canCancel = phase === 'connecting' || phase === 'pairing' || phase === 'scanning' || phase === 'selecting'
+  const scanDisabled = phase === 'applying' || canCancel
 
   return (
     <div {...stylex.props(styles.root)}>
@@ -423,11 +478,13 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
             </h2>
             <p {...stylex.props(styles.summaryDetail)}>
               {connection
-                ? t('deviceFirmwareSummary', { version: connection.device.info.firmwareVersion })
+                ? bleConnected
+                  ? t('deviceFirmwareSummary', { version: connection.device.info.firmwareVersion })
+                  : t('deviceRemoteDisconnected')
                 : t('deviceSetupSummary')}
             </p>
           </div>
-          {connection
+          {connection && bleConnected
             ? null
             : (
                 <Button disabled={scanDisabled} variant="primary" xstyle={styles.compactButton} onClick={() => void startScan()}>
@@ -757,7 +814,7 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
                     <Button variant="secondary" xstyle={styles.compactButton} onClick={() => void disconnect()}>{t('deviceDisconnect')}</Button>
                     <Button variant="plain" xstyle={styles.compactButton} onClick={() => void forget()}>{t('deviceForget')}</Button>
                   </div>
-                  <Button disabled={phase === 'applying'} type="submit" variant="primary" xstyle={styles.compactButton}>
+                  <Button disabled={!bleConnected || phase === 'applying'} type="submit" variant="primary" xstyle={styles.compactButton}>
                     {phase === 'applying' ? t('deviceApplying') : t('deviceApply')}
                   </Button>
                 </div>

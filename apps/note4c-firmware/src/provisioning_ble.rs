@@ -27,12 +27,22 @@ impl BleProvisioningTransport {
         info: &DeviceInfoEnvelope,
         config: &PublicConfigEnvelope,
     ) -> Result<Self> {
+        let suffix: String = info
+            .device_id
+            .chars()
+            .rev()
+            .take(4)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
+        let device_name = format!("Memorilo-{suffix}");
         BLEDevice::init();
         let device = BLEDevice::take();
         device
             .set_preferred_mtu(517)
             .context("setting provisioning ATT MTU failed")?;
-        BLEDevice::set_device_name("Memorilo Setup").context("setting BLE device name failed")?;
+        BLEDevice::set_device_name(&device_name).context("setting BLE device name failed")?;
         device
             .security()
             .set_auth(AuthReq::Bond | AuthReq::Mitm | AuthReq::Sc)
@@ -118,7 +128,7 @@ impl BleProvisioningTransport {
 
         let mut advertisement = BLEAdvertisementData::new();
         advertisement
-            .name("Memorilo Setup")
+            .name(&device_name)
             .add_service_uuid(BleUuid::from_uuid128_string(
                 "7b7a1000-6c6f-4d65-8a8b-6d656d6f7269",
             )?);
