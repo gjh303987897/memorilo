@@ -75,6 +75,7 @@ export class BetterSqliteDatabase implements EditorStorageDatabase {
 
   migrate(): void {
     this.#assertOpen()
+    // Editor, Shelf, and image-cache services share this handle and each initializes its schema.
     if (this.#migrated)
       return
     const migrationsFolder = editorStorageMigrationsPath()
