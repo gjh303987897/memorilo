@@ -207,6 +207,7 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
     catch (error) {
       if (operation.current !== currentOperation)
         return
+      setDevices([])
       handleError(error, setErrorCode, setPhase)
     }
     finally {
@@ -499,19 +500,19 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
                 <h3 id="device-results-heading" {...stylex.props(styles.sectionTitle)}>{t('deviceAvailable')}</h3>
                 <div {...stylex.props(styles.deviceList)}>
                   {devices.map(device => (
-                    <button
+                    <Button
                       key={device.deviceId}
-                      {...stylex.props(styles.deviceButton)}
-                      type="button"
+                      variant="plain"
+                      xstyle={styles.deviceButton}
+                      disabled={phase !== 'selecting'}
                       onClick={() => void selectDevice(device)}
                     >
                       <span {...stylex.props(styles.deviceName)}>{device.deviceName || t('deviceUnnamed')}</span>
                       <span {...stylex.props(styles.deviceAction)}>
                         {t('deviceSelect')}
-                        {' '}
                         <ChevronRight aria-hidden="true" size={13} />
                       </span>
-                    </button>
+                    </Button>
                   ))}
                 </div>
               </section>

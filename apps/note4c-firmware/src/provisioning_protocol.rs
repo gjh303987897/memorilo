@@ -12,7 +12,8 @@ pub const MAX_CHUNKS: usize = 32;
 pub const MAX_CHUNK_PAYLOAD_BYTES: usize = 384;
 pub const FRAME_HEADER_BYTES: usize = 18;
 
-pub const SERVICE_UUID: &str = "7b7a1000-6c6f-4d65-8a8b-6d656d6f7269";
+// Bumped to invalidate stale macOS GATT service caches after adding the continuation characteristic.
+pub const SERVICE_UUID: &str = "7b7a1010-6c6f-4d65-8a8b-6d656d6f7269";
 pub const DEVICE_INFO_UUID: &str = "7b7a1001-6c6f-4d65-8a8b-6d656d6f7269";
 pub const PUBLIC_CONFIG_UUID: &str = "7b7a1002-6c6f-4d65-8a8b-6d656d6f7269";
 pub const CONFIG_APPLY_UUID: &str = "7b7a1003-6c6f-4d65-8a8b-6d656d6f7269";

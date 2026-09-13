@@ -25,6 +25,39 @@ interface SharedVector {
 }
 
 describe('provisioning protocol', () => {
+  it('normalizes Rust null option fields while rejecting malformed values', () => {
+    const config = {
+      protocolVersion: 1,
+      configSchemaVersion: 2,
+      revision: 0,
+      deviceName: 'Desk',
+      wifiSsid: null,
+      wifiPasswordIsSet: false,
+      localManagementTokenIsSet: false,
+      timezone: 'UTC',
+      idleSleepSeconds: 600,
+      selectionPolicy: 'Remember',
+      todoSyncEnabled: false,
+      todoSyncUrl: '',
+      todoSyncTokenIsSet: false,
+      todoSyncPollIntervalSeconds: 900,
+      todoSyncView: 'today',
+      todoSyncMqttBrokerUrl: null,
+      todoSyncMqttTopic: null,
+      todoSyncMqttUsername: null,
+      todoSyncMqttPasswordIsSet: false,
+    }
+    const bytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value))
+    const parsed = parsePublicConfigEnvelope(bytes(config))
+    for (const key of ['wifiSsid', 'todoSyncMqttBrokerUrl', 'todoSyncMqttTopic', 'todoSyncMqttUsername']) {
+      expect(parsed).not.toHaveProperty(key)
+      expect(() => parsePublicConfigEnvelope(bytes({ ...config, [key]: 42 }))).toThrow()
+    }
+    const status = { protocolVersion: 1, requestId: 'request-1', revision: 1, status: 'accepted', error: null }
+    expect(parseApplyStatusEnvelope(bytes(status))).not.toHaveProperty('error')
+    expect(() => parseApplyStatusEnvelope(bytes({ ...status, error: 42 }))).toThrow()
+  })
+
   it('matches the shared Rust and TypeScript vector', async () => {
     const vector = JSON.parse(await readFile(
       new URL('../test-vectors/provisioning-v1.json', import.meta.url),

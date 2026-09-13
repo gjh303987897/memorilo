@@ -31,6 +31,8 @@ import { Data, Deferred, Effect } from 'effect'
 
 const characteristicChunkBytes = 180
 const applyTimeoutMilliseconds = 15_000
+const connectRetryWindowMilliseconds = 30_000
+const connectRetryDelayMilliseconds = 500
 
 // The Effect factory returns the base class; it is intentionally invoked without `new` here.
 // eslint-disable-next-line unicorn/throw-new-error
@@ -304,7 +306,7 @@ export class DeviceProvisioningService {
           return yield* Effect.fail(new DeviceProvisioningError({ code: 'connection-failed' }))
         const gatt = bluetoothDevice.gatt
         const server = yield* request(async (signal) => {
-          const connected = await gatt.connect()
+          const connected = await connectWithRetry(gatt, signal)
           // Web Bluetooth cannot abort connect(); reclaim a server that arrives after cancellation.
           if (signal.aborted) {
             if (connected.connected)
@@ -316,21 +318,23 @@ export class DeviceProvisioningService {
           return connected
         })
         const service = yield* request(() => server.getPrimaryService(PROVISIONING_UUIDS.service))
-        const [infoCharacteristic, configCharacteristic, applyCharacteristic, statusCharacteristic] = yield* Effect.all([
+        const [infoCharacteristic, configCharacteristic, configContinuationCharacteristic, applyCharacteristic, statusCharacteristic] = yield* Effect.all([
           request(() => service.getCharacteristic(PROVISIONING_UUIDS.deviceInfo)),
           request(() => service.getCharacteristic(PROVISIONING_UUIDS.publicConfig)),
+          request(() => service.getCharacteristic(PROVISIONING_UUIDS.publicConfigContinuation)),
           request(() => service.getCharacteristic(PROVISIONING_UUIDS.configApply)),
           request(() => service.getCharacteristic(PROVISIONING_UUIDS.status)),
         ], { concurrency: 'unbounded' })
         yield* request(() => statusCharacteristic.startNotifications())
-        const [infoValue, configValue] = yield* Effect.all([
+        const [infoValue, configValue, configContinuationValue] = yield* Effect.all([
           request(() => infoCharacteristic.readValue()),
           request(() => configCharacteristic.readValue()),
+          request(() => configContinuationCharacteristic.readValue()),
         ], { concurrency: 'unbounded' })
         return yield* Effect.try({
           try: () => {
             const info = parseDeviceInfoEnvelope(decodeEnvelope(viewBytes(infoValue)))
-            const config = parsePublicConfigEnvelope(decodeEnvelope(viewBytes(configValue)))
+            const config = parsePublicConfigEnvelope(decodeEnvelope(concatBytes(viewBytes(configValue), viewBytes(configContinuationValue))))
             const connection = new DeviceProvisioningConnection(
               { config, info, name: bluetoothDevice.name ?? config.deviceName },
               bluetoothDevice,
@@ -518,6 +522,13 @@ function decodeEnvelope(bytes: Uint8Array): Uint8Array {
   return reassembleFrames(decodeFrameSequence(bytes))
 }
 
+function concatBytes(first: Uint8Array, second: Uint8Array): Uint8Array {
+  const bytes = new Uint8Array(first.byteLength + second.byteLength)
+  bytes.set(first)
+  bytes.set(second, first.byteLength)
+  return bytes
+}
+
 function viewBytes(value: DataView): Uint8Array {
   return new Uint8Array(value.buffer, value.byteOffset, value.byteLength)
 }
@@ -526,6 +537,35 @@ function randomRequestToken(): number {
   const bytes = new Uint32Array(1)
   globalThis.crypto.getRandomValues(bytes)
   return bytes[0] ?? 0
+}
+
+async function connectWithRetry(
+  gatt: NonNullable<BluetoothDeviceAdapter['gatt']>,
+  signal: AbortSignal,
+): Promise<BluetoothServerAdapter> {
+  const deadline = Date.now() + connectRetryWindowMilliseconds
+  let lastError: unknown
+  while (Date.now() < deadline) {
+    if (signal.aborted)
+      throw new Error('connection aborted')
+    try {
+      const server = await gatt.connect()
+      if (server.connected)
+        return server
+      lastError = new Error('GATT server disconnected immediately')
+    }
+    catch (error) {
+      lastError = error
+    }
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(resolve, connectRetryDelayMilliseconds)
+      signal.addEventListener('abort', () => {
+        clearTimeout(timer)
+        reject(new Error('connection aborted'))
+      }, { once: true })
+    })
+  }
+  throw lastError ?? new Error('GATT connection timed out')
 }
 
 function toProvisioningError(

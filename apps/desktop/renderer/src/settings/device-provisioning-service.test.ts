@@ -24,9 +24,7 @@ class FakeCharacteristic extends EventTarget implements BluetoothCharacteristicA
   }
 
   async readValue(): Promise<DataView> {
-    if (!this.value)
-      throw new Error('missing value')
-    return this.value
+    return this.value ?? dataView(new Uint8Array())
   }
 
   async startNotifications(): Promise<this> {
@@ -153,7 +151,11 @@ describe('deviceProvisioningService', () => {
       revision: 2,
       selectionPolicy: 'Remember',
       timezone: 'Asia/Shanghai',
+      wifiSsid: null,
       wifiPasswordIsSet: false,
+      todoSyncMqttBrokerUrl: null,
+      todoSyncMqttTopic: null,
+      todoSyncMqttUsername: null,
       todoSyncEnabled: false,
       todoSyncUrl: '',
       todoSyncTokenIsSet: false,
@@ -162,7 +164,8 @@ describe('deviceProvisioningService', () => {
     }))
     const apply = new FakeCharacteristic()
     const status = new FakeCharacteristic()
-    const characteristics = [info, config, apply, status]
+    const configContinuation = new FakeCharacteristic()
+    const characteristics = [info, config, configContinuation, apply, status]
     let characteristicIndex = 0
     const service: BluetoothServiceAdapter = {
       getCharacteristic: vi.fn(async () => characteristics[characteristicIndex++]!),
@@ -261,6 +264,7 @@ describe('deviceProvisioningService', () => {
         requestId: request.requestId,
         revision: 3,
         status: 'accepted',
+        error: null,
       }))
     }
     await expect(Effect.runPromise(connection.apply({ deviceName: 'Kitchen'.repeat(50) }))).resolves.toMatchObject({

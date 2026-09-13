@@ -1105,7 +1105,13 @@ mod firmware {
 
 #[cfg(target_os = "espidf")]
 fn main() -> anyhow::Result<()> {
-    firmware::run()
+    // UI state and BLE initialization together exceed the ESP-IDF main task's stack.
+    std::thread::Builder::new()
+        .name("application".into())
+        .stack_size(32 * 1024)
+        .spawn(firmware::run)?
+        .join()
+        .map_err(|_| anyhow::anyhow!("application task panicked"))?
 }
 
 #[cfg(not(target_os = "espidf"))]

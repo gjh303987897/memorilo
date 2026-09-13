@@ -577,13 +577,34 @@ impl Application {
         if self.snapshot.settings.provisioning == status {
             return Transition::default();
         }
-        self.mutate(|snapshot| {
-            snapshot.settings.provisioning_requested = status.phase != ProvisioningPhase::Idle;
-            snapshot.settings.provisioning = status;
-            if status.phase == ProvisioningPhase::Idle && snapshot.page == PageId::Provisioning {
-                snapshot.page = PageId::Todos;
+        if !matches!(
+            self.snapshot.lifecycle,
+            LifecycleState::Starting | LifecycleState::Running
+        ) {
+            return Transition::default();
+        }
+
+        self.snapshot.settings.provisioning_requested = status.phase != ProvisioningPhase::Idle;
+        self.snapshot.settings.provisioning = status;
+        if status.phase == ProvisioningPhase::Idle && self.snapshot.page == PageId::Provisioning {
+            self.snapshot.page = PageId::Todos;
+        }
+
+        if matches!(
+            status.phase,
+            ProvisioningPhase::Advertising
+                | ProvisioningPhase::Connected
+                | ProvisioningPhase::Authenticated
+                | ProvisioningPhase::Applying
+        ) {
+            Transition::default()
+        } else {
+            Transition {
+                render: Some(self.next_render()),
+                service_requests: Vec::new(),
+                power_request: None,
             }
-        })
+        }
     }
 
     fn config_applied(&mut self, config: DeviceConfig) -> Transition {
@@ -955,6 +976,30 @@ mod tests {
         application.dispatch(ApplicationCommand::EnterProvisioning);
         assert_eq!(application.snapshot().page, PageId::Provisioning);
         assert!(application.snapshot().settings.provisioning_requested);
+    }
+
+    #[test]
+    fn active_provisioning_transitions_do_not_refresh_the_display() {
+        let mut application = Application::new([]);
+        application.start();
+        application.dispatch(ApplicationCommand::EnterProvisioning);
+
+        for phase in [
+            ProvisioningPhase::Advertising,
+            ProvisioningPhase::Connected,
+            ProvisioningPhase::Authenticated,
+            ProvisioningPhase::Applying,
+        ] {
+            let transition = application.dispatch(ApplicationCommand::ProvisioningUpdated(
+                ProvisioningSnapshot {
+                    phase,
+                    passkey: Some(123_456),
+                    config_revision: 1,
+                },
+            ));
+            assert_eq!(application.snapshot().settings.provisioning.phase, phase);
+            assert!(transition.render.is_none());
+        }
     }
 
     #[test]

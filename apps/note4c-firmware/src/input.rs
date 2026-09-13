@@ -166,7 +166,8 @@ impl GestureRecognizer {
                 self.chord_emitted = true;
                 gestures.push(Gesture::UpDownChordLongPress);
             }
-        } else if self.chord_started_at.is_some() {
+        } else if !up_pressed && !down_pressed {
+            // Keep both buttons consumed until the whole chord is released.
             self.chord_started_at = None;
             self.chord_emitted = false;
         }
@@ -319,6 +320,53 @@ mod tests {
                 Gesture::Release(ButtonId::Down)
             ]
         );
+    }
+
+    #[test]
+    fn chord_release_does_not_navigate_when_buttons_are_released_separately() {
+        for remaining in [ButtonId::Up, ButtonId::Down] {
+            let mut recognizer = GestureRecognizer::new(timing());
+            let chord = ButtonState {
+                up: true,
+                down: true,
+                ok: false,
+            };
+            recognizer.update(Duration::ZERO, chord);
+            recognizer.update(Duration::from_millis(20), chord);
+            assert_eq!(
+                recognizer.update(Duration::from_millis(720), chord),
+                vec![Gesture::UpDownChordLongPress]
+            );
+            let one_held = ButtonState {
+                up: remaining == ButtonId::Up,
+                down: remaining == ButtonId::Down,
+                ok: false,
+            };
+            recognizer.update(Duration::from_millis(740), one_held);
+            let released = recognizer.update(Duration::from_millis(760), one_held);
+            assert!(
+                released
+                    .iter()
+                    .all(|gesture| matches!(gesture, Gesture::Release(_)))
+            );
+            assert!(
+                recognizer
+                    .update(Duration::from_millis(1500), one_held)
+                    .is_empty()
+            );
+            recognizer.update(Duration::from_millis(1520), ButtonState::default());
+            assert_eq!(
+                recognizer.update(Duration::from_millis(1540), ButtonState::default()),
+                vec![Gesture::Release(remaining)]
+            );
+            recognizer.update(Duration::from_millis(1600), one_held);
+            recognizer.update(Duration::from_millis(1620), one_held);
+            recognizer.update(Duration::from_millis(1640), ButtonState::default());
+            assert_eq!(
+                recognizer.update(Duration::from_millis(1660), ButtonState::default()),
+                vec![Gesture::Release(remaining), Gesture::Tap(remaining)]
+            );
+        }
     }
 
     #[test]

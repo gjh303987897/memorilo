@@ -9,6 +9,7 @@ export const PROVISIONING_UUIDS = {
   service: '7b7a1000-6c6f-4d65-8a8b-6d656d6f7269',
   deviceInfo: '7b7a1001-6c6f-4d65-8a8b-6d656d6f7269',
   publicConfig: '7b7a1002-6c6f-4d65-8a8b-6d656d6f7269',
+  publicConfigContinuation: '7b7a1005-6c6f-4d65-8a8b-6d656d6f7269',
   configApply: '7b7a1003-6c6f-4d65-8a8b-6d656d6f7269',
   status: '7b7a1004-6c6f-4d65-8a8b-6d656d6f7269',
 } as const
@@ -293,6 +294,11 @@ export function parseDeviceInfoEnvelope(json: Uint8Array): DeviceInfoEnvelope {
 
 export function parsePublicConfigEnvelope(json: Uint8Array): PublicConfigEnvelope {
   const value = parseJsonRecord(json)
+  // Rust serializes absent Option<String> fields as null on the wire.
+  for (const key of ['wifiSsid', 'todoSyncMqttBrokerUrl', 'todoSyncMqttTopic', 'todoSyncMqttUsername']) {
+    if (value[key] === null)
+      delete value[key]
+  }
   if (value.protocolVersion !== PROTOCOL_VERSION
     || value.configSchemaVersion !== CONFIG_SCHEMA_VERSION
     || !Number.isSafeInteger(value.revision)
@@ -338,6 +344,8 @@ function isAlmanacConfig(value: unknown): value is AlmanacConfig {
 
 export function parseApplyStatusEnvelope(json: Uint8Array): ApplyStatusEnvelope {
   const value = parseJsonRecord(json)
+  if (value.error === null)
+    delete value.error
   if (value.protocolVersion !== PROTOCOL_VERSION
     || typeof value.requestId !== 'string'
     || (value.status !== 'accepted' && value.status !== 'rejected')

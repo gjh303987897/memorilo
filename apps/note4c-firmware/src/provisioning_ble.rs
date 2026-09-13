@@ -55,18 +55,36 @@ impl BleProvisioningTransport {
         server.advertise_on_disconnect(false);
 
         let connected_tx = event_tx.clone();
-        server.on_connect(move |server, desc| {
-            let _ = server.update_conn_params(desc.conn_handle(), 24, 48, 0, 60);
+        server.on_connect(move |_server, desc| {
+            // Let the central keep the parameters negotiated during connection setup. Requesting
+            // another update from this callback can assert the ESP32-S3 controller before GATT is ready.
+            log::info!(
+                "provisioning BLE connected conn_handle={}",
+                desc.conn_handle()
+            );
             let _ = connected_tx.send(ProvisioningEvent::Connected);
         });
         let disconnected_tx = event_tx.clone();
-        server.on_disconnect(move |_desc, _reason| {
+        server.on_disconnect(move |desc, reason| {
+            log::warn!(
+                "provisioning BLE disconnected conn_handle={} reason={:?}",
+                desc.conn_handle(),
+                reason
+            );
             let _ = disconnected_tx.send(ProvisioningEvent::Disconnected);
         });
         let authenticated_tx = event_tx.clone();
         server.on_authentication_complete(move |server, desc, result| {
             let authenticated =
                 result.is_ok() && desc.encrypted() && desc.authenticated() && desc.bonded();
+            log::info!(
+                "provisioning BLE authentication complete conn_handle={} result_ok={} encrypted={} authenticated={} bonded={}",
+                desc.conn_handle(),
+                result.is_ok(),
+                desc.encrypted(),
+                desc.authenticated(),
+                desc.bonded()
+            );
             let event = if authenticated {
                 ProvisioningEvent::Authenticated
             } else {
@@ -78,7 +96,7 @@ impl BleProvisioningTransport {
             }
         });
 
-        let service = server.create_service(uuid128!("7b7a1000-6c6f-4d65-8a8b-6d656d6f7269"));
+        let service = server.create_service(uuid128!("7b7a1010-6c6f-4d65-8a8b-6d656d6f7269"));
         let read_security =
             NimbleProperties::READ | NimbleProperties::READ_ENC | NimbleProperties::READ_AUTHEN;
         let info_characteristic = service.lock().create_characteristic(
@@ -93,9 +111,17 @@ impl BleProvisioningTransport {
             uuid128!("7b7a1002-6c6f-4d65-8a8b-6d656d6f7269"),
             read_security,
         );
+        let config_continuation_characteristic = service.lock().create_characteristic(
+            uuid128!("7b7a1005-6c6f-4d65-8a8b-6d656d6f7269"),
+            read_security,
+        );
+        let config_parts = encode_envelope_parts(2, config)?;
         config_characteristic
             .lock()
-            .set_value(&encode_envelope(2, config)?);
+            .set_value(config_parts.first().map_or(&[], Vec::as_slice));
+        config_continuation_characteristic
+            .lock()
+            .set_value(config_parts.get(1).map_or(&[], Vec::as_slice));
 
         let apply_characteristic = service.lock().create_characteristic(
             uuid128!("7b7a1003-6c6f-4d65-8a8b-6d656d6f7269"),
@@ -130,7 +156,7 @@ impl BleProvisioningTransport {
         advertisement
             .name(&device_name)
             .add_service_uuid(BleUuid::from_uuid128_string(
-                "7b7a1000-6c6f-4d65-8a8b-6d656d6f7269",
+                "7b7a1010-6c6f-4d65-8a8b-6d656d6f7269",
             )?);
         device
             .get_advertising()
@@ -206,8 +232,30 @@ impl Drop for BleProvisioningTransport {
 }
 
 fn encode_envelope(request_token: u32, envelope: &impl Serialize) -> Result<Vec<u8>> {
+    Ok(encode_envelope_parts(request_token, envelope)?
+        .into_iter()
+        .flatten()
+        .collect())
+}
+
+fn encode_envelope_parts(request_token: u32, envelope: &impl Serialize) -> Result<Vec<Vec<u8>>> {
     let json = serde_json::to_vec(envelope).context("serializing provisioning envelope failed")?;
     let frames = encode_frames(request_token, &json, CHARACTERISTIC_CHUNK_BYTES)
         .map_err(|error| anyhow::anyhow!("framing provisioning envelope failed: {error:?}"))?;
-    Ok(frames.into_iter().flatten().collect())
+    let mut parts = Vec::new();
+    let mut current = Vec::new();
+    for frame in frames {
+        if !current.is_empty() && current.len() + frame.len() > 500 {
+            parts.push(current);
+            current = Vec::new();
+        }
+        current.extend_from_slice(&frame);
+    }
+    if !current.is_empty() {
+        parts.push(current);
+    }
+    if parts.len() > 2 {
+        anyhow::bail!("provisioning envelope exceeds two BLE characteristics");
+    }
+    Ok(parts)
 }

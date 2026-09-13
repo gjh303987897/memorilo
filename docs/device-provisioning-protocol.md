@@ -6,9 +6,10 @@ Memorilo configures a device only during a five-minute, physically initiated BLE
 
 | Purpose | UUID | Access |
 | --- | --- | --- |
-| Service | `7b7a1000-6c6f-4d65-8a8b-6d656d6f7269` | — |
+| Service | `7b7a1010-6c6f-4d65-8a8b-6d656d6f7269` | — |
 | Device information | `7b7a1001-6c6f-4d65-8a8b-6d656d6f7269` | authenticated read |
 | Redacted configuration | `7b7a1002-6c6f-4d65-8a8b-6d656d6f7269` | authenticated read |
+| Redacted configuration continuation | `7b7a1005-6c6f-4d65-8a8b-6d656d6f7269` | authenticated read |
 | Configuration apply | `7b7a1003-6c6f-4d65-8a8b-6d656d6f7269` | authenticated write |
 | Status | `7b7a1004-6c6f-4d65-8a8b-6d656d6f7269` | authenticated read/notify |
 
