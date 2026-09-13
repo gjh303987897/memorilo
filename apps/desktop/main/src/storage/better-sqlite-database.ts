@@ -51,6 +51,7 @@ export class BetterSqliteDatabase implements EditorStorageDatabase {
   }
 
   #closed = false
+  #migrated = false
 
   constructor(path: string, options: BetterSqliteDatabaseOptions = {}) {
     if (path.length === 0)
@@ -74,6 +75,8 @@ export class BetterSqliteDatabase implements EditorStorageDatabase {
 
   migrate(): void {
     this.#assertOpen()
+    if (this.#migrated)
+      return
     const migrationsFolder = editorStorageMigrationsPath()
     migrateDrizzle(this.#drizzle, { migrationsFolder })
     const state = this.#drizzle.select({ generation: count() })
@@ -82,6 +85,7 @@ export class BetterSqliteDatabase implements EditorStorageDatabase {
     if (!state || !Number.isSafeInteger(state.generation) || state.generation < 1)
       throw new Error('Drizzle migrations did not establish a valid schema generation')
     this.#database.pragma(`user_version = ${state.generation}`)
+    this.#migrated = true
   }
 
   async backup(destinationPath: string): Promise<void> {
