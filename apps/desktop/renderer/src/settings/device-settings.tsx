@@ -1,10 +1,10 @@
-import type { DesktopDeviceStatus, DesktopProvisioningDevice, DesktopProvisioningPairingRequest } from '@memorilo/desktop-api'
+import type { DesktopProvisioningDevice, DesktopProvisioningPairingRequest } from '@memorilo/desktop-api'
 import type { DeviceConfigPatch, PublicConfigEnvelope } from '@memorilo/device-provisioning'
 import type { DeviceProvisioningClient, DeviceProvisioningSession } from './device-provisioning-service'
 import { Button, SelectField, Status, Switch, TextField } from '@memorilo/ui'
 import * as stylex from '@stylexjs/stylex'
 import { Effect } from 'effect'
-import { ArrowRight, Bluetooth, ChevronRight, Moon, RefreshCw, RotateCw } from 'lucide-react'
+import { Bluetooth, ChevronRight } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -71,8 +71,6 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
   const [form, setForm] = useState<DeviceFormState>(emptyForm)
   const [localManagementCredentialStored, setLocalManagementCredentialStored] = useState(false)
   const [pendingLocalManagement, setPendingLocalManagement] = useState<PendingLocalManagementChange | null>(null)
-  const [deviceStatus, setDeviceStatus] = useState<DesktopDeviceStatus | null>(null)
-  const [remotePhase, setRemotePhase] = useState<'idle' | 'loading' | 'commanding' | 'error' | 'success'>('idle')
   const [errorCode, setErrorCode] = useState<DeviceProvisioningError['code'] | 'invalid-config' | null>(null)
   const operation = useRef(0)
   const scanControllerRef = useRef<AbortController | null>(null)
@@ -299,39 +297,6 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
     }
   }
 
-  const loadDeviceStatus = async (): Promise<void> => {
-    if (!connection || !localManagementCredentialStored)
-      return
-    setRemotePhase('loading')
-    try {
-      const status = await Effect.runPromise(service.loadStatus({
-        address: deviceAddressForDeviceId(connection.device.info.deviceId),
-        deviceId: connection.device.info.deviceId,
-      }))
-      setDeviceStatus(status)
-      setRemotePhase('success')
-    }
-    catch {
-      setRemotePhase('error')
-    }
-  }
-
-  const runRemoteCommand = async (command: 'nextDevicePage' | 'refreshDevice' | 'sleepDevice'): Promise<void> => {
-    if (!connection || !localManagementCredentialStored)
-      return
-    setRemotePhase('commanding')
-    try {
-      await Effect.runPromise(service[command]({
-        address: deviceAddressForDeviceId(connection.device.info.deviceId),
-        deviceId: connection.device.info.deviceId,
-      }))
-      setRemotePhase('success')
-    }
-    catch {
-      setRemotePhase('error')
-    }
-  }
-
   const disconnect = async (): Promise<void> => {
     operation.current += 1
     unsubscribeDisconnectRef.current?.()
@@ -341,8 +306,6 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
     connectionRef.current = null
     setConnection(null)
     setLocalManagementCredentialStored(false)
-    setDeviceStatus(null)
-    setRemotePhase('idle')
     setPendingLocalManagement(null)
     if (activeConnection)
       await Effect.runPromise(activeConnection.close())
@@ -363,8 +326,6 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
         await Effect.runPromise(service.clearLocalManagementToken(activeConnection.device.info.deviceId))
       }
       setLocalManagementCredentialStored(false)
-      setDeviceStatus(null)
-      setRemotePhase('idle')
       setPendingLocalManagement(null)
       setPhase('idle')
     }
@@ -373,8 +334,6 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
     }
   }
 
-  const remoteBusy = remotePhase === 'loading' || remotePhase === 'commanding' || phase === 'applying'
-  const remoteEnabled = localManagementCredentialStored && pendingLocalManagement?.kind !== 'clear'
   const statusKey = statusTranslationKey(phase, errorCode)
   const canCancel = phase === 'connecting' || phase === 'pairing' || phase === 'scanning' || phase === 'selecting'
   const scanDisabled = phase === 'applying' || canCancel
@@ -479,47 +438,6 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
                   void applyConfiguration()
                 }}
               >
-                <section {...stylex.props(styles.remoteSection)} aria-labelledby="device-remote-heading" aria-busy={remoteBusy}>
-                  <div {...stylex.props(styles.remoteHeader)}>
-                    <h3 id="device-remote-heading" {...stylex.props(styles.remoteTitle)}>{t('deviceRemoteControl')}</h3>
-                    <Button disabled={!remoteEnabled || remoteBusy} variant="secondary" onClick={() => void loadDeviceStatus()}>
-                      <RefreshCw aria-hidden="true" size={15} />
-                      {t('deviceRemoteLoadStatus')}
-                    </Button>
-                  </div>
-                  <dl {...stylex.props(styles.remoteMetrics)}>
-                    {[
-                      [t('deviceRemoteNetworkLabel'), deviceStatus ? t(`deviceRemoteNetworkPhases.${deviceStatus.network.phase}`) : t('deviceRemoteUnknown')],
-                      [t('deviceRemoteAddressLabel'), deviceStatus?.network.ipv4 ?? t('deviceRemoteUnknown')],
-                      [t('deviceRemoteMqttLabel'), deviceStatus ? t(deviceStatus.network.mqttConnected ? 'deviceRemoteConnected' : 'deviceRemoteDisconnected') : t('deviceRemoteUnknown')],
-                      [t('deviceRemoteUptimeLabel'), deviceStatus ? t('deviceRemoteUptimeValue', { count: Math.floor(deviceStatus.uptimeMs / 1000) }) : t('deviceRemoteUnknown')],
-                    ].map(([label, value]) => (
-                      <div key={label} {...stylex.props(styles.remoteMetric)}>
-                        <dt {...stylex.props(styles.remoteMetricLabel)}>{label}</dt>
-                        <dd {...stylex.props(styles.remoteMetricValue)}>{value}</dd>
-                      </div>
-                    ))}
-                  </dl>
-                  <div {...stylex.props(styles.remoteActions)}>
-                    <div {...stylex.props(styles.footerGroup)}>
-                      <Button disabled={!remoteEnabled || remoteBusy} variant="secondary" onClick={() => void runRemoteCommand('refreshDevice')}>
-                        <RotateCw aria-hidden="true" size={15} />
-                        {t('deviceRemoteRefresh')}
-                      </Button>
-                      <Button disabled={!remoteEnabled || remoteBusy} variant="secondary" onClick={() => void runRemoteCommand('nextDevicePage')}>
-                        <ArrowRight aria-hidden="true" size={15} />
-                        {t('deviceRemoteNextPage')}
-                      </Button>
-                    </div>
-                    <Button disabled={!remoteEnabled || remoteBusy} variant="plain" onClick={() => void runRemoteCommand('sleepDevice')}>
-                      <Moon aria-hidden="true" size={15} />
-                      {t('deviceRemoteSleep')}
-                    </Button>
-                  </div>
-                  <Status xstyle={styles.remoteFeedback} variant={remotePhase === 'error' ? 'error' : remotePhase === 'success' ? 'success' : 'neutral'}>
-                    {t(remoteStatusKey(remotePhase, remoteEnabled))}
-                  </Status>
-                </section>
                 <DeviceTextRow
                   description={t('deviceNameDescription')}
                   id="device-name"
@@ -761,21 +679,6 @@ function statusTranslationKey(
     selecting: 'deviceStatusSelecting',
     success: 'deviceStatusSuccess',
     timeout: 'deviceStatusTimeout',
-  }[phase]
-}
-
-function remoteStatusKey(
-  phase: 'idle' | 'loading' | 'commanding' | 'error' | 'success',
-  credentialStored: boolean,
-): string {
-  if (!credentialStored)
-    return 'deviceRemoteStatusUnavailable'
-  return {
-    commanding: 'deviceRemoteStatusCommanding',
-    error: 'deviceRemoteStatusError',
-    idle: 'deviceRemoteStatusIdle',
-    loading: 'deviceRemoteStatusLoading',
-    success: 'deviceRemoteStatusSuccess',
   }[phase]
 }
 
