@@ -44,7 +44,7 @@ describe('deviceGallery', () => {
       <DeviceGallery client={client()} deviceId="device-1" enabled={false} />,
     )
     expect(rendered.getByRole('button', { name: 'Load gallery' })).toBeDisabled()
-    expect(rendered.getByRole('status')).toHaveTextContent('securely store a local management token')
+    expect(rendered.getByRole('status')).toHaveTextContent('Apply settings to enable gallery management.')
   })
 })
 

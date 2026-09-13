@@ -362,7 +362,7 @@ function galleryStatusKey(
   deviceError: string | null,
 ): string {
   if (!enabled)
-    return 'deviceGalleryTokenRequired'
+    return 'deviceGalleryIdle'
   if (deviceError)
     return 'deviceGalleryDeviceError'
   return {
