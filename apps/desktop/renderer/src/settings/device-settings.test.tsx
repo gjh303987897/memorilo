@@ -208,12 +208,9 @@ describe('device settings', () => {
     expect(rendered.getByRole('button', { name: 'Scan for device' })).toBeEnabled()
     expect(rendered.getByText('Disconnected')).toBeInTheDocument()
     expect(rendered.getByRole('textbox', { name: 'Device name' })).toBeInTheDocument()
-    expect(rendered.getByRole('button', { name: 'Load status' })).toBeEnabled()
-    fireEvent.click(rendered.getByRole('button', { name: 'Next page' }))
-    await waitFor(() => expect(nextDevicePage).toHaveBeenCalledWith({
-      address: 'memorilo-device-1.local',
-      deviceId: 'device-1',
-    }))
+    expect(rendered.queryByRole('button', { name: 'Load status' })).not.toBeInTheDocument()
+    expect(rendered.queryByRole('button', { name: 'Next page' })).not.toBeInTheDocument()
+    expect(nextDevicePage).not.toHaveBeenCalled()
 
     rendered.unmount()
     expect(close).toHaveBeenCalledOnce()
