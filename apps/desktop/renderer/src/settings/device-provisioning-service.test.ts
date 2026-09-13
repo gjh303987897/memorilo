@@ -6,7 +6,7 @@ import type {
   BluetoothServerAdapter,
   BluetoothServiceAdapter,
 } from './device-provisioning-service'
-import { decodeFrame, encodeFrames, parseApplyConfigEnvelope, reassembleFrames } from '@memorilo/device-provisioning'
+import { decodeFrame, encodeFrames, parseApplyConfigEnvelope, PROVISIONING_UUIDS, reassembleFrames } from '@memorilo/device-provisioning'
 import { Effect } from 'effect'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -24,7 +24,9 @@ class FakeCharacteristic extends EventTarget implements BluetoothCharacteristicA
   }
 
   async readValue(): Promise<DataView> {
-    return this.value ?? dataView(new Uint8Array())
+    if (!this.value)
+      throw new Error('missing value')
+    return this.value
   }
 
   async startNotifications(): Promise<this> {
@@ -54,7 +56,10 @@ function dataView(value: Uint8Array): DataView {
   return new DataView(value.buffer, value.byteOffset, value.byteLength)
 }
 
-afterEach(() => vi.useRealTimers())
+afterEach(() => {
+  vi.useRealTimers()
+  sessionStorage.removeItem('memorilo:ble-diagnostic:connect')
+})
 
 function stalledConnection() {
   const events = new EventTarget()
@@ -92,7 +97,239 @@ function stalledConnection() {
   return { connection, events, releaseWrite: () => releaseWrite(), server, status, write }
 }
 
+function provisioningHarness() {
+  const info = new FakeCharacteristic(framed({
+    capabilities: ['config-v1'],
+    configRevision: 2,
+    configSchemaVersion: 2,
+    deviceId: 'device-1',
+    firmwareVersion: '0.1.0',
+    protocolVersion: 1,
+  }))
+  const config = new FakeCharacteristic(framed({
+    configSchemaVersion: 2,
+    deviceName: 'Desk',
+    idleSleepSeconds: 600,
+    localManagementTokenIsSet: false,
+    protocolVersion: 1,
+    revision: 2,
+    selectionPolicy: 'Remember',
+    timezone: 'Asia/Shanghai',
+    todoSyncEnabled: false,
+    todoSyncPollIntervalSeconds: 900,
+    todoSyncTokenIsSet: false,
+    todoSyncUrl: '',
+    todoSyncView: 'today',
+    wifiPasswordIsSet: false,
+  }))
+  const configContinuation = new FakeCharacteristic(new Uint8Array())
+  const apply = new FakeCharacteristic()
+  const status = new FakeCharacteristic()
+  const characteristics = new Map([
+    ['7b7a1001-6c6f-4d65-8a8b-6d656d6f7269', info],
+    ['7b7a1002-6c6f-4d65-8a8b-6d656d6f7269', config],
+    ['7b7a1005-6c6f-4d65-8a8b-6d656d6f7269', configContinuation],
+    ['7b7a1003-6c6f-4d65-8a8b-6d656d6f7269', apply],
+    ['7b7a1004-6c6f-4d65-8a8b-6d656d6f7269', status],
+  ])
+  const service: BluetoothServiceAdapter = {
+    getCharacteristic: vi.fn(async uuid => characteristics.get(uuid)!),
+  }
+  const server: BluetoothServerAdapter = {
+    connected: true,
+    disconnect: vi.fn(() => { server.connected = false }),
+    getPrimaryService: vi.fn(async () => service),
+  }
+  const connect = vi.fn(async () => {
+    server.connected = true
+    return server
+  })
+  const device: BluetoothDeviceAdapter = {
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    gatt: { connect },
+  }
+  const adapter: BluetoothAdapter = { requestDevice: vi.fn(async () => device) }
+  const bridge = {
+    cancelSelection: vi.fn(async () => undefined),
+    clearLocalManagementToken: vi.fn(async () => undefined),
+    deleteGalleryAsset: vi.fn(async () => undefined),
+    generateLocalManagementToken: vi.fn(async () => 'unused'),
+    hasLocalManagementToken: vi.fn(async () => false),
+    loadGallery: vi.fn(async () => { throw new Error('unused') }),
+    loadStatus: vi.fn(async () => { throw new Error('unused') }),
+    loadTodos: vi.fn(async () => { throw new Error('unused') }),
+    loadTodoTarget: vi.fn(async () => ({ status: null, target: null })),
+    nextDevicePage: vi.fn(async () => undefined),
+    pushTodos: vi.fn(async () => undefined),
+    refreshDevice: vi.fn(async () => undefined),
+    reorderGallery: vi.fn(async () => undefined),
+    respondToPairing: vi.fn(async () => undefined),
+    saveLocalManagementToken: vi.fn(async () => undefined),
+    saveTodoTarget: vi.fn(async () => undefined),
+    selectDevice: vi.fn(async () => undefined),
+    setGallerySlideshow: vi.fn(async () => undefined),
+    sleepDevice: vi.fn(async () => undefined),
+    subscribeDevices: vi.fn(() => vi.fn()),
+    subscribePairing: vi.fn(() => vi.fn()),
+    uploadGalleryAsset: vi.fn(async () => undefined),
+  }
+  return {
+    connect,
+    info,
+    config,
+    configContinuation,
+    service,
+    status,
+    provisioning: new DeviceProvisioningService(adapter, bridge),
+    server,
+  }
+}
+
+function connectDiagnostics(): Array<{
+  attempt: number
+  domException?: { message: string, name: string }
+  elapsedMs: number
+  outcome: 'failure' | 'start' | 'success'
+  stage: string
+}> {
+  return JSON.parse(sessionStorage.getItem('memorilo:ble-diagnostic:connect') ?? '[]')
+}
+
 describe('deviceProvisioningService', () => {
+  it('discovers characteristics sequentially for CoreBluetooth stability', async () => {
+    const harness = provisioningHarness()
+    const originalGetCharacteristic = harness.service.getCharacteristic
+    let releaseInfo!: () => void
+    const infoReady = new Promise<void>((resolve) => {
+      releaseInfo = resolve
+    })
+    const calls: string[] = []
+    harness.service.getCharacteristic = vi.fn(async (uuid) => {
+      calls.push(uuid)
+      if (uuid === PROVISIONING_UUIDS.deviceInfo)
+        await infoReady
+      return originalGetCharacteristic(uuid)
+    })
+
+    const result = Effect.runPromise(harness.provisioning.connect())
+    await vi.waitFor(() => expect(calls).toEqual([PROVISIONING_UUIDS.deviceInfo]))
+    releaseInfo()
+    const connection = await result
+
+    expect(calls).toEqual([
+      PROVISIONING_UUIDS.deviceInfo,
+      PROVISIONING_UUIDS.publicConfig,
+      PROVISIONING_UUIDS.publicConfigContinuation,
+      PROVISIONING_UUIDS.configApply,
+      PROVISIONING_UUIDS.status,
+    ])
+    await Effect.runPromise(connection.close())
+  })
+
+  it('starts notifications and reads provisioning values sequentially', async () => {
+    const harness = provisioningHarness()
+    const calls: string[] = []
+    let releaseNotifications!: () => void
+    let releaseInfo!: () => void
+    const notificationsReady = new Promise<void>((resolve) => {
+      releaseNotifications = resolve
+    })
+    const infoReady = new Promise<void>((resolve) => {
+      releaseInfo = resolve
+    })
+    const originalInfoRead = harness.info.readValue.bind(harness.info)
+    const originalConfigRead = harness.config.readValue.bind(harness.config)
+    const originalContinuationRead = harness.configContinuation.readValue.bind(harness.configContinuation)
+    vi.spyOn(harness.status, 'startNotifications').mockImplementation(async () => {
+      calls.push('notifications')
+      await notificationsReady
+      return harness.status
+    })
+    vi.spyOn(harness.info, 'readValue').mockImplementation(async () => {
+      calls.push('read-info')
+      await infoReady
+      return originalInfoRead()
+    })
+    vi.spyOn(harness.config, 'readValue').mockImplementation(async () => {
+      calls.push('read-config')
+      return originalConfigRead()
+    })
+    vi.spyOn(harness.configContinuation, 'readValue').mockImplementation(async () => {
+      calls.push('read-continuation')
+      return originalContinuationRead()
+    })
+
+    const result = Effect.runPromise(harness.provisioning.connect())
+    await vi.waitFor(() => expect(calls).toEqual(['notifications']))
+    releaseNotifications()
+    await vi.waitFor(() => expect(calls).toEqual(['notifications', 'read-info']))
+    releaseInfo()
+    const connection = await result
+
+    expect(calls).toEqual(['notifications', 'read-info', 'read-config', 'read-continuation'])
+    await Effect.runPromise(connection.close())
+  })
+
+  it('retries the selected device after the first connection attempt fails', async () => {
+    vi.useFakeTimers()
+    const harness = provisioningHarness()
+    harness.connect.mockRejectedValueOnce(new DOMException('Temporary GATT failure', 'NetworkError'))
+
+    const result = Effect.runPromise(harness.provisioning.connect())
+    await vi.waitFor(() => expect(harness.connect).toHaveBeenCalledOnce())
+    await vi.advanceTimersByTimeAsync(501)
+    await vi.waitFor(() => expect(harness.connect).toHaveBeenCalledTimes(2))
+    const connection = await result
+
+    expect(harness.connect).toHaveBeenCalledTimes(2)
+    expect(connectDiagnostics()).toContainEqual(expect.objectContaining({
+      attempt: 1,
+      domException: { message: 'Temporary GATT failure', name: 'NetworkError' },
+      outcome: 'failure',
+      stage: 'connect',
+    }))
+    await Effect.runPromise(connection.close())
+  })
+
+  it('stops connection retries when the caller aborts', async () => {
+    vi.useFakeTimers()
+    const harness = provisioningHarness()
+    harness.connect.mockRejectedValue(new DOMException('Temporary GATT failure', 'NetworkError'))
+    const controller = new AbortController()
+
+    const result = Effect.runPromiseExit(harness.provisioning.connect(), { signal: controller.signal })
+    await vi.advanceTimersByTimeAsync(1)
+    expect(harness.connect).toHaveBeenCalledOnce()
+    controller.abort()
+    await vi.advanceTimersByTimeAsync(1_000)
+
+    expect(await result).toMatchObject({ _tag: 'Failure' })
+    expect(harness.connect).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    ['service', (harness: ReturnType<typeof provisioningHarness>) => {
+      vi.mocked(harness.server.getPrimaryService).mockRejectedValue(new DOMException('Service unavailable', 'NetworkError'))
+    }],
+    ['read', (harness: ReturnType<typeof provisioningHarness>) => {
+      vi.spyOn(harness.info, 'readValue').mockRejectedValue(new DOMException('Read failed', 'NetworkError'))
+    }],
+  ] as const)('identifies a %s-stage initialization failure', async (stage, fail) => {
+    const harness = provisioningHarness()
+    fail(harness)
+    const controller = new AbortController()
+
+    const result = Effect.runPromiseExit(harness.provisioning.connect(), { signal: controller.signal })
+    await vi.waitFor(() => expect(connectDiagnostics()).toContainEqual(expect.objectContaining({
+      outcome: 'failure',
+      stage,
+    })))
+    controller.abort()
+
+    expect(await result).toMatchObject({ _tag: 'Failure' })
+  })
+
   it('bounds a stalled GATT write and stops subsequent chunks after timeout', async () => {
     vi.useFakeTimers()
     const harness = stalledConnection()
@@ -151,20 +388,16 @@ describe('deviceProvisioningService', () => {
       revision: 2,
       selectionPolicy: 'Remember',
       timezone: 'Asia/Shanghai',
-      wifiSsid: null,
       wifiPasswordIsSet: false,
-      todoSyncMqttBrokerUrl: null,
-      todoSyncMqttTopic: null,
-      todoSyncMqttUsername: null,
       todoSyncEnabled: false,
       todoSyncUrl: '',
       todoSyncTokenIsSet: false,
       todoSyncPollIntervalSeconds: 900,
       todoSyncView: 'today',
     }))
+    const configContinuation = new FakeCharacteristic(new Uint8Array())
     const apply = new FakeCharacteristic()
     const status = new FakeCharacteristic()
-    const configContinuation = new FakeCharacteristic()
     const characteristics = [info, config, configContinuation, apply, status]
     let characteristicIndex = 0
     const service: BluetoothServiceAdapter = {
@@ -264,7 +497,6 @@ describe('deviceProvisioningService', () => {
         requestId: request.requestId,
         revision: 3,
         status: 'accepted',
-        error: null,
       }))
     }
     await expect(Effect.runPromise(connection.apply({ deviceName: 'Kitchen'.repeat(50) }))).resolves.toMatchObject({

@@ -29,7 +29,6 @@ export function DeviceGallery({
   enabled: boolean
 }) {
   const { t } = useTranslation('settings')
-  const [address, setAddress] = useState('')
   const [fit, setFit] = useState<DeviceImageFit>('contain')
   const [gallery, setGallery] = useState<DesktopDeviceGalleryStatus | null>(null)
   const [phase, setPhase] = useState<GalleryPhase>('idle')
@@ -43,9 +42,9 @@ export function DeviceGallery({
     operation.current += 1
   }, [])
 
-  const target = { address: address.trim(), deviceId }
+  const target = { address: deviceAddressForDeviceId(deviceId), deviceId }
   const refresh = async (): Promise<DesktopDeviceGalleryStatus | null> => {
-    if (!enabled || target.address.length === 0)
+    if (!enabled)
       return null
     const sequence = ++operation.current
     setPhase('loading')
@@ -203,7 +202,7 @@ export function DeviceGallery({
           <p {...stylex.props(styles.description)}>{t('deviceGalleryDescription')}</p>
         </div>
         <Button
-          disabled={!enabled || address.trim().length === 0 || phase === 'loading'}
+          disabled={!enabled || phase === 'loading'}
           type="button"
           variant="secondary"
           xstyle={styles.compactButton}
@@ -212,18 +211,6 @@ export function DeviceGallery({
           <RefreshCw aria-hidden="true" size={13} />
           {t('deviceGalleryConnect')}
         </Button>
-      </div>
-
-      <div {...stylex.props(styles.connectionRow)}>
-        <TextField
-          aria-label={t('deviceGalleryAddress')}
-          placeholder="192.168.1.42"
-          value={address}
-          variant="settings"
-          xstyle={styles.address}
-          onChange={event => setAddress(event.target.value)}
-        />
-        <span {...stylex.props(styles.addressHint)}>{t('deviceGalleryAddressDescription')}</span>
       </div>
 
       {gallery
@@ -347,6 +334,11 @@ export function DeviceGallery({
       </Status>
     </section>
   )
+}
+
+function deviceAddressForDeviceId(deviceId: string): string {
+  const normalized = deviceId.toLowerCase().replace(/[^a-z0-9-]/gu, '-')
+  return `memorilo-${normalized}.local`
 }
 
 function DeviceImagePreview({ bytes }: { bytes: Uint8Array }) {

@@ -30,13 +30,11 @@ describe('deviceGallery', () => {
       <DeviceGallery client={client({ loadGallery })} deviceId="device-1" enabled />,
     )
 
-    fireEvent.change(rendered.getByRole('textbox', { name: 'Device LAN address' }), {
-      target: { value: '192.168.4.23' },
-    })
     fireEvent.click(rendered.getByRole('button', { name: 'Load gallery' }))
 
     await waitFor(() => expect(rendered.getByText('四色照片')).toBeInTheDocument())
-    expect(loadGallery).toHaveBeenCalledWith({ address: '192.168.4.23', deviceId: 'device-1' })
+    expect(loadGallery).toHaveBeenCalledWith({ address: 'memorilo-device-1.local', deviceId: 'device-1' })
+    expect(rendered.queryByRole('textbox', { name: 'Device LAN address' })).not.toBeInTheDocument()
     expect(rendered.queryByLabelText(/token/iu)).not.toBeInTheDocument()
     expect(rendered.getByText('About 20 seconds per full refresh')).toBeInTheDocument()
   })

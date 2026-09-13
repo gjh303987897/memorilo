@@ -25,14 +25,20 @@ import {
   parsePublicConfigEnvelope,
   PROTOCOL_VERSION,
   PROVISIONING_UUIDS,
+  ProvisioningProtocolError,
   reassembleFrames,
 } from '@memorilo/device-provisioning'
 import { Data, Deferred, Effect } from 'effect'
 
 const characteristicChunkBytes = 180
 const applyTimeoutMilliseconds = 15_000
-const connectRetryWindowMilliseconds = 30_000
+const connectInitializationTimeoutMilliseconds = 35_000
 const connectRetryDelayMilliseconds = 500
+const connectRetryWindowMilliseconds = 30_000
+const bleConnectDiagnosticStorageKey = 'memorilo:ble-diagnostic:connect'
+
+type BleConnectStage = 'characteristics' | 'connect' | 'decode' | 'notifications' | 'read' | 'selection' | 'service'
+type BleConnectOutcome = 'failure' | 'start' | 'success'
 
 // The Effect factory returns the base class; it is intentionally invoked without `new` here.
 // eslint-disable-next-line unicorn/throw-new-error
@@ -77,7 +83,10 @@ export interface BluetoothDeviceAdapter {
 }
 
 export interface BluetoothAdapter {
-  requestDevice: (options: { filters: Array<{ services: string[] }> }) => Promise<BluetoothDeviceAdapter>
+  requestDevice: (options: {
+    filters: Array<{ namePrefix: string }>
+    optionalServices: string[]
+  }) => Promise<BluetoothDeviceAdapter>
 }
 
 interface PairingBridge {
@@ -269,7 +278,7 @@ export class DeviceProvisioningConnection {
       const value = characteristic?.value
       if (!value)
         return
-      const status = parseApplyStatusEnvelope(decodeEnvelope(viewBytes(value)))
+      const status = decodeEnvelope(value, 'status', parseApplyStatusEnvelope)
       const waiter = this.statusWaiters.get(status.requestId)
       if (!waiter)
         return
@@ -292,65 +301,131 @@ export class DeviceProvisioningService {
   ) {}
 
   connect(): Effect.Effect<DeviceProvisioningConnection, DeviceProvisioningError> {
-    const request = <T>(run: (signal: AbortSignal) => Promise<T>) => Effect.tryPromise({
-      try: run,
+    const startedAt = Date.now()
+    resetBleConnectDiagnostics()
+    const request = <T>(
+      stage: BleConnectStage,
+      attempt: number,
+      run: (signal: AbortSignal) => Promise<T>,
+    ) => Effect.tryPromise({
+      try: async (signal) => {
+        recordBleConnectDiagnostic(stage, attempt, startedAt, 'start')
+        try {
+          const result = await run(signal)
+          if (signal.aborted)
+            throw abortReason(signal)
+          recordBleConnectDiagnostic(stage, attempt, startedAt, 'success')
+          return result
+        }
+        catch (cause) {
+          recordBleConnectDiagnostic(stage, attempt, startedAt, 'failure', cause)
+          throw cause
+        }
+      },
       catch: cause => toProvisioningError('connection-failed', cause),
     })
-    return Effect.acquireUseRelease(
-      Effect.sync(() => ({ server: null as BluetoothServerAdapter | null, transferred: false })),
-      resource => Effect.gen({ self: this }, function* () {
-        const bluetoothDevice = yield* request(() => this.adapter.requestDevice({
-          filters: [{ services: [PROVISIONING_UUIDS.service] }],
-        }))
-        if (!bluetoothDevice.gatt)
-          return yield* Effect.fail(new DeviceProvisioningError({ code: 'connection-failed' }))
-        const gatt = bluetoothDevice.gatt
-        const server = yield* request(async (signal) => {
-          const connected = await connectWithRetry(gatt, signal)
-          // Web Bluetooth cannot abort connect(); reclaim a server that arrives after cancellation.
-          if (signal.aborted) {
-            if (connected.connected)
-              connected.disconnect()
-          }
-          else {
+    const initialize = Effect.gen({ self: this }, function* () {
+      // The product name remains stable when the service UUID changes to invalidate CoreBluetooth's GATT cache.
+      const bluetoothDevice = yield* request('selection', 1, () => this.adapter.requestDevice({
+        filters: [{ namePrefix: 'Memorilo' }],
+        optionalServices: [PROVISIONING_UUIDS.service],
+      }))
+      if (!bluetoothDevice.gatt) {
+        const cause = new DeviceProvisioningError({ code: 'connection-failed' })
+        recordBleConnectDiagnostic('connect', 1, startedAt, 'failure', cause)
+        return yield* Effect.fail(cause)
+      }
+      const gatt = bluetoothDevice.gatt
+      const retryStartedAt = Date.now()
+      return yield* connectWithRetry(attempt => Effect.acquireUseRelease(
+        Effect.sync(() => ({ server: null as BluetoothServerAdapter | null, transferred: false })),
+        resource => Effect.gen(function* () {
+          const server = yield* request('connect', attempt, async (signal) => {
+            const connected = await gatt.connect()
+            // Web Bluetooth cannot abort connect(); reclaim a server that arrives after cancellation.
+            if (signal.aborted) {
+              if (connected.connected)
+                connected.disconnect()
+              throw abortReason(signal)
+            }
+            if (!connected.connected)
+              throw new DeviceProvisioningError({ code: 'connection-failed' })
             resource.server = connected
-          }
-          return connected
-        })
-        const service = yield* request(() => server.getPrimaryService(PROVISIONING_UUIDS.service))
-        const [infoCharacteristic, configCharacteristic, configContinuationCharacteristic, applyCharacteristic, statusCharacteristic] = yield* Effect.all([
-          request(() => service.getCharacteristic(PROVISIONING_UUIDS.deviceInfo)),
-          request(() => service.getCharacteristic(PROVISIONING_UUIDS.publicConfig)),
-          request(() => service.getCharacteristic(PROVISIONING_UUIDS.publicConfigContinuation)),
-          request(() => service.getCharacteristic(PROVISIONING_UUIDS.configApply)),
-          request(() => service.getCharacteristic(PROVISIONING_UUIDS.status)),
-        ], { concurrency: 'unbounded' })
-        yield* request(() => statusCharacteristic.startNotifications())
-        const [infoValue, configValue, configContinuationValue] = yield* Effect.all([
-          request(() => infoCharacteristic.readValue()),
-          request(() => configCharacteristic.readValue()),
-          request(() => configContinuationCharacteristic.readValue()),
-        ], { concurrency: 'unbounded' })
-        return yield* Effect.try({
-          try: () => {
-            const info = parseDeviceInfoEnvelope(decodeEnvelope(viewBytes(infoValue)))
-            const config = parsePublicConfigEnvelope(decodeEnvelope(concatBytes(viewBytes(configValue), viewBytes(configContinuationValue))))
-            const connection = new DeviceProvisioningConnection(
-              { config, info, name: bluetoothDevice.name ?? config.deviceName },
-              bluetoothDevice,
-              server,
-              applyCharacteristic,
-              statusCharacteristic,
-            )
-            resource.transferred = true
-            return connection
-          },
-          catch: cause => toProvisioningError('protocol-error', cause),
-        })
-      }),
-      resource => Effect.sync(() => {
-        if (!resource.transferred && resource.server?.connected)
-          resource.server.disconnect()
+            return connected
+          })
+          const service = yield* request('service', attempt, () => server.getPrimaryService(PROVISIONING_UUIDS.service))
+          const infoCharacteristic = yield* request(
+            'characteristics',
+            attempt,
+            () => service.getCharacteristic(PROVISIONING_UUIDS.deviceInfo),
+          )
+          const configCharacteristic = yield* request(
+            'characteristics',
+            attempt,
+            () => service.getCharacteristic(PROVISIONING_UUIDS.publicConfig),
+          )
+          const configContinuationCharacteristic = yield* request(
+            'characteristics',
+            attempt,
+            () => service.getCharacteristic(PROVISIONING_UUIDS.publicConfigContinuation),
+          )
+          const applyCharacteristic = yield* request(
+            'characteristics',
+            attempt,
+            () => service.getCharacteristic(PROVISIONING_UUIDS.configApply),
+          )
+          const statusCharacteristic = yield* request(
+            'characteristics',
+            attempt,
+            () => service.getCharacteristic(PROVISIONING_UUIDS.status),
+          )
+          yield* request('notifications', attempt, () => statusCharacteristic.startNotifications())
+          const infoValue = yield* request('read', attempt, () => infoCharacteristic.readValue())
+          const configValue = yield* request('read', attempt, () => configCharacteristic.readValue())
+          const configContinuationValue = yield* request(
+            'read',
+            attempt,
+            () => configContinuationCharacteristic.readValue(),
+          )
+          return yield* Effect.try({
+            try: () => {
+              recordBleConnectDiagnostic('decode', attempt, startedAt, 'start')
+              try {
+                const info = decodeEnvelope(infoValue, 'device-info', parseDeviceInfoEnvelope)
+                const config = decodeEnvelope(
+                  concatDataViews(configValue, configContinuationValue),
+                  'public-config',
+                  parsePublicConfigEnvelope,
+                )
+                const connection = new DeviceProvisioningConnection(
+                  { config, info, name: bluetoothDevice.name ?? config.deviceName },
+                  bluetoothDevice,
+                  server,
+                  applyCharacteristic,
+                  statusCharacteristic,
+                )
+                resource.transferred = true
+                recordBleConnectDiagnostic('decode', attempt, startedAt, 'success')
+                return connection
+              }
+              catch (cause) {
+                recordBleConnectDiagnostic('decode', attempt, startedAt, 'failure', cause)
+                throw cause
+              }
+            },
+            catch: cause => toProvisioningError('protocol-error', cause),
+          })
+        }),
+        resource => Effect.sync(() => {
+          if (!resource.transferred && resource.server?.connected)
+            resource.server.disconnect()
+        }),
+      ), retryStartedAt)
+    })
+    return initialize.pipe(
+      Effect.timeoutOrElse({
+        duration: connectInitializationTimeoutMilliseconds,
+        onTimeout: () => Effect.fail(new DeviceProvisioningError({ code: 'timeout' })),
       }),
     )
   }
@@ -518,15 +593,123 @@ export function createDeviceProvisioningService(): DeviceProvisioningService {
   return new DeviceProvisioningService(bluetooth, window.desktop.deviceProvisioning)
 }
 
-function decodeEnvelope(bytes: Uint8Array): Uint8Array {
-  return reassembleFrames(decodeFrameSequence(bytes))
+function decodeEnvelope<Value>(
+  value: DataView,
+  characteristic: 'device-info' | 'public-config' | 'status',
+  parse: (json: Uint8Array) => Value,
+): Value {
+  const diagnostic: {
+    characteristic: typeof characteristic
+    stage: 'frames' | 'reassembly' | 'envelope' | 'complete'
+    bytes: number
+    frames?: number
+    expectedFrames?: number
+    jsonBytes?: number
+    error?: string
+  } = { characteristic, stage: 'frames', bytes: value.byteLength }
+  try {
+    const frames = decodeFrameSequence(viewBytes(value))
+    diagnostic.frames = frames.length
+    diagnostic.expectedFrames = frames[0]?.count
+    diagnostic.stage = 'reassembly'
+    const json = reassembleFrames(frames)
+    diagnostic.jsonBytes = json.byteLength
+    diagnostic.stage = 'envelope'
+    const result = parse(json)
+    diagnostic.stage = 'complete'
+    return result
+  }
+  catch (error) {
+    diagnostic.error = error instanceof ProvisioningProtocolError ? error.code : 'unexpected-error'
+    throw error
+  }
+  finally {
+    // Retain only bounded, non-payload metadata while diagnosing real GATT reads.
+    if (import.meta.env.DEV) {
+      const summary = JSON.stringify(diagnostic)
+      console.warn('[DEBUG-ble-response] %s', summary)
+      try {
+        globalThis.sessionStorage?.setItem(`memorilo:ble-diagnostic:${characteristic}`, summary)
+      }
+      catch {
+        // Diagnostics must not replace the original protocol outcome.
+      }
+    }
+  }
 }
 
-function concatBytes(first: Uint8Array, second: Uint8Array): Uint8Array {
-  const bytes = new Uint8Array(first.byteLength + second.byteLength)
-  bytes.set(first)
-  bytes.set(second, first.byteLength)
-  return bytes
+function concatDataViews(...values: DataView[]): DataView {
+  const bytes = new Uint8Array(values.reduce((length, value) => length + value.byteLength, 0))
+  let offset = 0
+  for (const value of values) {
+    bytes.set(viewBytes(value), offset)
+    offset += value.byteLength
+  }
+  return new DataView(bytes.buffer)
+}
+
+function connectWithRetry(
+  initialize: (attempt: number) => Effect.Effect<DeviceProvisioningConnection, DeviceProvisioningError>,
+  startedAt: number,
+): Effect.Effect<DeviceProvisioningConnection, DeviceProvisioningError> {
+  return Effect.gen(function* () {
+    let attempt = 1
+    while (true) {
+      const result = yield* Effect.result(initialize(attempt))
+      if (result._tag === 'Success')
+        return result.success
+      const remaining = connectRetryWindowMilliseconds - (Date.now() - startedAt)
+      if (remaining <= 0)
+        return yield* Effect.fail(result.failure)
+      attempt += 1
+      yield* Effect.sleep(Math.min(connectRetryDelayMilliseconds, remaining))
+    }
+  })
+}
+
+function recordBleConnectDiagnostic(
+  stage: BleConnectStage,
+  attempt: number,
+  startedAt: number,
+  outcome: BleConnectOutcome,
+  cause?: unknown,
+): void {
+  if (!import.meta.env.DEV)
+    return
+  const diagnostic = {
+    attempt,
+    elapsedMs: Math.max(0, Date.now() - startedAt),
+    outcome,
+    stage,
+    ...(cause instanceof DOMException
+      ? { domException: { message: cause.message.slice(0, 240), name: cause.name.slice(0, 80) } }
+      : {}),
+  }
+  console.warn('[DEBUG-ble-connect] %s', JSON.stringify(diagnostic))
+  try {
+    const stored = globalThis.sessionStorage?.getItem(bleConnectDiagnosticStorageKey)
+    const parsed: unknown = stored === null || stored === undefined ? [] : JSON.parse(stored)
+    const timeline = Array.isArray(parsed) ? parsed.slice(-63) : []
+    globalThis.sessionStorage?.setItem(bleConnectDiagnosticStorageKey, JSON.stringify([...timeline, diagnostic]))
+  }
+  catch {
+    // Diagnostics must not replace the original connection outcome.
+  }
+}
+
+function resetBleConnectDiagnostics(): void {
+  if (!import.meta.env.DEV)
+    return
+  try {
+    globalThis.sessionStorage?.removeItem(bleConnectDiagnosticStorageKey)
+  }
+  catch {
+    // Diagnostics must not replace the original connection outcome.
+  }
+}
+
+function abortReason(signal: AbortSignal): unknown {
+  return signal.reason ?? new DOMException('The operation was aborted', 'AbortError')
 }
 
 function viewBytes(value: DataView): Uint8Array {
@@ -537,35 +720,6 @@ function randomRequestToken(): number {
   const bytes = new Uint32Array(1)
   globalThis.crypto.getRandomValues(bytes)
   return bytes[0] ?? 0
-}
-
-async function connectWithRetry(
-  gatt: NonNullable<BluetoothDeviceAdapter['gatt']>,
-  signal: AbortSignal,
-): Promise<BluetoothServerAdapter> {
-  const deadline = Date.now() + connectRetryWindowMilliseconds
-  let lastError: unknown
-  while (Date.now() < deadline) {
-    if (signal.aborted)
-      throw new Error('connection aborted')
-    try {
-      const server = await gatt.connect()
-      if (server.connected)
-        return server
-      lastError = new Error('GATT server disconnected immediately')
-    }
-    catch (error) {
-      lastError = error
-    }
-    await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(resolve, connectRetryDelayMilliseconds)
-      signal.addEventListener('abort', () => {
-        clearTimeout(timer)
-        reject(new Error('connection aborted'))
-      }, { once: true })
-    })
-  }
-  throw lastError ?? new Error('GATT connection timed out')
 }
 
 function toProvisioningError(

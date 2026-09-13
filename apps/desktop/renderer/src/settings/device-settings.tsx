@@ -1,7 +1,7 @@
-import type { DesktopDeviceStatus, DesktopDeviceTodoPushStatus, DesktopDeviceTodoTargetState, DesktopProvisioningDevice, DesktopProvisioningPairingRequest } from '@memorilo/desktop-api'
+import type { DesktopDeviceStatus, DesktopProvisioningDevice, DesktopProvisioningPairingRequest } from '@memorilo/desktop-api'
 import type { DeviceConfigPatch, PublicConfigEnvelope } from '@memorilo/device-provisioning'
 import type { DeviceProvisioningClient, DeviceProvisioningSession } from './device-provisioning-service'
-import { Button, Status, Switch, TextField } from '@memorilo/ui'
+import { Button, SelectField, Status, Switch, TextField } from '@memorilo/ui'
 import * as stylex from '@stylexjs/stylex'
 import { Effect } from 'effect'
 import { ArrowRight, Bluetooth, ChevronRight, Moon, RefreshCw, RotateCw } from 'lucide-react'
@@ -38,20 +38,7 @@ interface DeviceFormState {
   weatherLocation: string
   weatherLatitude: string
   weatherLongitude: string
-  almanacNote: string
-  almanacSource: string
-  todoSyncEnabled: boolean
-  todoLanAddress: string
-  todoSyncUrl: string
-  todoSyncToken: string
-  clearTodoSyncToken: boolean
-  todoSyncPollIntervalSeconds: string
   todoSyncView: 'today' | 'all'
-  todoSyncMqttBrokerUrl: string
-  todoSyncMqttTopic: string
-  todoSyncMqttUsername: string
-  todoSyncMqttPassword: string
-  clearTodoSyncMqttPassword: boolean
 }
 
 type PendingLocalManagementChange
@@ -69,20 +56,7 @@ const emptyForm: DeviceFormState = {
   weatherLocation: '',
   weatherLatitude: '0',
   weatherLongitude: '0',
-  almanacNote: '',
-  almanacSource: '',
-  todoSyncEnabled: false,
-  todoLanAddress: '',
-  todoSyncUrl: '',
-  todoSyncToken: '',
-  clearTodoSyncToken: false,
-  todoSyncPollIntervalSeconds: '900',
   todoSyncView: 'today',
-  todoSyncMqttBrokerUrl: '',
-  todoSyncMqttTopic: '',
-  todoSyncMqttUsername: '',
-  todoSyncMqttPassword: '',
-  clearTodoSyncMqttPassword: false,
 }
 
 export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }) {
@@ -97,7 +71,6 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
   const [form, setForm] = useState<DeviceFormState>(emptyForm)
   const [localManagementCredentialStored, setLocalManagementCredentialStored] = useState(false)
   const [pendingLocalManagement, setPendingLocalManagement] = useState<PendingLocalManagementChange | null>(null)
-  const [todoPushStatus, setTodoPushStatus] = useState<DesktopDeviceTodoPushStatus | null>(null)
   const [deviceStatus, setDeviceStatus] = useState<DesktopDeviceStatus | null>(null)
   const [remotePhase, setRemotePhase] = useState<'idle' | 'loading' | 'commanding' | 'error' | 'success'>('idle')
   const [errorCode, setErrorCode] = useState<DeviceProvisioningError['code'] | 'invalid-config' | null>(null)
@@ -168,38 +141,17 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
         return
       }
       connectionRef.current = nextConnection
-      let credentialStored: boolean
-      try {
-        credentialStored = await Effect.runPromise(
-          service.hasLocalManagementToken(nextConnection.device.info.deviceId),
-          { signal: controller.signal },
-        )
-      }
-      catch (error) {
-        if (connectionRef.current === nextConnection) {
-          connectionRef.current = null
-          await Effect.runPromise(nextConnection.close())
-        }
-        throw error
-      }
-      if (operation.current !== currentOperation)
-        return
-      let todoTarget: DesktopDeviceTodoTargetState = { status: null, target: null }
-      try {
-        todoTarget = await Effect.runPromise(service.loadTodoTarget(nextConnection.device.info.deviceId), { signal: controller.signal })
-      }
-      catch {
-        todoTarget = { status: null, target: null }
-      }
-      if (operation.current !== currentOperation)
-        return
+      const credentialStored = await Effect.runPromise(service.hasLocalManagementToken(nextConnection.device.info.deviceId), { signal: controller.signal })
+      await Effect.runPromise(service.saveTodoTarget(
+        nextConnection.device.info.deviceId,
+        deviceAddressForDeviceId(nextConnection.device.info.deviceId),
+      ), { signal: controller.signal })
       setConnection(nextConnection)
       setBleConnected(nextConnection.connected)
       unsubscribeDisconnectRef.current = nextConnection.subscribeDisconnected(() => {
         setBleConnected(false)
       })
-      setForm({ ...formFromConfig(nextConnection.device.config), todoLanAddress: todoTarget.target?.address ?? '' })
-      setTodoPushStatus(todoTarget.status)
+      setForm(formFromConfig(nextConnection.device.config))
       setLocalManagementCredentialStored(credentialStored)
       setPendingLocalManagement(null)
       setPhase('ready')
@@ -289,31 +241,19 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
     const idleSleepSeconds = Number(form.idleSleepSeconds)
     const latitude = Number(form.weatherLatitude)
     const longitude = Number(form.weatherLongitude)
-    const todoSyncPollIntervalSeconds = Number(form.todoSyncPollIntervalSeconds)
     if (!Number.isSafeInteger(idleSleepSeconds) || idleSleepSeconds < 30 || idleSleepSeconds > 86_400
-      || !Number.isSafeInteger(todoSyncPollIntervalSeconds) || todoSyncPollIntervalSeconds < 60 || todoSyncPollIntervalSeconds > 86_400
       || !Number.isFinite(latitude) || latitude < -90 || latitude > 90
       || !Number.isFinite(longitude) || longitude < -180 || longitude > 180) {
       setErrorCode('invalid-config')
       setPhase('error')
       return
     }
-    if (form.todoLanAddress.trim().length > 0 && !isPrivateDeviceAddress(form.todoLanAddress.trim())) {
-      setErrorCode('invalid-config')
-      setPhase('error')
-      return
-    }
+    let managementToken = pendingLocalManagement?.kind === 'replace' ? pendingLocalManagement.token : undefined
     const patch: DeviceConfigPatch = {
       deviceName: form.deviceName.trim(),
       idleSleepSeconds,
       timezone: form.timezone.trim(),
-      ...(pendingLocalManagement === null
-        ? {}
-        : {
-            localManagement: pendingLocalManagement.kind === 'clear'
-              ? { clearToken: true }
-              : { token: pendingLocalManagement.token },
-          }),
+      ...(managementToken ? { localManagement: { token: managementToken } } : {}),
       wifi: {
         ...(form.clearWifiPassword ? { clearPassword: true } : {}),
         ...(form.wifiPassword.length > 0 ? { password: form.wifiPassword } : {}),
@@ -325,17 +265,9 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
         latitudeE6: Math.round(latitude * 1_000_000),
         longitudeE6: Math.round(longitude * 1_000_000),
       },
-      almanac: { note: form.almanacNote.trim(), source: form.almanacSource.trim() },
       todoSync: {
-        enabled: form.todoSyncEnabled,
-        httpsBaseUrl: form.todoSyncUrl.trim(),
-        ...(form.clearTodoSyncToken ? { clearDeviceToken: true } : form.todoSyncToken.length > 0 ? { deviceToken: form.todoSyncToken } : {}),
-        pollIntervalSeconds: todoSyncPollIntervalSeconds,
+        enabled: true,
         view: form.todoSyncView,
-        mqttBrokerUrl: form.todoSyncMqttBrokerUrl.trim(),
-        mqttTopic: form.todoSyncMqttTopic.trim(),
-        ...(form.todoSyncMqttUsername.trim().length > 0 ? { mqttUsername: form.todoSyncMqttUsername.trim() } : {}),
-        ...(form.clearTodoSyncMqttPassword ? { clearMqttPassword: true } : form.todoSyncMqttPassword.length > 0 ? { mqttPassword: form.todoSyncMqttPassword } : {}),
       },
     }
     if (patch.deviceName?.length === 0 || patch.timezone?.length === 0) {
@@ -346,26 +278,19 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
     setErrorCode(null)
     setPhase('applying')
     try {
+      if (!managementToken && !localManagementCredentialStored) {
+        managementToken = await Effect.runPromise(service.generateLocalManagementToken())
+        patch.localManagement = { token: managementToken }
+      }
       await Effect.runPromise(connection.apply(patch))
-      if (pendingLocalManagement?.kind === 'replace') {
+      if (managementToken) {
         await Effect.runPromise(service.saveLocalManagementToken(
           connection.device.info.deviceId,
-          pendingLocalManagement.token,
+          managementToken,
         ))
         setLocalManagementCredentialStored(true)
       }
-      else if (pendingLocalManagement?.kind === 'clear') {
-        await Effect.runPromise(service.clearLocalManagementToken(connection.device.info.deviceId))
-        setLocalManagementCredentialStored(false)
-      }
-      await Effect.runPromise(service.saveTodoTarget(
-        connection.device.info.deviceId,
-        form.todoLanAddress.trim().length > 0 ? form.todoLanAddress.trim() : null,
-      ))
-      const todoTarget = await Effect.runPromise(service.loadTodoTarget(connection.device.info.deviceId))
-      setTodoPushStatus(todoTarget.status)
       setForm(formFromConfig(connection.device.config))
-      setForm(current => ({ ...current, todoLanAddress: todoTarget.target?.address ?? '' }))
       setPendingLocalManagement(null)
       setPhase('success')
     }
@@ -375,12 +300,12 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
   }
 
   const loadDeviceStatus = async (): Promise<void> => {
-    if (!connection || !localManagementCredentialStored || form.todoLanAddress.trim().length === 0)
+    if (!connection || !localManagementCredentialStored)
       return
     setRemotePhase('loading')
     try {
       const status = await Effect.runPromise(service.loadStatus({
-        address: form.todoLanAddress.trim(),
+        address: deviceAddressForDeviceId(connection.device.info.deviceId),
         deviceId: connection.device.info.deviceId,
       }))
       setDeviceStatus(status)
@@ -392,12 +317,12 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
   }
 
   const runRemoteCommand = async (command: 'nextDevicePage' | 'refreshDevice' | 'sleepDevice'): Promise<void> => {
-    if (!connection || !localManagementCredentialStored || form.todoLanAddress.trim().length === 0)
+    if (!connection || !localManagementCredentialStored)
       return
     setRemotePhase('commanding')
     try {
       await Effect.runPromise(service[command]({
-        address: form.todoLanAddress.trim(),
+        address: deviceAddressForDeviceId(connection.device.info.deviceId),
         deviceId: connection.device.info.deviceId,
       }))
       setRemotePhase('success')
@@ -416,7 +341,6 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
     connectionRef.current = null
     setConnection(null)
     setLocalManagementCredentialStored(false)
-    setTodoPushStatus(null)
     setDeviceStatus(null)
     setRemotePhase('idle')
     setPendingLocalManagement(null)
@@ -439,7 +363,6 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
         await Effect.runPromise(service.clearLocalManagementToken(activeConnection.device.info.deviceId))
       }
       setLocalManagementCredentialStored(false)
-      setTodoPushStatus(null)
       setDeviceStatus(null)
       setRemotePhase('idle')
       setPendingLocalManagement(null)
@@ -450,20 +373,8 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
     }
   }
 
-  const replaceLocalManagementToken = async (): Promise<void> => {
-    try {
-      const token = await Effect.runPromise(service.generateLocalManagementToken())
-      setPendingLocalManagement({ kind: 'replace', token })
-      setErrorCode(null)
-      setPhase('ready')
-    }
-    catch (error) {
-      handleError(error, setErrorCode, setPhase)
-    }
-  }
-
   const remoteBusy = remotePhase === 'loading' || remotePhase === 'commanding' || phase === 'applying'
-  const remoteEnabled = localManagementCredentialStored && pendingLocalManagement?.kind !== 'clear' && form.todoLanAddress.trim().length > 0
+  const remoteEnabled = localManagementCredentialStored && pendingLocalManagement?.kind !== 'clear'
   const statusKey = statusTranslationKey(phase, errorCode)
   const canCancel = phase === 'connecting' || phase === 'pairing' || phase === 'scanning' || phase === 'selecting'
   const scanDisabled = phase === 'applying' || canCancel
@@ -606,7 +517,7 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
                     </Button>
                   </div>
                   <Status xstyle={styles.remoteFeedback} variant={remotePhase === 'error' ? 'error' : remotePhase === 'success' ? 'success' : 'neutral'}>
-                    {t(remoteStatusKey(remotePhase, remoteEnabled, form.todoLanAddress))}
+                    {t(remoteStatusKey(remotePhase, remoteEnabled))}
                   </Status>
                 </section>
                 <DeviceTextRow
@@ -632,48 +543,6 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
                 </div>
                 <DeviceTextRow description={t('deviceWeatherCoordinates')} id="device-weather-latitude" label={t('deviceWeatherLatitude')} type="number" value={form.weatherLatitude} onChange={weatherLatitude => setForm(current => ({ ...current, weatherLatitude }))} />
                 <DeviceTextRow description={t('deviceWeatherCoordinates')} id="device-weather-longitude" label={t('deviceWeatherLongitude')} type="number" value={form.weatherLongitude} onChange={weatherLongitude => setForm(current => ({ ...current, weatherLongitude }))} />
-                <DeviceTextRow description={t('deviceAlmanacDescription')} id="device-almanac-note" label={t('deviceAlmanacNote')} value={form.almanacNote} onChange={almanacNote => setForm(current => ({ ...current, almanacNote }))} />
-                <DeviceTextRow description={t('deviceAlmanacDescription')} id="device-almanac-source" label={t('deviceAlmanacSource')} value={form.almanacSource} onChange={almanacSource => setForm(current => ({ ...current, almanacSource }))} />
-                <div {...stylex.props(styles.row)}>
-                  <div {...stylex.props(styles.rowCopy)}>
-                    <span {...stylex.props(styles.label)}>{t('deviceTodoSync')}</span>
-                    <p {...stylex.props(styles.description)}>{t('deviceTodoSyncDescription')}</p>
-                  </div>
-                  <Switch id="device-todo-sync-enabled" checked={form.todoSyncEnabled} variant="compact" onCheckedChange={todoSyncEnabled => setForm(current => ({ ...current, todoSyncEnabled }))} />
-                </div>
-                <DeviceTextRow
-                  description={t('deviceTodoSyncLanAddressDescription')}
-                  id="device-todo-sync-lan-address"
-                  label={t('deviceTodoSyncLanAddress')}
-                  value={form.todoLanAddress}
-                  onChange={todoLanAddress => setForm(current => ({ ...current, todoLanAddress }))}
-                />
-                <div {...stylex.props(styles.row)}>
-                  <div {...stylex.props(styles.rowCopy)}>
-                    <span {...stylex.props(styles.label)}>{t('deviceTodoSyncLanStatus')}</span>
-                    <p {...stylex.props(styles.description)}>{todoPushStatusText(t, todoPushStatus)}</p>
-                  </div>
-                </div>
-                <DeviceTextRow description={t('deviceTodoSyncUrlDescription')} id="device-todo-sync-url" label={t('deviceTodoSyncUrl')} value={form.todoSyncUrl} onChange={todoSyncUrl => setForm(current => ({ ...current, todoSyncUrl }))} />
-                <DeviceTextRow description={t('deviceTodoSyncTokenDescription')} id="device-todo-sync-token" label={t('deviceTodoSyncToken')} type="password" value={form.todoSyncToken} onChange={todoSyncToken => setForm(current => ({ ...current, todoSyncToken }))} />
-                {connection.device.config.todoSyncTokenIsSet
-                  ? (
-                      <div {...stylex.props(styles.row)}>
-                        <div {...stylex.props(styles.rowCopy)}>
-                          <span {...stylex.props(styles.label)}>{t('deviceTodoSyncClearToken')}</span>
-                          <p {...stylex.props(styles.description)}>{t('deviceTodoSyncClearTokenDescription')}</p>
-                        </div>
-                        <Switch
-                          aria-label={t('deviceTodoSyncClearToken')}
-                          checked={form.clearTodoSyncToken}
-                          disabled={phase === 'applying'}
-                          variant="compact"
-                          onCheckedChange={clearTodoSyncToken => setForm(current => ({ ...current, clearTodoSyncToken, ...(clearTodoSyncToken ? { todoSyncToken: '' } : {}) }))}
-                        />
-                      </div>
-                    )
-                  : null}
-                <DeviceTextRow description={t('deviceTodoSyncIntervalDescription')} id="device-todo-sync-interval" label={t('deviceTodoSyncInterval')} min={60} max={86_400} type="number" value={form.todoSyncPollIntervalSeconds} onChange={todoSyncPollIntervalSeconds => setForm(current => ({ ...current, todoSyncPollIntervalSeconds }))} />
                 <div {...stylex.props(styles.row)}>
                   <div {...stylex.props(styles.rowCopy)}>
                     <label htmlFor="device-todo-sync-view" {...stylex.props(styles.label)}>{t('deviceTodoSyncView')}</label>
@@ -684,21 +553,6 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
                     <option value="all">{t('deviceTodoSyncAll')}</option>
                   </select>
                 </div>
-                <DeviceTextRow description={t('deviceTodoSyncMqttBrokerDescription')} id="device-todo-sync-mqtt-broker" label={t('deviceTodoSyncMqttBroker')} value={form.todoSyncMqttBrokerUrl} onChange={todoSyncMqttBrokerUrl => setForm(current => ({ ...current, todoSyncMqttBrokerUrl }))} />
-                <DeviceTextRow description={t('deviceTodoSyncMqttTopicDescription')} id="device-todo-sync-mqtt-topic" label={t('deviceTodoSyncMqttTopic')} value={form.todoSyncMqttTopic} onChange={todoSyncMqttTopic => setForm(current => ({ ...current, todoSyncMqttTopic }))} />
-                <DeviceTextRow description={t('deviceTodoSyncMqttUsernameDescription')} id="device-todo-sync-mqtt-username" label={t('deviceTodoSyncMqttUsername')} value={form.todoSyncMqttUsername} onChange={todoSyncMqttUsername => setForm(current => ({ ...current, todoSyncMqttUsername }))} />
-                <DeviceTextRow description={t('deviceTodoSyncMqttPasswordDescription')} id="device-todo-sync-mqtt-password" label={t('deviceTodoSyncMqttPassword')} type="password" value={form.todoSyncMqttPassword} onChange={todoSyncMqttPassword => setForm(current => ({ ...current, todoSyncMqttPassword }))} />
-                {connection.device.config.todoSyncMqttPasswordIsSet
-                  ? (
-                      <div {...stylex.props(styles.row)}>
-                        <div {...stylex.props(styles.rowCopy)}>
-                          <span {...stylex.props(styles.label)}>{t('deviceTodoSyncMqttClearPassword')}</span>
-                          <p {...stylex.props(styles.description)}>{t('deviceTodoSyncMqttClearPasswordDescription')}</p>
-                        </div>
-                        <Switch aria-label={t('deviceTodoSyncMqttClearPassword')} checked={form.clearTodoSyncMqttPassword} disabled={phase === 'applying'} variant="compact" onCheckedChange={clearTodoSyncMqttPassword => setForm(current => ({ ...current, clearTodoSyncMqttPassword, ...(clearTodoSyncMqttPassword ? { todoSyncMqttPassword: '' } : {}) }))} />
-                      </div>
-                    )
-                  : null}
                 <DeviceTextRow
                   description={t('deviceWifiSsidDescription')}
                   id="device-wifi-ssid"
@@ -739,67 +593,26 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
                       </div>
                     )
                   : null}
-                <div {...stylex.props(styles.row)}>
-                  <div {...stylex.props(styles.rowCopy)}>
-                    <span {...stylex.props(styles.label)}>{t('deviceLocalManagement')}</span>
-                    <p {...stylex.props(styles.description)}>
-                      {t(localManagementDescriptionKey(
-                        connection.device.config.localManagementTokenIsSet,
-                        localManagementCredentialStored,
-                        pendingLocalManagement,
-                      ))}
-                    </p>
-                  </div>
-                  <div {...stylex.props(styles.rowActions)}>
-                    {pendingLocalManagement
-                      ? (
-                          <Button
-                            disabled={phase === 'applying'}
-                            type="button"
-                            variant="plain"
-                            xstyle={styles.compactButton}
-                            onClick={() => setPendingLocalManagement(null)}
-                          >
-                            {t('deviceLocalManagementUndo')}
-                          </Button>
-                        )
-                      : null}
-                    <Button
-                      disabled={phase === 'applying'}
-                      type="button"
-                      variant="secondary"
-                      xstyle={styles.compactButton}
-                      onClick={() => void replaceLocalManagementToken()}
-                    >
-                      {t(connection.device.config.localManagementTokenIsSet
-                        ? 'deviceLocalManagementRotate'
-                        : 'deviceLocalManagementGenerate')}
-                    </Button>
-                    <Button
-                      disabled={phase === 'applying'
-                        || (!connection.device.config.localManagementTokenIsSet
-                          && pendingLocalManagement?.kind !== 'replace')}
-                      type="button"
-                      variant="plain"
-                      xstyle={styles.compactButton}
-                      onClick={() => setPendingLocalManagement({ kind: 'clear' })}
-                    >
-                      {t('deviceLocalManagementClear')}
-                    </Button>
-                  </div>
-                </div>
                 <DeviceGallery
                   client={service}
                   deviceId={connection.device.info.deviceId}
                   enabled={localManagementCredentialStored && pendingLocalManagement?.kind !== 'clear'}
                 />
-                <DeviceTextRow
-                  description={t('deviceTimezoneDescription')}
-                  id="device-timezone"
-                  label={t('deviceTimezone')}
-                  value={form.timezone}
-                  onChange={timezone => setForm(current => ({ ...current, timezone }))}
-                />
+                <div {...stylex.props(styles.row)}>
+                  <div {...stylex.props(styles.rowCopy)}>
+                    <label htmlFor="device-timezone" {...stylex.props(styles.label)}>{t('deviceTimezone')}</label>
+                    <p {...stylex.props(styles.description)}>{t('deviceTimezoneDescription')}</p>
+                  </div>
+                  <SelectField
+                    id="device-timezone"
+                    value={form.timezone}
+                    variant="settings"
+                    xstyle={styles.control}
+                    onChange={event => setForm(current => ({ ...current, timezone: event.target.value }))}
+                  >
+                    {Intl.supportedValuesOf('timeZone').map(timeZone => <option key={timeZone} value={timeZone}>{timeZone}</option>)}
+                  </SelectField>
+                </div>
                 <DeviceTextRow
                   description={t('deviceIdleSleepDescription')}
                   id="device-idle-sleep"
@@ -880,31 +693,23 @@ function DeviceTextRow({
 }
 
 function formFromConfig(config: PublicConfigEnvelope): DeviceFormState {
+  const supportedTimeZones = new Set(Intl.supportedValuesOf('timeZone'))
+  const systemTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
+  const timezone = supportedTimeZones.has(config.timezone)
+    ? config.timezone
+    : supportedTimeZones.has(systemTimeZone) ? systemTimeZone : 'UTC'
   return {
     clearWifiPassword: false,
     deviceName: config.deviceName,
     idleSleepSeconds: String(config.idleSleepSeconds),
-    timezone: config.timezone,
+    timezone,
     wifiPassword: '',
     wifiSsid: config.wifiSsid ?? '',
     weatherEnabled: config.weather?.enabled ?? false,
     weatherLocation: config.weather?.locationName ?? '',
     weatherLatitude: String((config.weather?.latitudeE6 ?? 0) / 1_000_000),
     weatherLongitude: String((config.weather?.longitudeE6 ?? 0) / 1_000_000),
-    almanacNote: config.almanac?.note ?? '',
-    almanacSource: config.almanac?.source ?? '',
-    todoSyncEnabled: config.todoSyncEnabled,
-    todoLanAddress: '',
-    todoSyncUrl: config.todoSyncUrl,
-    todoSyncToken: '',
-    clearTodoSyncToken: false,
-    todoSyncPollIntervalSeconds: String(config.todoSyncPollIntervalSeconds),
     todoSyncView: config.todoSyncView,
-    todoSyncMqttBrokerUrl: config.todoSyncMqttBrokerUrl ?? '',
-    todoSyncMqttTopic: config.todoSyncMqttTopic ?? '',
-    todoSyncMqttUsername: config.todoSyncMqttUsername ?? '',
-    todoSyncMqttPassword: '',
-    clearTodoSyncMqttPassword: false,
   }
 }
 
@@ -962,9 +767,8 @@ function statusTranslationKey(
 function remoteStatusKey(
   phase: 'idle' | 'loading' | 'commanding' | 'error' | 'success',
   credentialStored: boolean,
-  address: string,
 ): string {
-  if (!credentialStored || address.trim().length === 0)
+  if (!credentialStored)
     return 'deviceRemoteStatusUnavailable'
   return {
     commanding: 'deviceRemoteStatusCommanding',
@@ -975,49 +779,7 @@ function remoteStatusKey(
   }[phase]
 }
 
-function localManagementDescriptionKey(
-  deviceTokenIsSet: boolean,
-  credentialStored: boolean,
-  pending: PendingLocalManagementChange | null,
-): string {
-  if (pending?.kind === 'replace')
-    return 'deviceLocalManagementPendingReplace'
-  if (pending?.kind === 'clear')
-    return 'deviceLocalManagementPendingClear'
-  if (!deviceTokenIsSet)
-    return 'deviceLocalManagementNotConfigured'
-  return credentialStored
-    ? 'deviceLocalManagementStored'
-    : 'deviceLocalManagementMissing'
-}
-
-function todoPushStatusText(
-  t: (key: string, options?: Record<string, unknown>) => string,
-  status: DesktopDeviceTodoPushStatus | null,
-): string {
-  if (status?.phase === 'pending')
-    return t('deviceTodoSyncLanStatusPending')
-  if (status?.phase === 'success')
-    return t('deviceTodoSyncLanStatusSuccess')
-  if (status?.phase === 'error')
-    return t('deviceTodoSyncLanStatusError', { error: status.lastError ?? 'unknown-error' })
-  return t('deviceTodoSyncLanStatusIdle')
-}
-
-function isPrivateDeviceAddress(address: string): boolean {
-  const match = /^(?<host>(?:\d{1,3}\.){3}\d{1,3})(?::(?<port>\d{1,5}))?$/u.exec(address)
-  if (!match?.groups)
-    return false
-  const host = match.groups.host
-  if (host === undefined)
-    return false
-  const octets = host.split('.').map(Number)
-  const first = octets[0] ?? -1
-  const second = octets[1] ?? -1
-  const port = match.groups.port === undefined ? 80 : Number(match.groups.port)
-  return octets.length === 4
-    && octets.every(octet => Number.isInteger(octet) && octet >= 0 && octet <= 255)
-    && (first === 10 || (first === 172 && second >= 16 && second <= 31) || (first === 192 && second === 168) || (first === 169 && second === 254))
-    && port >= 1
-    && port <= 65_535
+function deviceAddressForDeviceId(deviceId: string): string {
+  const normalized = deviceId.toLowerCase().replace(/[^a-z0-9-]/gu, '-')
+  return `memorilo-${normalized}.local`
 }

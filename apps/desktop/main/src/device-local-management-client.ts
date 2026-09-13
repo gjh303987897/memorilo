@@ -193,6 +193,13 @@ export class DeviceLocalManagementClient {
 }
 
 export function parseLocalDeviceAddress(address: string): URL {
+  const hostname = address.trim().toLowerCase()
+  if (/^memorilo-[a-z0-9-]+\.local(?::\d{1,5})?$/u.test(hostname)) {
+    const portText = hostname.match(/:(\d+)$/u)?.[1]
+    const port = portText === undefined ? 80 : Number(portText)
+    if (port >= 1 && port <= 65_535)
+      return new URL(`http://${hostname}:${port}/`)
+  }
   const match = /^(?<host>(?:\d{1,3}\.){3}\d{1,3})(?::(?<port>\d{1,5}))?$/u.exec(address.trim())
   if (!match?.groups)
     throw invalidInput()

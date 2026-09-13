@@ -6,7 +6,7 @@ export const MAX_CHUNK_PAYLOAD_BYTES = 384
 export const FRAME_HEADER_BYTES = 18
 
 export const PROVISIONING_UUIDS = {
-  service: '7b7a1000-6c6f-4d65-8a8b-6d656d6f7269',
+  service: '7b7a1010-6c6f-4d65-8a8b-6d656d6f7269',
   deviceInfo: '7b7a1001-6c6f-4d65-8a8b-6d656d6f7269',
   publicConfig: '7b7a1002-6c6f-4d65-8a8b-6d656d6f7269',
   publicConfigContinuation: '7b7a1005-6c6f-4d65-8a8b-6d656d6f7269',
