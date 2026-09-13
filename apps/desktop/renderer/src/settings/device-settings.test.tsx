@@ -188,6 +188,22 @@ describe('device settings', () => {
     const name = await rendered.findByRole('textbox', { name: 'Device name' })
     expect(name).toHaveValue('Desk display')
     expect(rendered.getByLabelText('Wi-Fi password')).toHaveValue('')
+    for (const label of [
+      'Almanac note',
+      'Almanac source',
+      'Memorilo LAN address',
+      'TODO HTTPS URL',
+      'TODO read token',
+      'MQTT broker URL',
+      'MQTT topic',
+      'MQTT username',
+      'MQTT password',
+      'Local management access',
+    ]) {
+      expect(rendered.queryByLabelText(label)).not.toBeInTheDocument()
+    }
+    expect(rendered.queryByRole('switch', { name: 'TODO synchronization' })).not.toBeInTheDocument()
+    expect(rendered.getByLabelText('Time zone').tagName).toBe('SELECT')
 
     fireEvent.change(name, { target: { value: 'Kitchen display' } })
     fireEvent.change(rendered.getByRole('spinbutton', { name: 'Sleep after idle seconds' }), { target: { value: '900' } })
@@ -196,6 +212,7 @@ describe('device settings', () => {
       deviceName: 'Kitchen display',
       idleSleepSeconds: 900,
       localManagement: expect.objectContaining({ token: expect.any(String) }),
+      todoSync: expect.objectContaining({ enabled: true }),
     })))
     expect(saveLocalManagementToken).toHaveBeenCalledWith('device-1', expect.any(String))
     expect(rendered.getByText('Settings applied successfully.')).toBeInTheDocument()
