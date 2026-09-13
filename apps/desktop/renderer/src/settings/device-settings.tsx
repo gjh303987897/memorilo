@@ -140,10 +140,20 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
       }
       connectionRef.current = nextConnection
       const credentialStored = await Effect.runPromise(service.hasLocalManagementToken(nextConnection.device.info.deviceId), { signal: controller.signal })
+      if (operation.current !== currentOperation) {
+        connectionRef.current = null
+        await Effect.runPromise(nextConnection.close())
+        return
+      }
       await Effect.runPromise(service.saveTodoTarget(
         nextConnection.device.info.deviceId,
         deviceAddressForDeviceId(nextConnection.device.info.deviceId),
       ), { signal: controller.signal })
+      if (operation.current !== currentOperation) {
+        connectionRef.current = null
+        await Effect.runPromise(nextConnection.close())
+        return
+      }
       setConnection(nextConnection)
       setBleConnected(nextConnection.connected)
       unsubscribeDisconnectRef.current = nextConnection.subscribeDisconnected(() => {
