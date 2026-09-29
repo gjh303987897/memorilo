@@ -2,7 +2,27 @@ export const deviceImageWidth = 400
 export const deviceImageHeight = 300
 export const deviceImageBytes = deviceImageWidth * deviceImageHeight / 4
 
-export type DeviceImageFit = 'contain' | 'cover'
+export interface DeviceImageCrop {
+  readonly focusX: number
+  readonly focusY: number
+  readonly zoom: number
+}
+
+export interface DeviceImageCropLayout {
+  readonly height: number
+  readonly scale: number
+  readonly width: number
+  readonly x: number
+  readonly y: number
+}
+
+export const defaultDeviceImageCrop: DeviceImageCrop = {
+  focusX: 0.5,
+  focusY: 0.5,
+  zoom: 1,
+}
+
+const maximumDeviceImageZoom = 4
 
 interface PaletteColor {
   readonly blue: number
@@ -39,37 +59,116 @@ export function unpackDeviceImageRgba(bytes: Uint8Array): Uint8ClampedArray<Arra
 
 export async function convertDeviceImage(
   file: Blob,
-  fit: DeviceImageFit = 'contain',
+  crop: DeviceImageCrop = defaultDeviceImageCrop,
 ): Promise<Uint8Array> {
-  const bitmap = await createImageBitmap(file)
+  const bitmap = await decodeDeviceImage(file)
   try {
-    const canvas = document.createElement('canvas')
-    canvas.width = deviceImageWidth
-    canvas.height = deviceImageHeight
-    const context = canvas.getContext('2d', { alpha: false, willReadFrequently: true })
-    if (!context)
-      throw new Error('Canvas 2D image conversion is unavailable')
-    context.fillStyle = '#ffffff'
-    context.fillRect(0, 0, deviceImageWidth, deviceImageHeight)
-    const scale = fit === 'cover'
-      ? Math.max(deviceImageWidth / bitmap.width, deviceImageHeight / bitmap.height)
-      : Math.min(deviceImageWidth / bitmap.width, deviceImageHeight / bitmap.height)
-    const width = bitmap.width * scale
-    const height = bitmap.height * scale
-    context.imageSmoothingEnabled = true
-    context.imageSmoothingQuality = 'high'
-    context.drawImage(
-      bitmap,
-      (deviceImageWidth - width) / 2,
-      (deviceImageHeight - height) / 2,
-      width,
-      height,
-    )
-    return quantizeDeviceImage(context.getImageData(0, 0, deviceImageWidth, deviceImageHeight))
+    return convertDecodedDeviceImage(bitmap, crop)
   }
   finally {
     bitmap.close()
   }
+}
+
+export async function decodeDeviceImage(file: Blob): Promise<ImageBitmap> {
+  const bitmap = await createImageBitmap(file)
+  try {
+    requireSourceDimensions(bitmap.width, bitmap.height)
+    return bitmap
+  }
+  catch (error) {
+    bitmap.close()
+    throw error
+  }
+}
+
+export function convertDecodedDeviceImage(
+  bitmap: ImageBitmap,
+  crop: DeviceImageCrop = defaultDeviceImageCrop,
+): Uint8Array {
+  const canvas = document.createElement('canvas')
+  canvas.width = deviceImageWidth
+  canvas.height = deviceImageHeight
+  const context = canvas.getContext('2d', { alpha: false, willReadFrequently: true })
+  if (!context)
+    throw new Error('Canvas 2D image conversion is unavailable')
+  context.fillStyle = '#ffffff'
+  context.fillRect(0, 0, deviceImageWidth, deviceImageHeight)
+  const layout = deviceImageCropLayout(bitmap.width, bitmap.height, crop)
+  context.imageSmoothingEnabled = true
+  context.imageSmoothingQuality = 'high'
+  context.drawImage(
+    bitmap,
+    layout.x,
+    layout.y,
+    layout.width,
+    layout.height,
+  )
+  return quantizeDeviceImage(context.getImageData(0, 0, deviceImageWidth, deviceImageHeight))
+}
+
+export async function readDeviceImageDimensions(file: Blob): Promise<{ height: number, width: number }> {
+  const bitmap = await decodeDeviceImage(file)
+  try {
+    return { height: bitmap.height, width: bitmap.width }
+  }
+  finally {
+    bitmap.close()
+  }
+}
+
+export function normalizeDeviceImageCrop(
+  crop: DeviceImageCrop,
+  sourceWidth: number,
+  sourceHeight: number,
+): DeviceImageCrop {
+  requireSourceDimensions(sourceWidth, sourceHeight)
+  const zoom = clamp(Number.isFinite(crop.zoom) ? crop.zoom : 1, 1, maximumDeviceImageZoom)
+  // Start with a contain fit so the minimum zoom preserves the complete source
+  // image. Increasing zoom intentionally transitions into a crop once the
+  // image is larger than the physical panel.
+  const scale = Math.min(deviceImageWidth / sourceWidth, deviceImageHeight / sourceHeight) * zoom
+  const horizontalInset = Math.min(0.5, deviceImageWidth / (2 * scale * sourceWidth))
+  const verticalInset = Math.min(0.5, deviceImageHeight / (2 * scale * sourceHeight))
+  return {
+    focusX: clamp(Number.isFinite(crop.focusX) ? crop.focusX : 0.5, horizontalInset, 1 - horizontalInset),
+    focusY: clamp(Number.isFinite(crop.focusY) ? crop.focusY : 0.5, verticalInset, 1 - verticalInset),
+    zoom,
+  }
+}
+
+export function deviceImageCropLayout(
+  sourceWidth: number,
+  sourceHeight: number,
+  crop: DeviceImageCrop,
+): DeviceImageCropLayout {
+  const normalized = normalizeDeviceImageCrop(crop, sourceWidth, sourceHeight)
+  const scale = Math.min(deviceImageWidth / sourceWidth, deviceImageHeight / sourceHeight) * normalized.zoom
+  const width = sourceWidth * scale
+  const height = sourceHeight * scale
+  return {
+    height,
+    scale,
+    width,
+    x: deviceImageWidth / 2 - normalized.focusX * width,
+    y: deviceImageHeight / 2 - normalized.focusY * height,
+  }
+}
+
+export function moveDeviceImageCrop(
+  crop: DeviceImageCrop,
+  deltaX: number,
+  deltaY: number,
+  sourceWidth: number,
+  sourceHeight: number,
+): DeviceImageCrop {
+  const normalized = normalizeDeviceImageCrop(crop, sourceWidth, sourceHeight)
+  const { scale } = deviceImageCropLayout(sourceWidth, sourceHeight, normalized)
+  return normalizeDeviceImageCrop({
+    ...normalized,
+    focusX: normalized.focusX - deltaX / (scale * sourceWidth),
+    focusY: normalized.focusY - deltaY / (scale * sourceHeight),
+  }, sourceWidth, sourceHeight)
 }
 
 export function quantizeDeviceImage(image: ImageData): Uint8Array {
@@ -156,4 +255,13 @@ function diffuse(
 
 function clampChannel(value: number): number {
   return Math.max(0, Math.min(255, value))
+}
+
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.max(minimum, Math.min(maximum, value))
+}
+
+function requireSourceDimensions(width: number, height: number): void {
+  if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0)
+    throw new TypeError('Source image dimensions must be positive finite numbers')
 }

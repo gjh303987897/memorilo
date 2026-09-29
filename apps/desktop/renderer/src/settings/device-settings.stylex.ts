@@ -130,6 +130,23 @@ export const deviceSettingsStyles = stylex.create({
     fontSize: 12,
     whiteSpace: 'nowrap',
   },
+  connectionActions: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    justifyContent: 'flex-end',
+    gap: 6,
+  },
+  wifiControl: {
+    'display': 'grid',
+    'minWidth': 0,
+    'gridTemplateColumns': 'minmax(0, 1fr) auto',
+    'alignItems': 'center',
+    'gap': 8,
+    '@media (max-width: 560px)': {
+      alignItems: 'stretch',
+      gridTemplateColumns: 'minmax(0, 1fr)',
+    },
+  },
   section: {
     borderTopColor: 'var(--ui-divider)',
     borderTopStyle: 'solid',

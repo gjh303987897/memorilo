@@ -26,6 +26,11 @@ describe('device settings', () => {
     }))
     const close = vi.fn(() => Effect.void)
     const forget = vi.fn(() => Effect.void)
+    const scanWifi = vi.fn(() => Effect.succeed([
+      { rssi: -70, security: 'secured' as const, ssid: 'Study' },
+      { rssi: -42, security: 'secured' as const, ssid: 'Study' },
+      { rssi: -55, security: 'open' as const, ssid: 'Guest' },
+    ]))
     const session: DeviceProvisioningSession = {
       connected: true,
       subscribeDisconnected: (listener) => {
@@ -35,6 +40,12 @@ describe('device settings', () => {
         }
       },
       apply,
+      loadGallery: () => Effect.fail(new DeviceProvisioningError({ code: 'gallery-unavailable' })),
+      uploadGalleryAsset: () => Effect.fail(new DeviceProvisioningError({ code: 'gallery-unavailable' })),
+      deleteGalleryAsset: () => Effect.fail(new DeviceProvisioningError({ code: 'gallery-unavailable' })),
+      reorderGallery: () => Effect.fail(new DeviceProvisioningError({ code: 'gallery-unavailable' })),
+      setGallerySlideshow: () => Effect.fail(new DeviceProvisioningError({ code: 'gallery-unavailable' })),
+      scanWifi,
       close,
       device: {
         config: {
@@ -100,13 +111,14 @@ describe('device settings', () => {
     const setGallerySlideshow = vi.fn(() => Effect.void)
     const uploadGalleryAsset = vi.fn(() => Effect.void)
     const interrupted = vi.fn()
+    const connect = vi.fn(() => Effect.tryPromise({
+      catch: cause => new DeviceProvisioningError({ cause, code: 'connection-failed' }),
+      try: () => new Promise<DeviceProvisioningSession>((resolve) => { resolveConnection = resolve }),
+    }).pipe(Effect.onInterrupt(() => Effect.sync(interrupted))))
     const client: DeviceProvisioningClient = {
       cancelSelection,
       clearLocalManagementToken,
-      connect: () => Effect.tryPromise({
-        catch: cause => new DeviceProvisioningError({ cause, code: 'connection-failed' }),
-        try: () => new Promise<DeviceProvisioningSession>((resolve) => { resolveConnection = resolve }),
-      }).pipe(Effect.onInterrupt(() => Effect.sync(interrupted))),
+      connect,
       deleteGalleryAsset,
       generateLocalManagementToken,
       hasLocalManagementToken,
@@ -136,7 +148,8 @@ describe('device settings', () => {
     }
     const rendered = render(<DeviceSettings client={client} />)
 
-    fireEvent.click(rendered.getByRole('button', { name: 'Scan for device' }))
+    fireEvent.click(rendered.getByRole('button', { name: 'Bluetooth' }))
+    expect(connect).toHaveBeenCalledWith('bluetooth')
     expect(rendered.getByRole('status')).toHaveTextContent('Scanning for nearby')
 
     act(() => devicesListener?.([{ deviceId: 'device-1', deviceName: 'Desk display' }]))
@@ -205,6 +218,16 @@ describe('device settings', () => {
     expect(rendered.queryByRole('switch', { name: 'TODO synchronization' })).not.toBeInTheDocument()
     expect(rendered.getByLabelText('Time zone').tagName).toBe('SELECT')
 
+    const wifiNetwork = rendered.getByRole('combobox', { name: 'Wi-Fi network' })
+    expect(wifiNetwork).toHaveAttribute('list', 'device-wifi-networks')
+    expect(rendered.queryByLabelText('Nearby networks')).not.toBeInTheDocument()
+    fireEvent.change(wifiNetwork, { target: { value: 'Hidden network' } })
+    expect(wifiNetwork).toHaveValue('Hidden network')
+    fireEvent.click(rendered.getByRole('button', { name: 'Scan Wi-Fi' }))
+    await waitFor(() => expect(scanWifi).toHaveBeenCalledOnce())
+    const suggestions = [...rendered.container.querySelectorAll<HTMLOptionElement>('#device-wifi-networks option')]
+    expect(suggestions.map(option => option.value)).toEqual(['Study', 'Guest'])
+
     fireEvent.change(name, { target: { value: 'Kitchen display' } })
     fireEvent.change(rendered.getByRole('spinbutton', { name: 'Sleep after idle seconds' }), { target: { value: '900' } })
     fireEvent.click(rendered.getByRole('button', { name: 'Apply settings' }))
@@ -222,7 +245,7 @@ describe('device settings', () => {
       disconnectedListener?.()
     })
     expect(rendered.getByRole('button', { name: 'Apply settings' })).toBeDisabled()
-    expect(rendered.getByRole('button', { name: 'Scan for device' })).toBeEnabled()
+    expect(rendered.getByRole('button', { name: 'Bluetooth' })).toBeEnabled()
     expect(rendered.getByText('Disconnected')).toBeInTheDocument()
     expect(rendered.getByRole('textbox', { name: 'Device name' })).toBeInTheDocument()
     expect(rendered.queryByRole('button', { name: 'Load status' })).not.toBeInTheDocument()

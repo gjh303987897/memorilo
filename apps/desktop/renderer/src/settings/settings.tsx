@@ -527,7 +527,7 @@ export function Settings({ store }: { store: ConfigurationStore<DesktopConfigura
         </Sidebar.Root>
 
         <section {...stylex.props(settingsStyles.contentPane)} aria-labelledby="active-settings-heading">
-          <div {...stylex.props(settingsStyles.contentScroll)}>
+          <div data-settings-content-scroll="true" {...stylex.props(settingsStyles.contentScroll)}>
             <AnimatePresence initial={false} mode="wait">
               <motion.div
                 key={activeCategory.id}

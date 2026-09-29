@@ -1,3 +1,4 @@
+import type { DesktopDeviceGalleryUpload } from '@memorilo/desktop-api'
 import type { ApplyConfigEnvelope, ChunkFrame } from '@memorilo/device-provisioning'
 import type {
   BluetoothAdapter,
@@ -5,8 +6,18 @@ import type {
   BluetoothDeviceAdapter,
   BluetoothServerAdapter,
   BluetoothServiceAdapter,
+  SerialAdapter,
+  SerialPortAdapter,
 } from './device-provisioning-service'
-import { decodeFrame, encodeFrames, parseApplyConfigEnvelope, PROVISIONING_UUIDS, reassembleFrames } from '@memorilo/device-provisioning'
+import {
+  decodeFrame,
+  encodeFrames,
+  parseApplyConfigEnvelope,
+  parseSerialProvisioningRequest,
+  PROVISIONING_UUIDS,
+  reassembleFrames,
+  SERIAL_PROVISIONING_PREFIX,
+} from '@memorilo/device-provisioning'
 import { Effect } from 'effect'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -47,6 +58,122 @@ class FakeCharacteristic extends EventTarget implements BluetoothCharacteristicA
   }
 }
 
+class FakeSerialPort extends EventTarget implements SerialPortAdapter {
+  readonly readable: ReadableStream<Uint8Array>
+  readonly writable: WritableStream<Uint8Array>
+  readonly requests: unknown[] = []
+  readonly writtenChunks: number[] = []
+  readonly openOptions: Array<{ baudRate: number }> = []
+  closed = false
+  private controller!: ReadableStreamDefaultController<Uint8Array>
+  private requestBuffer = ''
+  private readonly decoder = new TextDecoder()
+
+  constructor() {
+    super()
+    this.readable = new ReadableStream({
+      start: (controller) => { this.controller = controller },
+    })
+    this.writable = new WritableStream({
+      write: (bytes) => {
+        this.writtenChunks.push(bytes.byteLength)
+        this.requestBuffer += this.decoder.decode(bytes, { stream: true })
+        let newline = this.requestBuffer.indexOf('\n')
+        while (newline >= 0) {
+          const line = this.requestBuffer.slice(0, newline).trimEnd()
+          this.requestBuffer = this.requestBuffer.slice(newline + 1)
+          if (line.length > 0)
+            this.handleRequest(parseSerialProvisioningRequest(line))
+          newline = this.requestBuffer.indexOf('\n')
+        }
+      },
+    })
+  }
+
+  private handleRequest(request: ReturnType<typeof parseSerialProvisioningRequest>): void {
+    this.requests.push(request)
+    if (request?.operation === 'read') {
+      this.respond({
+        deviceInfo: {
+          capabilities: ['config-v1'],
+          configRevision: 2,
+          configSchemaVersion: 2,
+          deviceId: 'device-serial',
+          firmwareVersion: '0.1.0',
+          protocolVersion: 1,
+        },
+        operation: 'read',
+        publicConfig: {
+          configSchemaVersion: 2,
+          deviceName: 'USB desk',
+          idleSleepSeconds: 600,
+          localManagementTokenIsSet: false,
+          protocolVersion: 1,
+          revision: 2,
+          selectionPolicy: 'Remember',
+          timezone: 'Asia/Shanghai',
+          todoSyncEnabled: true,
+          todoSyncPollIntervalSeconds: 900,
+          todoSyncTokenIsSet: false,
+          todoSyncUrl: '',
+          todoSyncView: 'today',
+          wifiPasswordIsSet: false,
+        },
+        requestId: request.requestId,
+      })
+    }
+    else if (request?.operation === 'apply') {
+      this.respond({
+        operation: 'apply',
+        requestId: request.request.requestId,
+        status: {
+          protocolVersion: 1,
+          requestId: request.request.requestId,
+          revision: 3,
+          status: 'accepted',
+        },
+      })
+    }
+    else if (request?.operation === 'gallery.upload') {
+      this.respond({
+        operation: 'gallery.upload',
+        requestId: request.requestId,
+        status: 'ok',
+      })
+    }
+    else if (request?.operation === 'gallery.list') {
+      this.respond({
+        operation: 'gallery.list',
+        requestId: request.requestId,
+        status: 'ok',
+        gallery: {
+          capacityBytes: 4_194_304,
+          catalog: { assets: [], slideshowIntervalSeconds: null },
+          fullRefreshSeconds: 20,
+          imageBytes: 30_000,
+          lastError: null,
+          maxAssets: 100,
+          mutationRevision: 0,
+        },
+      })
+    }
+  }
+
+  async open(options: { baudRate: number }): Promise<void> {
+    this.openOptions.push(options)
+  }
+
+  async close(): Promise<void> {
+    this.closed = true
+  }
+
+  private respond(response: unknown): void {
+    queueMicrotask(() => this.controller.enqueue(new TextEncoder().encode(
+      `I (1) device: log line\n${SERIAL_PROVISIONING_PREFIX}${JSON.stringify(response)}\n`,
+    )))
+  }
+}
+
 function framed(value: unknown): Uint8Array {
   const json = new TextEncoder().encode(JSON.stringify(value))
   return Uint8Array.from(encodeFrames(1, json, 24).flatMap(frame => [...frame]))
@@ -65,6 +192,7 @@ function stalledConnection() {
   const events = new EventTarget()
   const apply = new FakeCharacteristic()
   const status = new FakeCharacteristic()
+  const wifiScan = new FakeCharacteristic()
   let releaseWrite!: () => void
   const write = vi.spyOn(apply, 'writeValueWithResponse').mockImplementation(() => new Promise<void>((resolve) => {
     releaseWrite = resolve
@@ -93,7 +221,7 @@ function stalledConnection() {
       todoSyncPollIntervalSeconds: 900,
       todoSyncView: 'today',
     },
-  }, events, server, apply, status)
+  }, events, server, apply, status, wifiScan)
   return { connection, events, releaseWrite: () => releaseWrite(), server, status, write }
 }
 
@@ -125,12 +253,16 @@ function provisioningHarness() {
   const configContinuation = new FakeCharacteristic(new Uint8Array())
   const apply = new FakeCharacteristic()
   const status = new FakeCharacteristic()
+  const wifiScan = new FakeCharacteristic()
+  const gallery = new FakeCharacteristic()
   const characteristics = new Map([
     ['7b7a1001-6c6f-4d65-8a8b-6d656d6f7269', info],
     ['7b7a1002-6c6f-4d65-8a8b-6d656d6f7269', config],
     ['7b7a1005-6c6f-4d65-8a8b-6d656d6f7269', configContinuation],
     ['7b7a1003-6c6f-4d65-8a8b-6d656d6f7269', apply],
     ['7b7a1004-6c6f-4d65-8a8b-6d656d6f7269', status],
+    ['7b7a1006-6c6f-4d65-8a8b-6d656d6f7269', wifiScan],
+    ['7b7a1007-6c6f-4d65-8a8b-6d656d6f7269', gallery],
   ])
   const service: BluetoothServiceAdapter = {
     getCharacteristic: vi.fn(async uuid => characteristics.get(uuid)!),
@@ -175,12 +307,15 @@ function provisioningHarness() {
     uploadGalleryAsset: vi.fn(async () => undefined),
   }
   return {
+    bridge,
     connect,
     info,
     config,
     configContinuation,
+    gallery,
     service,
     status,
+    wifiScan,
     provisioning: new DeviceProvisioningService(adapter, bridge),
     server,
   }
@@ -197,6 +332,153 @@ function connectDiagnostics(): Array<{
 }
 
 describe('deviceProvisioningService', () => {
+  it('forwards live LAN upload progress from the main-process bridge', async () => {
+    const harness = provisioningHarness()
+    const bridgeProgress = [
+      { sentBytes: 0, totalBytes: 30_000 },
+      { sentBytes: 1_024, totalBytes: 30_000 },
+      { sentBytes: 30_000, totalBytes: 30_000 },
+    ]
+    const uploadGalleryAsset = vi.fn(async (
+      _input: DesktopDeviceGalleryUpload,
+      onProgress?: (progress: { sentBytes: number, totalBytes: number }) => void,
+    ) => {
+      for (const update of bridgeProgress)
+        onProgress?.(update)
+    })
+    const provisioning = new DeviceProvisioningService(
+      { requestDevice: vi.fn() },
+      { ...harness.bridge, uploadGalleryAsset },
+    )
+    const received: typeof bridgeProgress = []
+    const input = {
+      address: '192.168.4.23',
+      bytes: new Uint8Array(30_000),
+      createdAtUnixSeconds: 1,
+      deviceId: 'device-1',
+      name: 'Image',
+    }
+
+    await Effect.runPromise(provisioning.uploadGalleryAsset(input, update => received.push(update)))
+
+    expect(received).toEqual(bridgeProgress)
+    expect(uploadGalleryAsset).toHaveBeenCalledWith(input, expect.any(Function))
+  })
+
+  it('reports the actual serial bytes written while uploading a gallery image', async () => {
+    const port = new FakeSerialPort()
+    const provisioning = new DeviceProvisioningService(
+      { requestDevice: vi.fn() },
+      provisioningHarness().bridge,
+      { requestPort: vi.fn(async () => port) },
+    )
+    const connection = await Effect.runPromise(provisioning.connect('serial'))
+    const progress: Array<{ sentBytes: number, totalBytes: number }> = []
+
+    await Effect.runPromise(connection.uploadGalleryAsset(
+      new Uint8Array(4_096),
+      'frame',
+      10,
+      update => progress.push(update),
+    ))
+
+    expect(progress.length).toBeGreaterThan(3)
+    expect(progress[0]).toMatchObject({ sentBytes: 0 })
+    expect(progress.at(-1)?.sentBytes).toBe(progress.at(-1)?.totalBytes)
+    expect(progress.every((update, index) => index === 0 || update.sentBytes >= progress[index - 1]!.sentBytes)).toBe(true)
+    expect(port.writtenChunks.slice(1).every(length => length <= 1_024)).toBe(true)
+    await Effect.runPromise(connection.close())
+  })
+
+  it('loads gallery metadata over USB serial before updating it', async () => {
+    const port = new FakeSerialPort()
+    const provisioning = new DeviceProvisioningService(
+      { requestDevice: vi.fn() },
+      provisioningHarness().bridge,
+      { requestPort: vi.fn(async () => port) },
+    )
+    const connection = await Effect.runPromise(provisioning.connect('serial'))
+
+    await expect(Effect.runPromise(connection.loadGallery())).resolves.toMatchObject({
+      catalog: { assets: [] },
+      mutationRevision: 0,
+    })
+    expect(port.requests).toContainEqual(expect.objectContaining({ operation: 'gallery.list' }))
+    await Effect.runPromise(connection.close())
+  })
+
+  it('reports each Bluetooth frame written while uploading a gallery image', async () => {
+    const harness = provisioningHarness()
+    const requestFrames: ChunkFrame[] = []
+    harness.gallery.onWrite = (bytes) => {
+      const frame = decodeFrame(bytes)
+      requestFrames.push(frame)
+      if (requestFrames.length !== frame.count)
+        return
+      const request = JSON.parse(new TextDecoder().decode(reassembleFrames(requestFrames))) as { operation: string, requestId: string }
+      for (const responseFrame of encodeFrames(2, new TextEncoder().encode(JSON.stringify({
+        operation: request.operation,
+        requestId: request.requestId,
+        status: 'ok',
+      })), 180)) {
+        queueMicrotask(() => harness.gallery.emit(new Uint8Array(responseFrame)))
+      }
+    }
+    const connection = await Effect.runPromise(harness.provisioning.connect())
+    const progress: Array<{ sentBytes: number, totalBytes: number }> = []
+
+    await Effect.runPromise(connection.uploadGalleryAsset(
+      new Uint8Array(4_096),
+      'frame',
+      10,
+      update => progress.push(update),
+    ))
+
+    expect(progress.length).toBeGreaterThan(3)
+    expect(progress[0]).toMatchObject({ sentBytes: 0 })
+    expect(progress.at(-1)?.sentBytes).toBe(progress.at(-1)?.totalBytes)
+    expect(harness.gallery.writes).toHaveLength(progress.length - 1)
+    await Effect.runPromise(connection.close())
+  })
+
+  it('reads and applies the same provisioning envelopes over USB serial', async () => {
+    const port = new FakeSerialPort()
+    const serial: SerialAdapter = { requestPort: vi.fn(async () => port) }
+    const harness = provisioningHarness()
+    const provisioning = new DeviceProvisioningService(
+      { requestDevice: vi.fn() },
+      harness.bridge,
+      serial,
+    )
+
+    const connection = await Effect.runPromise(provisioning.connect('serial'))
+    expect(serial.requestPort).toHaveBeenCalledWith({
+      filters: [],
+    })
+    expect(port.openOptions).toEqual([{ baudRate: 115_200 }])
+    expect(connection.device).toMatchObject({
+      config: { deviceName: 'USB desk', revision: 2 },
+      info: { deviceId: 'device-serial' },
+    })
+
+    const status = await Effect.runPromise(connection.apply({ deviceName: 'Kitchen USB' }))
+    expect(status).toMatchObject({ revision: 3, status: 'accepted' })
+    expect(connection.device.config).toMatchObject({ deviceName: 'Kitchen USB', revision: 3 })
+    expect(port.requests).toEqual([
+      expect.objectContaining({ operation: 'read' }),
+      expect.objectContaining({
+        operation: 'apply',
+        request: expect.objectContaining({
+          baseRevision: 2,
+          config: { deviceName: 'Kitchen USB' },
+          requiredCapabilities: ['config-v1'],
+        }),
+      }),
+    ])
+    await Effect.runPromise(connection.close())
+    expect(port.closed).toBe(true)
+  })
+
   it('discovers characteristics sequentially for CoreBluetooth stability', async () => {
     const harness = provisioningHarness()
     const originalGetCharacteristic = harness.service.getCharacteristic
@@ -223,6 +505,8 @@ describe('deviceProvisioningService', () => {
       PROVISIONING_UUIDS.publicConfigContinuation,
       PROVISIONING_UUIDS.configApply,
       PROVISIONING_UUIDS.status,
+      PROVISIONING_UUIDS.wifiScan,
+      PROVISIONING_UUIDS.gallery,
     ])
     await Effect.runPromise(connection.close())
   })
@@ -398,7 +682,8 @@ describe('deviceProvisioningService', () => {
     const configContinuation = new FakeCharacteristic(new Uint8Array())
     const apply = new FakeCharacteristic()
     const status = new FakeCharacteristic()
-    const characteristics = [info, config, configContinuation, apply, status]
+    const wifiScan = new FakeCharacteristic()
+    const characteristics = [info, config, configContinuation, apply, status, wifiScan]
     let characteristicIndex = 0
     const service: BluetoothServiceAdapter = {
       getCharacteristic: vi.fn(async () => characteristics[characteristicIndex++]!),

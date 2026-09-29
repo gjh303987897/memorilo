@@ -1,10 +1,14 @@
 import type { DesktopProvisioningDevice, DesktopProvisioningPairingRequest } from '@memorilo/desktop-api'
-import type { DeviceConfigPatch, PublicConfigEnvelope } from '@memorilo/device-provisioning'
-import type { DeviceProvisioningClient, DeviceProvisioningSession } from './device-provisioning-service'
+import type { DeviceConfigPatch, PublicConfigEnvelope, WifiNetwork } from '@memorilo/device-provisioning'
+import type {
+  DeviceProvisioningClient,
+  DeviceProvisioningSession,
+  DeviceProvisioningTransport,
+} from './device-provisioning-service'
 import { Button, SelectField, Status, Switch, TextField } from '@memorilo/ui'
 import * as stylex from '@stylexjs/stylex'
 import { Effect } from 'effect'
-import { Bluetooth, ChevronRight } from 'lucide-react'
+import { Bluetooth, ChevronRight, RefreshCw, Usb } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -67,8 +71,11 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
   const [pairing, setPairing] = useState<DesktopProvisioningPairingRequest | null>(null)
   const [pairingPin, setPairingPin] = useState('')
   const [connection, setConnection] = useState<DeviceProvisioningSession | null>(null)
-  const [bleConnected, setBleConnected] = useState(false)
+  const [connected, setConnected] = useState(false)
+  const [activeTransport, setActiveTransport] = useState<DeviceProvisioningTransport>('bluetooth')
   const [form, setForm] = useState<DeviceFormState>(emptyForm)
+  const [wifiNetworks, setWifiNetworks] = useState<readonly WifiNetwork[]>([])
+  const [wifiScanBusy, setWifiScanBusy] = useState(false)
   const [localManagementCredentialStored, setLocalManagementCredentialStored] = useState(false)
   const [pendingLocalManagement, setPendingLocalManagement] = useState<PendingLocalManagementChange | null>(null)
   const [errorCode, setErrorCode] = useState<DeviceProvisioningError['code'] | 'invalid-config' | null>(null)
@@ -112,7 +119,7 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
     }
   }, [service])
 
-  const startScan = async (): Promise<void> => {
+  const startScan = async (transport: DeviceProvisioningTransport): Promise<void> => {
     const currentOperation = ++operation.current
     scanControllerRef.current?.abort()
     const controller = new AbortController()
@@ -126,14 +133,16 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
     if (operation.current !== currentOperation)
       return
     setConnection(null)
-    setBleConnected(false)
+    setConnected(false)
+    setActiveTransport(transport)
+    setWifiNetworks([])
     setDevices([])
     setPairing(null)
     pairingRef.current = null
     setErrorCode(null)
     setPhase('scanning')
     try {
-      const nextConnection = await Effect.runPromise(service.connect(), { signal: controller.signal })
+      const nextConnection = await Effect.runPromise(service.connect(transport), { signal: controller.signal })
       if (operation.current !== currentOperation) {
         await Effect.runPromise(nextConnection.close())
         return
@@ -155,9 +164,9 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
         return
       }
       setConnection(nextConnection)
-      setBleConnected(nextConnection.connected)
+      setConnected(nextConnection.connected)
       unsubscribeDisconnectRef.current = nextConnection.subscribeDisconnected(() => {
-        setBleConnected(false)
+        setConnected(false)
       })
       setForm(formFromConfig(nextConnection.device.config))
       setLocalManagementCredentialStored(credentialStored)
@@ -221,7 +230,7 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
     connectionRef.current = null
     if (activeConnection)
       await Effect.runPromise(activeConnection.close())
-    setBleConnected(false)
+    setConnected(false)
     const pendingPairing = pairingRef.current
     try {
       if (pendingPairing) {
@@ -265,7 +274,7 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
       wifi: {
         ...(form.clearWifiPassword ? { clearPassword: true } : {}),
         ...(form.wifiPassword.length > 0 ? { password: form.wifiPassword } : {}),
-        ssid: form.wifiSsid.trim(),
+        ...(form.wifiSsid.trim().length > 0 ? { ssid: form.wifiSsid.trim() } : {}),
       },
       weather: {
         enabled: form.weatherEnabled,
@@ -307,14 +316,30 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
     }
   }
 
+  const scanWifi = async (): Promise<void> => {
+    if (!connection || !connection.connected || wifiScanBusy)
+      return
+    setWifiScanBusy(true)
+    try {
+      setWifiNetworks(await Effect.runPromise(connection.scanWifi()))
+    }
+    catch (error) {
+      handleError(error, setErrorCode, setPhase)
+    }
+    finally {
+      setWifiScanBusy(false)
+    }
+  }
+
   const disconnect = async (): Promise<void> => {
     operation.current += 1
     unsubscribeDisconnectRef.current?.()
     unsubscribeDisconnectRef.current = null
-    setBleConnected(false)
+    setConnected(false)
     const activeConnection = connectionRef.current
     connectionRef.current = null
     setConnection(null)
+    setWifiNetworks([])
     setLocalManagementCredentialStored(false)
     setPendingLocalManagement(null)
     if (activeConnection)
@@ -326,10 +351,11 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
     operation.current += 1
     unsubscribeDisconnectRef.current?.()
     unsubscribeDisconnectRef.current = null
-    setBleConnected(false)
+    setConnected(false)
     const activeConnection = connectionRef.current
     connectionRef.current = null
     setConnection(null)
+    setWifiNetworks([])
     try {
       if (activeConnection) {
         await Effect.runPromise(activeConnection.forget())
@@ -352,25 +378,34 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
     <div {...stylex.props(styles.root)}>
       <div {...stylex.props(styles.surface)}>
         <div {...stylex.props(styles.summary)}>
-          <span {...stylex.props(styles.glyph)}><Bluetooth aria-hidden="true" size={19} strokeWidth={1.8} /></span>
+          <span {...stylex.props(styles.glyph)}>
+            {activeTransport === 'serial'
+              ? <Usb aria-hidden="true" size={19} strokeWidth={1.8} />
+              : <Bluetooth aria-hidden="true" size={19} strokeWidth={1.8} />}
+          </span>
           <div {...stylex.props(styles.summaryCopy)}>
             <h2 {...stylex.props(styles.summaryTitle)}>
               {connection?.device.name ?? t('deviceSetupTitle')}
             </h2>
             <p {...stylex.props(styles.summaryDetail)}>
               {connection
-                ? bleConnected
+                ? connected
                   ? t('deviceFirmwareSummary', { version: connection.device.info.firmwareVersion })
                   : t('deviceRemoteDisconnected')
                 : t('deviceSetupSummary')}
             </p>
           </div>
-          {connection && bleConnected
+          {connection && connected
             ? null
             : (
-                <Button disabled={scanDisabled} variant="primary" xstyle={styles.compactButton} onClick={() => void startScan()}>
-                  {t('deviceScan')}
-                </Button>
+                <div {...stylex.props(styles.connectionActions)}>
+                  <Button disabled={scanDisabled} variant="primary" xstyle={styles.compactButton} onClick={() => void startScan('bluetooth')}>
+                    {t('deviceScanBluetooth')}
+                  </Button>
+                  <Button disabled={scanDisabled} variant="secondary" xstyle={styles.compactButton} onClick={() => void startScan('serial')}>
+                    {t('deviceConnectSerial')}
+                  </Button>
+                </div>
               )}
         </div>
 
@@ -481,13 +516,41 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
                     <option value="all">{t('deviceTodoSyncAll')}</option>
                   </select>
                 </div>
-                <DeviceTextRow
-                  description={t('deviceWifiSsidDescription')}
-                  id="device-wifi-ssid"
-                  label={t('deviceWifiSsid')}
-                  value={form.wifiSsid}
-                  onChange={wifiSsid => setForm(current => ({ ...current, wifiSsid }))}
-                />
+                <div {...stylex.props(styles.row)}>
+                  <div {...stylex.props(styles.rowCopy)}>
+                    <label htmlFor="device-wifi-ssid" {...stylex.props(styles.label)}>{t('deviceWifiSsid')}</label>
+                    <p {...stylex.props(styles.description)}>{t('deviceWifiNetworksDescription')}</p>
+                  </div>
+                  <div {...stylex.props(styles.wifiControl)}>
+                    <TextField
+                      id="device-wifi-ssid"
+                      list="device-wifi-networks"
+                      placeholder={t('deviceWifiChooseNetwork')}
+                      value={form.wifiSsid}
+                      variant="settings"
+                      xstyle={styles.control}
+                      onChange={event => setForm(current => ({ ...current, wifiSsid: event.target.value }))}
+                    />
+                    <datalist id="device-wifi-networks">
+                      {uniqueWifiNetworks(wifiNetworks).map(network => (
+                        <option key={`${network.ssid}:${network.rssi}`} value={network.ssid}>
+                          {network.security === 'secured' ? `${network.ssid} •` : network.ssid}
+                        </option>
+                      ))}
+                    </datalist>
+                    <Button
+                      aria-label={t('deviceWifiScan')}
+                      disabled={wifiScanBusy || phase === 'applying'}
+                      type="button"
+                      variant="secondary"
+                      xstyle={styles.compactButton}
+                      onClick={() => void scanWifi()}
+                    >
+                      <RefreshCw aria-hidden="true" size={15} className={wifiScanBusy ? 'spin' : undefined} />
+                      {t('deviceWifiScan')}
+                    </Button>
+                  </div>
+                </div>
                 <DeviceTextRow
                   description={connection.device.config.wifiPasswordIsSet
                     ? t('deviceWifiPasswordSavedDescription')
@@ -524,7 +587,8 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
                 <DeviceGallery
                   client={service}
                   deviceId={connection.device.info.deviceId}
-                  enabled={localManagementCredentialStored && pendingLocalManagement?.kind !== 'clear'}
+                  session={connection}
+                  enabled={connected || (localManagementCredentialStored && pendingLocalManagement?.kind !== 'clear')}
                 />
                 <div {...stylex.props(styles.row)}>
                   <div {...stylex.props(styles.rowCopy)}>
@@ -556,7 +620,7 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
                     <Button variant="secondary" xstyle={styles.compactButton} onClick={() => void disconnect()}>{t('deviceDisconnect')}</Button>
                     <Button variant="plain" xstyle={styles.compactButton} onClick={() => void forget()}>{t('deviceForget')}</Button>
                   </div>
-                  <Button disabled={!bleConnected || phase === 'applying'} type="submit" variant="primary" xstyle={styles.compactButton}>
+                  <Button disabled={!connected || phase === 'applying'} type="submit" variant="primary" xstyle={styles.compactButton}>
                     {phase === 'applying' ? t('deviceApplying') : t('deviceApply')}
                   </Button>
                 </div>
@@ -666,6 +730,10 @@ function statusTranslationKey(
   if (phase === 'error') {
     if (errorCode === 'bluetooth-unavailable')
       return 'deviceStatusBluetoothUnavailable'
+    if (errorCode === 'serial-unavailable')
+      return 'deviceStatusSerialUnavailable'
+    if (errorCode === 'wifi-scan-unavailable')
+      return 'deviceStatusWifiScanUnavailable'
     if (errorCode === 'apply-rejected')
       return 'deviceStatusApplyRejected'
     if (errorCode === 'protocol-error')
@@ -695,4 +763,13 @@ function statusTranslationKey(
 function deviceAddressForDeviceId(deviceId: string): string {
   const normalized = deviceId.toLowerCase().replace(/[^a-z0-9-]/gu, '-')
   return `memorilo-${normalized}.local`
+}
+
+function uniqueWifiNetworks(networks: readonly WifiNetwork[]): readonly WifiNetwork[] {
+  const strongestBySsid = new Map<string, WifiNetwork>()
+  for (const network of [...networks].sort((left, right) => right.rssi - left.rssi)) {
+    if (!strongestBySsid.has(network.ssid))
+      strongestBySsid.set(network.ssid, network)
+  }
+  return [...strongestBySsid.values()]
 }

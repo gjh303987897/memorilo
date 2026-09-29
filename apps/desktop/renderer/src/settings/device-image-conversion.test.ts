@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  defaultDeviceImageCrop,
   deviceImageBytes,
+  deviceImageCropLayout,
   deviceImageHeight,
   deviceImageWidth,
+  moveDeviceImageCrop,
+  normalizeDeviceImageCrop,
   quantizeDeviceImage,
   unpackDeviceImageRgba,
 } from './device-image-conversion'
@@ -20,6 +24,63 @@ function solidImage(red: number, green: number, blue: number, alpha = 255): Imag
 }
 
 describe('device image conversion', () => {
+  it('fits the complete source image at the minimum zoom', () => {
+    expect(deviceImageCropLayout(1920, 1080, defaultDeviceImageCrop)).toEqual({
+      height: 225,
+      scale: 1 / 4.8,
+      width: 400,
+      x: 0,
+      y: 37.5,
+    })
+  })
+
+  it('keeps a square source fully visible inside the 4:3 panel', () => {
+    expect(deviceImageCropLayout(720, 720, defaultDeviceImageCrop)).toEqual({
+      height: 300,
+      scale: 5 / 12,
+      width: 300,
+      x: 50,
+      y: 0,
+    })
+  })
+
+  it('maps the selected focal point and zoom to the physical 4:3 panel', () => {
+    expect(deviceImageCropLayout(800, 400, defaultDeviceImageCrop)).toEqual({
+      height: 200,
+      scale: 0.5,
+      width: 400,
+      x: 0,
+      y: 50,
+    })
+    expect(deviceImageCropLayout(800, 400, {
+      focusX: 0.5,
+      focusY: 0.5,
+      zoom: 2,
+    })).toEqual({
+      height: 400,
+      scale: 1,
+      width: 800,
+      x: -200,
+      y: -50,
+    })
+  })
+
+  it('clamps the crop focal point so the panel never exposes an empty edge', () => {
+    expect(normalizeDeviceImageCrop({ focusX: -4, focusY: 9, zoom: 2 }, 800, 400)).toEqual({
+      focusX: 0.25,
+      focusY: 0.625,
+      zoom: 2,
+    })
+  })
+
+  it('moves the selected source region one-to-one with a pointer drag', () => {
+    expect(moveDeviceImageCrop({ ...defaultDeviceImageCrop, zoom: 2 }, 75, 0, 800, 400)).toEqual({
+      focusX: 0.40625,
+      focusY: 0.5,
+      zoom: 2,
+    })
+  })
+
   it.each([
     ['black', [0, 0, 0], 0x00],
     ['white', [255, 255, 255], 0x55],
