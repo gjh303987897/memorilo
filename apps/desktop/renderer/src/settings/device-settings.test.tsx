@@ -148,13 +148,18 @@ describe('device settings', () => {
     }
     const rendered = render(<DeviceSettings client={client} />)
 
-    fireEvent.click(rendered.getByRole('button', { name: 'Bluetooth' }))
-    expect(connect).toHaveBeenCalledWith('bluetooth')
-    expect(rendered.getByRole('status')).toHaveTextContent('Scanning for nearby')
+    await waitFor(() => {
+      expect(connect).toHaveBeenCalledWith('bluetooth')
+      expect(connect).toHaveBeenCalledWith('serial')
+      expect(rendered.getByRole('status')).toHaveTextContent('Scanning for nearby')
+    })
 
-    act(() => devicesListener?.([{ deviceId: 'device-1', deviceName: 'Desk display' }]))
+    act(() => devicesListener?.([{ deviceId: 'port-1', deviceName: 'Memorilo · USB Serial/JTAG (COM4)', transport: 'serial' }]))
+    act(() => devicesListener?.([{ deviceId: 'device-1', deviceName: 'Desk display', transport: 'bluetooth' }]))
+    expect(rendered.getByRole('button', { name: /Memorilo · USB Serial\/JTAG/ })).toBeInTheDocument()
+    expect(rendered.getAllByRole('button', { name: 'Refresh' })[0]).toBeEnabled()
     fireEvent.click(rendered.getByRole('button', { name: /Desk display/ }))
-    expect(selectDevice).toHaveBeenCalledWith({ deviceId: 'device-1', deviceName: 'Desk display' })
+    expect(selectDevice).toHaveBeenCalledWith({ deviceId: 'device-1', deviceName: 'Desk display', transport: 'bluetooth' })
 
     act(() => pairingListener?.({
       deviceId: 'device-1',
@@ -174,7 +179,7 @@ describe('device settings', () => {
         fireEvent.click(rendered.getByRole('button', { name: 'Cancel' }))
       else
         rendered.unmount()
-      await waitFor(() => expect(interrupted).toHaveBeenCalledOnce())
+      await waitFor(() => expect(interrupted).toHaveBeenCalledTimes(2))
       expect(hasLocalManagementToken).not.toHaveBeenCalled()
       if (scenario === 'cancel-connection')
         rendered.unmount()
@@ -245,7 +250,7 @@ describe('device settings', () => {
       disconnectedListener?.()
     })
     expect(rendered.getByRole('button', { name: 'Apply settings' })).toBeDisabled()
-    expect(rendered.getByRole('button', { name: 'Bluetooth' })).toBeEnabled()
+    expect(rendered.getAllByRole('button', { name: 'Refresh' })[0]).toBeEnabled()
     expect(rendered.getByText('Disconnected')).toBeInTheDocument()
     expect(rendered.getByRole('textbox', { name: 'Device name' })).toBeInTheDocument()
     expect(rendered.queryByRole('button', { name: 'Load status' })).not.toBeInTheDocument()
@@ -254,6 +259,6 @@ describe('device settings', () => {
 
     rendered.unmount()
     expect(close).toHaveBeenCalledOnce()
-    expect(cancelSelection).toHaveBeenCalledOnce()
+    expect(cancelSelection).toHaveBeenCalledTimes(2)
   })
 })

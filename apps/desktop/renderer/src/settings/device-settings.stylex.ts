@@ -193,6 +193,9 @@ export const deviceSettingsStyles = stylex.create({
     textAlign: 'left',
   },
   deviceName: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 7,
     overflow: 'hidden',
     fontSize: 12,
     fontWeight: 600,

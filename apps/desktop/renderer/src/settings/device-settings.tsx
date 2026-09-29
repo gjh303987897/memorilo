@@ -9,7 +9,7 @@ import { Button, SelectField, Status, Switch, TextField } from '@memorilo/ui'
 import * as stylex from '@stylexjs/stylex'
 import { Effect } from 'effect'
 import { Bluetooth, ChevronRight, RefreshCw, Usb } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { DeviceGallery } from './device-gallery'
@@ -84,10 +84,19 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
   const connectionRef = useRef<DeviceProvisioningSession | null>(null)
   const unsubscribeDisconnectRef = useRef<(() => void) | null>(null)
   const pairingRef = useRef<DesktopProvisioningPairingRequest | null>(null)
+  const discoveredDevicesRef = useRef(new Map<DeviceProvisioningTransport, readonly DesktopProvisioningDevice[]>())
 
   useEffect(() => {
-    const unsubscribeDevices = service.subscribeDevices((nextDevices) => {
-      setDevices(nextDevices)
+    const discoveredDevices = discoveredDevicesRef.current
+    const unsubscribeDevices = service.subscribeDevices((nextDevices, sourceTransport) => {
+      const transport = sourceTransport ?? nextDevices[0]?.transport ?? 'bluetooth'
+      discoveredDevicesRef.current.set(transport, nextDevices)
+      const merged = new Map<string, DesktopProvisioningDevice>()
+      for (const candidates of discoveredDevicesRef.current.values()) {
+        for (const device of candidates)
+          merged.set(`${device.transport}:${device.deviceId}`, device)
+      }
+      setDevices([...merged.values()])
       setPhase(current => current === 'scanning' || current === 'selecting' ? 'selecting' : current)
     })
     const unsubscribePairing = service.subscribePairing((request) => {
@@ -100,6 +109,7 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
       operation.current += 1
       scanControllerRef.current?.abort()
       scanControllerRef.current = null
+      discoveredDevices.clear()
       unsubscribeDevices()
       unsubscribePairing()
       const pendingPairing = pairingRef.current
@@ -119,7 +129,7 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
     }
   }, [service])
 
-  const startScan = async (transport: DeviceProvisioningTransport): Promise<void> => {
+  const refreshDevices = useCallback(async (): Promise<void> => {
     const currentOperation = ++operation.current
     scanControllerRef.current?.abort()
     const controller = new AbortController()
@@ -134,58 +144,82 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
       return
     setConnection(null)
     setConnected(false)
-    setActiveTransport(transport)
     setWifiNetworks([])
+    discoveredDevicesRef.current.clear()
     setDevices([])
     setPairing(null)
     pairingRef.current = null
     setErrorCode(null)
     setPhase('scanning')
-    try {
-      const nextConnection = await Effect.runPromise(service.connect(transport), { signal: controller.signal })
-      if (operation.current !== currentOperation) {
-        await Effect.runPromise(nextConnection.close())
-        return
+    let settled = 0
+    let failed = 0
+    const connect = async (transport: DeviceProvisioningTransport): Promise<void> => {
+      try {
+        const nextConnection = await Effect.runPromise(service.connect(transport), { signal: controller.signal })
+        if (operation.current !== currentOperation) {
+          await Effect.runPromise(nextConnection.close())
+          return
+        }
+        // The user selected one entry from the merged list. Cancel the other
+        // platform chooser as soon as a real connection has been established.
+        await Effect.runPromise(service.cancelSelection()).catch(() => undefined)
+        connectionRef.current = nextConnection
+        setActiveTransport(transport)
+        const credentialStored = await Effect.runPromise(service.hasLocalManagementToken(nextConnection.device.info.deviceId), { signal: controller.signal })
+        if (operation.current !== currentOperation) {
+          connectionRef.current = null
+          await Effect.runPromise(nextConnection.close())
+          return
+        }
+        await Effect.runPromise(service.saveTodoTarget(
+          nextConnection.device.info.deviceId,
+          deviceAddressForDeviceId(nextConnection.device.info.deviceId),
+        ), { signal: controller.signal })
+        if (operation.current !== currentOperation) {
+          connectionRef.current = null
+          await Effect.runPromise(nextConnection.close())
+          return
+        }
+        setConnection(nextConnection)
+        setConnected(nextConnection.connected)
+        unsubscribeDisconnectRef.current = nextConnection.subscribeDisconnected(() => {
+          setConnected(false)
+        })
+        setForm(formFromConfig(nextConnection.device.config))
+        setLocalManagementCredentialStored(credentialStored)
+        setPendingLocalManagement(null)
+        setPhase('ready')
       }
-      connectionRef.current = nextConnection
-      const credentialStored = await Effect.runPromise(service.hasLocalManagementToken(nextConnection.device.info.deviceId), { signal: controller.signal })
-      if (operation.current !== currentOperation) {
-        connectionRef.current = null
-        await Effect.runPromise(nextConnection.close())
-        return
+      catch (error) {
+        failed += 1
+        if (operation.current === currentOperation && settled === 1 && failed === 2)
+          handleError(error, setErrorCode, setPhase)
       }
-      await Effect.runPromise(service.saveTodoTarget(
-        nextConnection.device.info.deviceId,
-        deviceAddressForDeviceId(nextConnection.device.info.deviceId),
-      ), { signal: controller.signal })
-      if (operation.current !== currentOperation) {
-        connectionRef.current = null
-        await Effect.runPromise(nextConnection.close())
-        return
+      finally {
+        settled += 1
+        if (settled === 2 && scanControllerRef.current === controller)
+          scanControllerRef.current = null
       }
-      setConnection(nextConnection)
-      setConnected(nextConnection.connected)
-      unsubscribeDisconnectRef.current = nextConnection.subscribeDisconnected(() => {
-        setConnected(false)
-      })
-      setForm(formFromConfig(nextConnection.device.config))
-      setLocalManagementCredentialStored(credentialStored)
-      setPendingLocalManagement(null)
-      setPhase('ready')
     }
-    catch (error) {
-      if (operation.current !== currentOperation)
-        return
-      setDevices([])
-      handleError(error, setErrorCode, setPhase)
+    void Promise.all([
+      connect('bluetooth'),
+      connect('serial'),
+    ])
+  }, [service])
+
+  useEffect(() => {
+    let active = true
+    queueMicrotask(() => {
+      if (active)
+        void refreshDevices()
+    })
+    return () => {
+      active = false
     }
-    finally {
-      if (scanControllerRef.current === controller)
-        scanControllerRef.current = null
-    }
-  }
+  }, [refreshDevices])
 
   const selectDevice = async (device: DesktopProvisioningDevice): Promise<void> => {
+    setActiveTransport(device.transport)
     setPhase('connecting')
     try {
       await Effect.runPromise(service.selectDevice(device))
@@ -372,7 +406,7 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
 
   const statusKey = statusTranslationKey(phase, errorCode)
   const canCancel = phase === 'connecting' || phase === 'pairing' || phase === 'scanning' || phase === 'selecting'
-  const scanDisabled = phase === 'applying' || canCancel
+  const scanDisabled = phase === 'applying' || phase === 'connecting' || phase === 'pairing' || phase === 'scanning'
 
   return (
     <div {...stylex.props(styles.root)}>
@@ -399,11 +433,9 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
             ? null
             : (
                 <div {...stylex.props(styles.connectionActions)}>
-                  <Button disabled={scanDisabled} variant="primary" xstyle={styles.compactButton} onClick={() => void startScan('bluetooth')}>
-                    {t('deviceScanBluetooth')}
-                  </Button>
-                  <Button disabled={scanDisabled} variant="secondary" xstyle={styles.compactButton} onClick={() => void startScan('serial')}>
-                    {t('deviceConnectSerial')}
+                  <Button disabled={scanDisabled} variant="primary" xstyle={styles.compactButton} onClick={() => void refreshDevices()}>
+                    <RefreshCw aria-hidden="true" size={14} />
+                    {t('deviceRefresh')}
                   </Button>
                 </div>
               )}
@@ -416,13 +448,18 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
                 <div {...stylex.props(styles.deviceList)}>
                   {devices.map(device => (
                     <Button
-                      key={device.deviceId}
+                      key={`${device.transport}:${device.deviceId}`}
                       variant="plain"
                       xstyle={styles.deviceButton}
                       disabled={phase !== 'selecting'}
                       onClick={() => void selectDevice(device)}
                     >
-                      <span {...stylex.props(styles.deviceName)}>{device.deviceName || t('deviceUnnamed')}</span>
+                      <span {...stylex.props(styles.deviceName)}>
+                        {device.transport === 'serial'
+                          ? <Usb aria-hidden="true" size={14} />
+                          : <Bluetooth aria-hidden="true" size={14} />}
+                        {device.deviceName || t('deviceUnnamed')}
+                      </span>
                       <span {...stylex.props(styles.deviceAction)}>
                         {t('deviceSelect')}
                         <ChevronRight aria-hidden="true" size={13} />

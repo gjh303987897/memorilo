@@ -9,6 +9,7 @@ import type {
   DesktopProvisioningDevice,
   DesktopProvisioningPairingRequest,
   DesktopProvisioningPairingResponse,
+  DesktopProvisioningTransport,
 } from '@memorilo/desktop-api'
 import type {
   ApplyConfigEnvelope,
@@ -60,7 +61,7 @@ export class DeviceProvisioningError extends Data.TaggedError('DeviceProvisionin
   readonly code: 'apply-rejected' | 'bluetooth-unavailable' | 'connection-failed' | 'gallery-unavailable' | 'local-management' | 'protocol-error' | 'secure-storage' | 'serial-unavailable' | 'timeout' | 'wifi-scan-unavailable'
 }> {}
 
-export type DeviceProvisioningTransport = 'bluetooth' | 'serial'
+export type DeviceProvisioningTransport = DesktopProvisioningTransport
 
 export interface ProvisionedDevice {
   readonly config: PublicConfigEnvelope
@@ -140,8 +141,8 @@ interface PairingBridge {
   saveLocalManagementToken: (deviceId: string, token: string) => Promise<void>
   saveTodoTarget: (deviceId: string, address: string | null) => Promise<void>
   setGallerySlideshow: (target: DesktopDeviceGalleryTarget, intervalSeconds: number | null) => Promise<void>
-  selectDevice: (deviceId: string) => Promise<void>
-  subscribeDevices: (listener: (devices: readonly DesktopProvisioningDevice[]) => void) => () => void
+  selectDevice: (deviceId: string, transport?: DeviceProvisioningTransport) => Promise<void>
+  subscribeDevices: (listener: (devices: readonly DesktopProvisioningDevice[], transport?: DeviceProvisioningTransport) => void) => () => void
   subscribePairing: (listener: (request: DesktopProvisioningPairingRequest) => void) => () => void
   uploadGalleryAsset: (input: DesktopDeviceGalleryUpload, onProgress?: GalleryUploadProgressListener) => Promise<void>
 }
@@ -167,7 +168,7 @@ export interface DeviceProvisioningClient {
   saveTodoTarget: (deviceId: string, address: string | null) => Effect.Effect<void, DeviceProvisioningError>
   setGallerySlideshow: (target: DesktopDeviceGalleryTarget, intervalSeconds: number | null) => Effect.Effect<void, DeviceProvisioningError>
   selectDevice: (device: DesktopProvisioningDevice) => Effect.Effect<void, DeviceProvisioningError>
-  subscribeDevices: (listener: (devices: readonly DesktopProvisioningDevice[]) => void) => () => void
+  subscribeDevices: (listener: (devices: readonly DesktopProvisioningDevice[], transport?: DeviceProvisioningTransport) => void) => () => void
   subscribePairing: (listener: (request: DesktopProvisioningPairingRequest) => void) => () => void
   uploadGalleryAsset: (input: DesktopDeviceGalleryUpload, onProgress?: GalleryUploadProgressListener) => Effect.Effect<void, DeviceProvisioningError>
 }
@@ -916,7 +917,7 @@ export class DeviceProvisioningService {
   }
 
   selectDevice(device: DesktopProvisioningDevice): Effect.Effect<void, DeviceProvisioningError> {
-    return this.bridgeEffect(() => this.bridge.selectDevice(device.deviceId))
+    return this.bridgeEffect(() => this.bridge.selectDevice(device.deviceId, device.transport))
   }
 
   cancelSelection(): Effect.Effect<void, DeviceProvisioningError> {
@@ -998,7 +999,7 @@ export class DeviceProvisioningService {
     return this.managementEffect(() => this.bridge.uploadGalleryAsset(input, onProgress))
   }
 
-  subscribeDevices(listener: (devices: readonly DesktopProvisioningDevice[]) => void): () => void {
+  subscribeDevices(listener: (devices: readonly DesktopProvisioningDevice[], transport?: DeviceProvisioningTransport) => void): () => void {
     return this.bridge.subscribeDevices(listener)
   }
 

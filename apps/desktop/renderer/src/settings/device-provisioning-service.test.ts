@@ -824,7 +824,7 @@ describe('deviceProvisioningService', () => {
     const adapter: BluetoothAdapter = { requestDevice: vi.fn() }
     const provisioning = new DeviceProvisioningService(adapter, bridge)
 
-    await Effect.runPromise(provisioning.selectDevice({ deviceId: 'device-1', deviceName: 'Desk' }))
+    await Effect.runPromise(provisioning.selectDevice({ deviceId: 'device-1', deviceName: 'Desk', transport: 'bluetooth' }))
     await Effect.runPromise(provisioning.respondToPairing({
       confirmed: true,
       pin: '123456',
@@ -832,7 +832,7 @@ describe('deviceProvisioningService', () => {
     }))
     await Effect.runPromise(provisioning.cancelSelection())
 
-    expect(bridge.selectDevice).toHaveBeenCalledWith('device-1')
+    expect(bridge.selectDevice).toHaveBeenCalledWith('device-1', 'bluetooth')
     expect(bridge.respondToPairing).toHaveBeenCalledWith(expect.objectContaining({ pin: '123456' }))
     expect(bridge.cancelSelection).toHaveBeenCalledOnce()
   })
