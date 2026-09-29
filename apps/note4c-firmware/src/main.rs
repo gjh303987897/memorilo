@@ -28,7 +28,9 @@ mod firmware {
     #[cfg(not(feature = "color-test"))]
     use memorilo_device_firmware::gallery::{EspPartitionGalleryStorage, GalleryRepository};
     #[cfg(not(feature = "color-test"))]
-    use memorilo_device_firmware::gallery_idle::GalleryIdleFullscreen;
+    use memorilo_device_firmware::gallery_idle::{
+        GalleryIdleFullscreen, gallery_slideshow_interval,
+    };
     #[cfg(not(feature = "color-test"))]
     use memorilo_device_firmware::input::{ButtonId, Gesture, GestureRecognizer, route_gesture};
     #[cfg(not(feature = "color-test"))]
@@ -49,8 +51,15 @@ mod firmware {
     use memorilo_device_firmware::provisioning_ble::BleProvisioningTransport;
     #[cfg(not(feature = "color-test"))]
     use memorilo_device_firmware::provisioning_protocol::{
-        ApplyStatus, CONFIG_SCHEMA_VERSION, DeviceInfoEnvelope, PROTOCOL_VERSION,
-        ProtocolErrorCode, PublicConfigEnvelope,
+        ApplyConfigEnvelope, ApplyStatus, ApplyStatusEnvelope, CONFIG_SCHEMA_VERSION,
+        DeviceInfoEnvelope, PROTOCOL_VERSION, ProtocolErrorCode, PublicConfigEnvelope, WifiNetwork,
+        encode_frames,
+    };
+    #[cfg(not(feature = "color-test"))]
+    use memorilo_device_firmware::provisioning_serial::{
+        SerialProvisioningCommand, SerialProvisioningTransport, decode_gallery_bytes,
+        encode_apply_response, encode_gallery_error_response, encode_gallery_status_response,
+        encode_read_response, encode_wifi_scan_response,
     };
     #[cfg(not(feature = "color-test"))]
     use memorilo_device_firmware::todo_sync::{Admission, TodoSyncEvent};
@@ -184,10 +193,18 @@ mod firmware {
             spawn_display_task(refresh_rx, result_tx, display)?;
             let mut coordinator = DisplayCoordinator::new(DisplayPolicy::default());
             let mut gallery_idle = GalleryIdleFullscreen::default();
+            let mut gallery_mutation_revision = 0_u64;
             let mut slideshow_due: Option<Duration> = None;
             let mut gesture_recognizer = GestureRecognizer::default();
             let mut provisioning = ProvisioningSession::new(persistence.generation());
             let mut provisioning_transport: Option<BleProvisioningTransport> = None;
+            let serial_provisioning_transport = match SerialProvisioningTransport::open() {
+                Ok(transport) => Some(transport),
+                Err(error) => {
+                    log::error!("USB serial provisioning unavailable: {error:#}");
+                    None
+                }
+            };
             queue_render(
                 &mut application,
                 &mut coordinator,
@@ -410,6 +427,10 @@ mod firmware {
                         &network,
                         &mut application,
                         &mut persistence,
+                        &mut gallery,
+                        &mut gallery_mutation_revision,
+                        &mut coordinator,
+                        &refresh_tx,
                         &mut power,
                     )?;
                 }
@@ -429,8 +450,85 @@ mod firmware {
                         &network,
                         &mut application,
                         &mut persistence,
+                        &mut gallery,
+                        &mut gallery_mutation_revision,
+                        &mut coordinator,
+                        &refresh_tx,
                         &mut power,
                     )?;
+                }
+                if let Some(serial) = &serial_provisioning_transport {
+                    while let Some(command) = serial.try_recv()? {
+                        match command {
+                            SerialProvisioningCommand::Read { request_id } => {
+                                let info = device_info(&persistence)?;
+                                let public = public_config(&application, persistence.generation());
+                                serial.write(&encode_read_response(
+                                    &request_id,
+                                    &info,
+                                    &public,
+                                )?)?;
+                            }
+                            SerialProvisioningCommand::ScanWifi { request_id } => {
+                                let networks = network
+                                    .scan_wifi()?
+                                    .into_iter()
+                                    .map(|network| WifiNetwork {
+                                        ssid: network.ssid,
+                                        rssi: network.rssi,
+                                        security: network.security.to_string(),
+                                    })
+                                    .collect::<Vec<_>>();
+                                serial
+                                    .write(&encode_wifi_scan_response(&request_id, &networks)?)?;
+                            }
+                            SerialProvisioningCommand::Apply(request) => {
+                                let status = commit_provisioning_request(
+                                    &request,
+                                    now,
+                                    &network,
+                                    &mut application,
+                                    &mut persistence,
+                                )?;
+                                serial
+                                    .write(&encode_apply_response(&request.request_id, &status)?)?;
+                            }
+                            SerialProvisioningCommand::Gallery(request) => {
+                                let operation = request.operation.clone();
+                                let request_id = request.request_id.clone();
+                                let result = handle_gallery_request(request, &mut gallery);
+                                if result.is_ok() && operation != "gallery.list" {
+                                    gallery_mutation_revision =
+                                        gallery_mutation_revision.saturating_add(1);
+                                    let catalog = gallery.catalog().clone();
+                                    network.publish_gallery(catalog.clone(), None)?;
+                                    let transition = application
+                                        .dispatch(ApplicationCommand::GalleryUpdated(catalog));
+                                    sync_gallery_frame(&mut application, &mut gallery);
+                                    queue_render(
+                                        &mut application,
+                                        &mut coordinator,
+                                        &refresh_tx,
+                                        transition.render,
+                                    )?;
+                                }
+                                let response = match result {
+                                    Ok(()) => encode_gallery_status_response(
+                                        &operation,
+                                        &request_id,
+                                        gallery.catalog(),
+                                        gallery_mutation_revision,
+                                    )?,
+                                    Err(error) => encode_gallery_error_response(
+                                        &operation,
+                                        &request_id,
+                                        error,
+                                    )?,
+                                };
+                                serial.write(&response)?;
+                            }
+                        }
+                    }
                 }
                 let output = provisioning.poll(now);
                 handle_provisioning_output(
@@ -441,6 +539,10 @@ mod firmware {
                     &network,
                     &mut application,
                     &mut persistence,
+                    &mut gallery,
+                    &mut gallery_mutation_revision,
+                    &mut coordinator,
+                    &refresh_tx,
                     &mut power,
                 )?;
                 sync_provisioning_ui(
@@ -487,17 +589,19 @@ mod firmware {
                 }
 
                 let slideshow_interval = (application.snapshot().page
-                    == memorilo_device_firmware::application::PageId::Gallery
-                    && application.snapshot().gallery.fullscreen)
-                    .then_some(
-                        application
-                            .snapshot()
-                            .gallery
-                            .catalog
-                            .slideshow_interval_seconds,
-                    )
-                    .flatten()
-                    .map(|seconds| Duration::from_secs(u64::from(seconds)));
+                    == memorilo_device_firmware::application::PageId::Gallery)
+                    .then(|| {
+                        gallery_slideshow_interval(
+                            application.snapshot().gallery.fullscreen,
+                            application.snapshot().gallery.catalog.assets.len(),
+                            application
+                                .snapshot()
+                                .gallery
+                                .catalog
+                                .slideshow_interval_seconds,
+                        )
+                    })
+                    .flatten();
                 match (slideshow_interval, slideshow_due) {
                     (Some(interval), Some(due_at)) if now >= due_at => {
                         let transition = application.dispatch(ApplicationCommand::SelectNext);
@@ -567,6 +671,10 @@ mod firmware {
                             &network,
                             &mut application,
                             &mut persistence,
+                            &mut gallery,
+                            &mut gallery_mutation_revision,
+                            &mut coordinator,
+                            &refresh_tx,
                             &mut power,
                         )?;
                         sync_provisioning_ui(
@@ -707,6 +815,10 @@ mod firmware {
         network: &NetworkRuntime,
         application: &mut Application,
         persistence: &mut PersistenceManager<EspNvsBlobStore>,
+        gallery: &mut GalleryRepository<EspPartitionGalleryStorage>,
+        gallery_mutation_revision: &mut u64,
+        coordinator: &mut DisplayCoordinator,
+        refresh_tx: &SyncSender<RefreshRequest>,
         power: &mut PowerCoordinator,
     ) -> Result<()> {
         match output {
@@ -715,14 +827,7 @@ mod firmware {
                 if transport.is_some() {
                     return Ok(());
                 }
-                let info = DeviceInfoEnvelope {
-                    protocol_version: PROTOCOL_VERSION,
-                    config_schema_version: CONFIG_SCHEMA_VERSION,
-                    firmware_version: env!("CARGO_PKG_VERSION").into(),
-                    device_id: device_id()?,
-                    config_revision: persistence.generation(),
-                    capabilities: vec!["config-v1".into()],
-                };
+                let info = device_info(persistence)?;
                 let public = public_config(application, persistence.generation());
                 match BleProvisioningTransport::open(
                     provisioning
@@ -748,63 +853,72 @@ mod firmware {
                 }
             }
             SessionOutput::Apply(request) => {
-                let request_id = request.request_id.clone();
                 provisioning.mark_applying();
-                let candidate = match apply_config(
-                    &application.persistent_state(),
-                    persistence.generation(),
-                    &request,
-                ) {
-                    Ok(candidate) => candidate,
-                    Err(error) => {
-                        provisioning.mark_rejected();
-                        if let Some(transport) = transport.as_ref() {
-                            transport.notify_status(&provisioning.status(
-                                request_id,
-                                ApplyStatus::Rejected,
-                                Some(error),
-                            ))?;
-                        }
-                        return Ok(());
-                    }
-                };
-
-                persistence.schedule(candidate.clone(), now);
-                if let Err(error) = persistence.flush() {
-                    log::error!("provisioning configuration commit failed: {error}");
+                let status =
+                    commit_provisioning_request(&request, now, network, application, persistence)?;
+                if status.status == ApplyStatus::Accepted {
+                    provisioning.mark_applied(status.revision, now);
+                } else if status.error == Some(ProtocolErrorCode::StorageFailure) {
                     provisioning.mark_failed_after_status(now);
-                    if let Some(transport) = transport.as_ref() {
-                        transport.notify_status(&provisioning.status(
-                            request_id,
-                            ApplyStatus::Rejected,
-                            Some(ProtocolErrorCode::StorageFailure),
-                        ))?;
-                    }
-                    return Ok(());
+                } else {
+                    provisioning.mark_rejected();
                 }
-
-                let applied =
-                    application.dispatch(ApplicationCommand::ConfigApplied(candidate.config));
-                if applied
-                    .service_requests
-                    .contains(&ServiceRequest::Reconfigure(ServiceId::Network))
-                {
-                    network.reconfigure(NetworkConfiguration::from_device_config(
-                        &application.snapshot().config,
-                    ))?;
-                }
-                provisioning.mark_applied(persistence.generation(), now);
                 if let Some(transport) = transport.as_ref() {
-                    transport.notify_status(&provisioning.status(
-                        request_id,
-                        ApplyStatus::Accepted,
-                        None,
-                    ))?;
+                    transport.notify_status(&status)?;
                 }
-                log::info!(
-                    "provisioning configuration committed revision={}",
-                    persistence.generation()
-                );
+            }
+            SessionOutput::ScanWifi(request) => {
+                let networks = network
+                    .scan_wifi()?
+                    .into_iter()
+                    .map(|network| WifiNetwork {
+                        ssid: network.ssid,
+                        rssi: network.rssi,
+                        security: network.security.to_owned(),
+                    })
+                    .collect::<Vec<_>>();
+                if let Some(transport) = transport.as_ref() {
+                    transport.notify_wifi_scan(&request.request_id, &networks)?;
+                }
+            }
+            SessionOutput::Gallery(request) => {
+                let operation = request.operation.clone();
+                let request_id = request.request_id.clone();
+                let result = handle_gallery_request(request, gallery);
+                if result.is_ok() && operation != "gallery.list" {
+                    *gallery_mutation_revision = (*gallery_mutation_revision).saturating_add(1);
+                    let catalog = gallery.catalog().clone();
+                    network.publish_gallery(catalog.clone(), None)?;
+                    let transition =
+                        application.dispatch(ApplicationCommand::GalleryUpdated(catalog));
+                    sync_gallery_frame(application, gallery);
+                    queue_render(application, coordinator, refresh_tx, transition.render)?;
+                }
+                let payload = match result {
+                    Ok(()) => encode_gallery_status_response(
+                        &operation,
+                        &request_id,
+                        gallery.catalog(),
+                        *gallery_mutation_revision,
+                    )?,
+                    Err(error) => encode_gallery_error_response(&operation, &request_id, error)?,
+                };
+                // Serial response encoder includes its line prefix; BLE carries only JSON frames.
+                let json = payload
+                    .strip_prefix(
+                        memorilo_device_firmware::provisioning_serial::SERIAL_PROVISIONING_PREFIX
+                            .as_bytes(),
+                    )
+                    .and_then(|value| value.strip_suffix(b"\n"))
+                    .unwrap_or(payload.as_slice());
+                let frames = encode_frames(0x4752_4C59, json, 180).map_err(|error| {
+                    anyhow::anyhow!("gallery response framing failed: {error:?}")
+                })?;
+                if let Some(transport) = transport.as_ref() {
+                    for frame in frames {
+                        transport.notify_gallery(&frame)?;
+                    }
+                }
             }
             SessionOutput::Reject(error) => {
                 if let Some(transport) = transport.as_ref() {
@@ -825,6 +939,154 @@ mod firmware {
             }
         }
         Ok(())
+    }
+
+    #[cfg(not(feature = "color-test"))]
+    fn handle_gallery_request(
+        request: memorilo_device_firmware::provisioning_protocol::GalleryRequest,
+        gallery: &mut GalleryRepository<EspPartitionGalleryStorage>,
+    ) -> Result<(), ProtocolErrorCode> {
+        match request.operation.as_str() {
+            "gallery.list" => Ok(()),
+            "gallery.upload" => {
+                let bytes = request
+                    .bytes_base64
+                    .as_deref()
+                    .ok_or(ProtocolErrorCode::InvalidRequest)
+                    .and_then(|value| {
+                        decode_gallery_bytes(value)
+                            .map_err(|_| ProtocolErrorCode::InvalidRequest)
+                    })?;
+                if bytes.len() != FRAME_BYTES {
+                    return Err(ProtocolErrorCode::InvalidAssetLength);
+                }
+                apply_gallery_mutation(
+                    gallery,
+                    GalleryMutation::Upload {
+                        name: request.name.unwrap_or_default(),
+                        created_at_unix_seconds: request
+                            .created_at_unix_seconds
+                            .unwrap_or_default(),
+                        bytes,
+                    },
+                )
+                .map_err(gallery_error_code)
+            }
+            "gallery.delete" => apply_gallery_mutation(
+                gallery,
+                GalleryMutation::Delete {
+                    id: memorilo_device_firmware::gallery::GalleryAssetId(
+                        request.id.unwrap_or_default(),
+                    ),
+                },
+            )
+            .map_err(gallery_error_code),
+            "gallery.reorder" => apply_gallery_mutation(
+                gallery,
+                GalleryMutation::Reorder {
+                    order: request
+                        .order
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(memorilo_device_firmware::gallery::GalleryAssetId)
+                        .collect(),
+                },
+            )
+            .map_err(gallery_error_code),
+            "gallery.slideshow" => apply_gallery_mutation(
+                gallery,
+                GalleryMutation::SetSlideshow {
+                    interval_seconds: request.interval_seconds.flatten(),
+                },
+            )
+            .map_err(gallery_error_code),
+            _ => Err(ProtocolErrorCode::InvalidRequest),
+        }
+    }
+
+    #[cfg(not(feature = "color-test"))]
+    fn gallery_error_code(
+        error: memorilo_device_firmware::gallery::GalleryError,
+    ) -> ProtocolErrorCode {
+        use memorilo_device_firmware::gallery::GalleryError;
+        match error {
+            GalleryError::AssetNotFound => ProtocolErrorCode::AssetNotFound,
+            GalleryError::CapacityExceeded => ProtocolErrorCode::CapacityExceeded,
+            GalleryError::InvalidAssetLength { .. } => ProtocolErrorCode::InvalidAssetLength,
+            GalleryError::InvalidAssetName => ProtocolErrorCode::InvalidAssetName,
+            GalleryError::InvalidOrder => ProtocolErrorCode::InvalidOrder,
+            GalleryError::InvalidSlideshowInterval => ProtocolErrorCode::InvalidSlideshowInterval,
+            GalleryError::Storage(_) => ProtocolErrorCode::StorageFailure,
+        }
+    }
+
+    #[cfg(not(feature = "color-test"))]
+    fn commit_provisioning_request(
+        request: &ApplyConfigEnvelope,
+        now: Duration,
+        network: &NetworkRuntime,
+        application: &mut Application,
+        persistence: &mut PersistenceManager<EspNvsBlobStore>,
+    ) -> Result<ApplyStatusEnvelope> {
+        let rejected = |revision, error| ApplyStatusEnvelope {
+            protocol_version: PROTOCOL_VERSION,
+            request_id: request.request_id.clone(),
+            status: ApplyStatus::Rejected,
+            revision,
+            error: Some(error),
+        };
+        let candidate = match apply_config(
+            &application.persistent_state(),
+            persistence.generation(),
+            request,
+        ) {
+            Ok(candidate) => candidate,
+            Err(error) => return Ok(rejected(persistence.generation(), error)),
+        };
+
+        persistence.schedule(candidate.clone(), now);
+        if let Err(error) = persistence.flush() {
+            log::error!("provisioning configuration commit failed: {error}");
+            return Ok(rejected(
+                persistence.generation(),
+                ProtocolErrorCode::StorageFailure,
+            ));
+        }
+
+        let applied = application.dispatch(ApplicationCommand::ConfigApplied(candidate.config));
+        if applied
+            .service_requests
+            .contains(&ServiceRequest::Reconfigure(ServiceId::Network))
+        {
+            network.reconfigure(NetworkConfiguration::from_device_config(
+                &application.snapshot().config,
+            ))?;
+        }
+        log::info!(
+            "provisioning configuration committed revision={}",
+            persistence.generation()
+        );
+        Ok(ApplyStatusEnvelope {
+            protocol_version: PROTOCOL_VERSION,
+            request_id: request.request_id.clone(),
+            status: ApplyStatus::Accepted,
+            revision: persistence.generation(),
+            error: None,
+        })
+    }
+
+    #[cfg(not(feature = "color-test"))]
+    fn device_info(
+        persistence: &PersistenceManager<EspNvsBlobStore>,
+    ) -> Result<DeviceInfoEnvelope> {
+        Ok(DeviceInfoEnvelope {
+            protocol_version: PROTOCOL_VERSION,
+            config_schema_version: CONFIG_SCHEMA_VERSION,
+            firmware_version: env!("CARGO_PKG_VERSION").into(),
+            device_id: device_id()?,
+            config_revision: persistence.generation(),
+            capabilities: vec!["config-v1".into()],
+        })
     }
 
     #[cfg(not(feature = "color-test"))]
@@ -932,9 +1194,7 @@ mod firmware {
         application: &mut Application,
         gallery: &mut GalleryRepository<EspPartitionGalleryStorage>,
     ) {
-        if application.snapshot().page != memorilo_device_firmware::application::PageId::Gallery
-            || !application.snapshot().gallery.fullscreen
-        {
+        if application.snapshot().page != memorilo_device_firmware::application::PageId::Gallery {
             application.dispatch(ApplicationCommand::GalleryFrameLoaded(None));
             return;
         }
@@ -977,7 +1237,7 @@ mod firmware {
         let mut framebuffer = application
             .snapshot()
             .gallery
-            .fullscreen_frame
+            .selected_frame
             .clone()
             .filter(|_| {
                 application.snapshot().page

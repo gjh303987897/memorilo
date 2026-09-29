@@ -10,7 +10,7 @@ use u8g2_fonts::types::{FontColor, VerticalPosition};
 
 use crate::application::{ApplicationSnapshot, PageId};
 use crate::device_status::{ChargeState, RtcStatus};
-use crate::framebuffer::{Color, FRAME_BYTES, HEIGHT, WIDTH, set_pixel};
+use crate::framebuffer::{Color, FRAME_BYTES, HEIGHT, WIDTH, color_at, set_pixel};
 use crate::glance::{GregorianDate, WeatherCondition, WeatherPhase, calendar_month, is_leap_year};
 use crate::model::Status;
 use crate::provisioning::ProvisioningPhase;
@@ -424,6 +424,47 @@ impl<'a> RawDraw<'a> {
         });
     }
 
+    pub fn image_contain(&mut self, bounds: Bounds, framebuffer: &[u8]) -> Option<Bounds> {
+        if framebuffer.len() != FRAME_BYTES || bounds.width <= 4 || bounds.height <= 4 {
+            return None;
+        }
+        self.canvas.stroke_rect(bounds, 1, self.theme.text);
+        let viewport = bounds.inset(2);
+        self.canvas.fill_rect(viewport, self.theme.background);
+        let (width, height) = if viewport.width * HEIGHT as i32 <= viewport.height * WIDTH as i32 {
+            (
+                viewport.width,
+                viewport.width * HEIGHT as i32 / WIDTH as i32,
+            )
+        } else {
+            (
+                viewport.height * WIDTH as i32 / HEIGHT as i32,
+                viewport.height,
+            )
+        };
+        let destination = Bounds::new(
+            viewport.x + (viewport.width - width) / 2,
+            viewport.y + (viewport.height - height) / 2,
+            width,
+            height,
+        );
+        self.canvas.with_clip(destination, |canvas| {
+            for y in 0..height {
+                let source_y = (y as usize * HEIGHT) / height as usize;
+                for x in 0..width {
+                    let source_x = (x as usize * WIDTH) / width as usize;
+                    set_pixel(
+                        canvas.framebuffer,
+                        destination.x + x,
+                        destination.y + y,
+                        color_at(framebuffer, source_x, source_y),
+                    );
+                }
+            }
+        });
+        Some(destination)
+    }
+
     pub fn dialog(&mut self, bounds: Bounds, title: &str, body: &str) {
         self.canvas.fill_rect(bounds, self.theme.background);
         self.canvas.stroke_rect(bounds, 3, self.theme.accent);
@@ -745,26 +786,34 @@ impl RawDrawUiManager {
                 self.theme.text,
             );
         } else {
-            const CAPACITY: usize = 6;
-            const ROW_HEIGHT: i32 = 38;
-            let viewport =
-                ListViewport::around(catalog.assets.len(), snapshot.gallery.selected, CAPACITY);
-            for item_index in viewport.visible.clone() {
-                let row = viewport
-                    .visual_row(item_index)
-                    .expect("visible gallery item must have a visual row");
-                let asset = &catalog.assets[item_index];
-                let bounds = Bounds::new(8, 38 + row as i32 * ROW_HEIGHT, 384, ROW_HEIGHT - 3);
-                let content = draw.list_row(bounds, item_index == snapshot.gallery.selected);
+            let selected = snapshot.gallery.selected.min(catalog.assets.len() - 1);
+            let asset = &catalog.assets[selected];
+            let playback = if catalog.assets.len() > 1 {
+                catalog
+                    .slideshow_interval_seconds
+                    .map(|seconds| format!("幻灯片 {} 分钟", seconds / 60))
+                    .unwrap_or_else(|| "手动切换".into())
+            } else {
+                "单张".into()
+            };
+            draw.wrapped_text(
+                Bounds::new(10, 35, 380, 14),
+                &format!(
+                    "{} · {:02}/{:02} · {playback}",
+                    asset.name,
+                    selected + 1,
+                    catalog.assets.len()
+                ),
+                1,
+                self.theme.text,
+            );
+            if let Some(frame) = &snapshot.gallery.selected_frame {
+                draw.image_contain(Bounds::new(8, 52, 384, 216), frame);
+            } else {
                 draw.wrapped_text(
-                    Bounds::new(content.x + 5, content.y + 2, 285, 29),
-                    &asset.name,
+                    Bounds::new(24, 132, 352, 28),
+                    "正在读取图片…",
                     2,
-                    self.theme.text,
-                );
-                draw.text(
-                    Point::new(322, content.y + 2),
-                    &format!("{:02}/{:02}", item_index + 1, catalog.assets.len()),
                     self.theme.text,
                 );
             }
@@ -773,13 +822,12 @@ impl RawDrawUiManager {
         draw.separator(276);
         let footer = if let Some(error) = &snapshot.gallery.last_error {
             format!("图库错误: {error}")
-        } else if let Some(seconds) = catalog.slideshow_interval_seconds {
-            format!("确认全屏 / 幻灯片每 {} 分钟", seconds / 60)
+        } else if catalog.assets.len() > 1 {
+            "短按 ↑ 上一张   OK 全屏   ↓ 下一张".into()
+        } else if catalog.assets.len() == 1 {
+            "短按 OK 全屏".into()
         } else {
-            format!(
-                "确认全屏 / 已用 {} KiB / 100 张上限",
-                catalog.used_bytes() / 1024
-            )
+            "在 Memorilo 设置中上传图片".into()
         };
         draw.wrapped_text(Bounds::new(10, 280, 380, 18), &footer, 1, self.theme.text);
 
@@ -787,7 +835,8 @@ impl RawDrawUiManager {
             visible_items: if catalog.assets.is_empty() {
                 0..0
             } else {
-                ListViewport::around(catalog.assets.len(), snapshot.gallery.selected, 6).visible
+                let selected = snapshot.gallery.selected.min(catalog.assets.len() - 1);
+                selected..selected + 1
             },
             page_count: 4,
         }
@@ -1078,12 +1127,13 @@ pub fn render(snapshot: &ApplicationSnapshot, framebuffer: &mut [u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::application::Application;
+    use crate::application::{Application, ApplicationCommand};
     use crate::framebuffer::color_at;
+    use crate::model::{Status, TodoId, TodoItem, TodoModel};
 
     #[test]
     fn chinese_and_english_todo_characters_have_real_glyphs() {
-        for character in "同步设计评审准备设备原型进行中上下选择确认切换设置名称无线网络局域地址未连接时区休眠分钟蓝牙配对等待安全图库为空请在上传四色图片全屏幻灯片每已用张上限错误MemoriloTODO".chars() {
+        for character in "同步设计评审准备设备原型进行中上下选择确认切换设置名称无线网络局域地址未连接时区休眠分钟蓝牙配对等待安全图库为空请在上传四色图片全屏幻灯片每已用张上限错误短按手动单张正在读取MemoriloTODO".chars() {
             assert!(
                 BitmapFont::supports(character),
                 "missing glyph for {character}"
@@ -1139,6 +1189,17 @@ mod tests {
     fn todo_rows_are_not_actionable_and_semantic_widgets_use_four_color_tokens() {
         let mut application = Application::new([]);
         application.start();
+        application.dispatch(ApplicationCommand::TodosSynced(TodoModel {
+            items: (0..6)
+                .map(|index| TodoItem {
+                    id: TodoId(format!("todo-{index}")),
+                    title: format!("Todo {index}"),
+                    due: String::new(),
+                    status: Status::Open,
+                    indent: 0,
+                })
+                .collect(),
+        }));
         let mut framebuffer = vec![0; FRAME_BYTES];
         let metadata = RawDrawUiManager::default().render(application.snapshot(), &mut framebuffer);
 
@@ -1152,6 +1213,47 @@ mod tests {
         assert_eq!(color_at(&widget_frame, 16, 16), Color::Black);
         assert_eq!(color_at(&widget_frame, 35, 14), Color::Red);
         assert_eq!(color_at(&widget_frame, 65, 14), Color::White);
+    }
+
+    #[test]
+    fn gallery_page_renders_the_selected_image_with_status_and_controls_instead_of_a_list() {
+        use crate::application::ApplicationCommand;
+        use crate::gallery::{GalleryAssetId, GalleryAssetMetadata, GalleryCatalog};
+
+        let mut application = Application::new([]);
+        application.start();
+        application.dispatch(ApplicationCommand::GalleryUpdated(GalleryCatalog {
+            assets: vec![
+                GalleryAssetMetadata {
+                    id: GalleryAssetId(1),
+                    name: "one".into(),
+                    created_at_unix_seconds: 0,
+                    checksum: 1,
+                    byte_length: FRAME_BYTES as u32,
+                },
+                GalleryAssetMetadata {
+                    id: GalleryAssetId(2),
+                    name: "two".into(),
+                    created_at_unix_seconds: 0,
+                    checksum: 2,
+                    byte_length: FRAME_BYTES as u32,
+                },
+            ],
+            slideshow_interval_seconds: Some(300),
+        }));
+        application.dispatch(ApplicationCommand::NextPage);
+        application.dispatch(ApplicationCommand::GalleryFrameLoaded(Some(vec![
+            0xff;
+            FRAME_BYTES
+        ])));
+        let mut framebuffer = vec![0x55; FRAME_BYTES];
+
+        let metadata = RawDrawUiManager::default().render(application.snapshot(), &mut framebuffer);
+
+        assert_eq!(metadata.visible_items, 0..1);
+        assert_eq!(color_at(&framebuffer, 200, 150), Color::Red);
+        assert_ne!(color_at(&framebuffer, 200, 15), Color::Red);
+        assert_ne!(color_at(&framebuffer, 200, 285), Color::Red);
     }
 
     #[test]

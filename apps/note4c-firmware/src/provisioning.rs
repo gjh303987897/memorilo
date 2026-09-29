@@ -2,9 +2,9 @@ use std::time::Duration;
 
 use crate::persistence::{PersistentState, validate};
 use crate::provisioning_protocol::{
-    ApplyConfigEnvelope, ApplyStatus, ApplyStatusEnvelope, ChunkFrame, FrameError,
-    PROTOCOL_VERSION, ProtocolErrorCode, decode_frame, parse_apply_request, reassemble_frames,
-    validate_base_revision,
+    ApplyConfigEnvelope, ApplyStatus, ApplyStatusEnvelope, ChunkFrame, FrameError, GalleryRequest,
+    PROTOCOL_VERSION, ProtocolErrorCode, WifiScanRequest, decode_frame, parse_apply_request,
+    parse_gallery_request, parse_wifi_scan_request, reassemble_frames, validate_base_revision,
 };
 
 pub const SESSION_LIFETIME: Duration = Duration::from_secs(5 * 60);
@@ -37,6 +37,8 @@ pub enum ProvisioningEvent {
     AuthenticationFailed,
     Disconnected,
     Frame(Vec<u8>),
+    WifiScan(Vec<u8>),
+    GalleryFrame(Vec<u8>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -44,6 +46,8 @@ pub enum SessionOutput {
     None,
     StartAdvertising { remaining: Duration },
     Apply(Box<ApplyConfigEnvelope>),
+    ScanWifi(WifiScanRequest),
+    Gallery(GalleryRequest),
     Stop,
     Reject(ProtocolErrorCode),
 }
@@ -54,6 +58,7 @@ pub struct ProvisioningSession {
     deadline: Option<Duration>,
     shutdown_at: Option<Duration>,
     frames: Vec<ChunkFrame>,
+    gallery_frames: Vec<ChunkFrame>,
 }
 
 impl ProvisioningSession {
@@ -67,6 +72,7 @@ impl ProvisioningSession {
             deadline: None,
             shutdown_at: None,
             frames: Vec::new(),
+            gallery_frames: Vec::new(),
         }
     }
 
@@ -82,6 +88,7 @@ impl ProvisioningSession {
         self.deadline = Some(now.saturating_add(SESSION_LIFETIME));
         self.shutdown_at = None;
         self.frames.clear();
+        self.gallery_frames.clear();
     }
 
     pub fn on_display_completed(&mut self, revision: u64, now: Duration) -> SessionOutput {
@@ -123,19 +130,45 @@ impl ProvisioningSession {
                 self.fail(ProtocolErrorCode::AuthenticationRequired)
             }
             ProvisioningEvent::Disconnected
-                if !matches!(
+                if matches!(
                     self.snapshot.phase,
-                    ProvisioningPhase::Idle
-                        | ProvisioningPhase::Applied
-                        | ProvisioningPhase::Failed
+                    ProvisioningPhase::Connected
+                        | ProvisioningPhase::Authenticated
+                        | ProvisioningPhase::Applying
                 ) =>
             {
-                self.snapshot.phase = ProvisioningPhase::Idle;
-                self.snapshot.passkey = None;
+                self.snapshot.phase = ProvisioningPhase::Advertising;
                 self.frames.clear();
-                SessionOutput::Stop
+                SessionOutput::StartAdvertising {
+                    remaining: SESSION_LIFETIME,
+                }
             }
             ProvisioningEvent::Frame(bytes) => self.accept_frame(&bytes),
+            ProvisioningEvent::WifiScan(bytes) => match parse_wifi_scan_request(&bytes) {
+                Ok(request)
+                    if matches!(
+                        self.snapshot.phase,
+                        ProvisioningPhase::Connected | ProvisioningPhase::Authenticated
+                    ) =>
+                {
+                    SessionOutput::ScanWifi(request)
+                }
+                Err(error) => SessionOutput::Reject(error),
+                _ => SessionOutput::Reject(ProtocolErrorCode::AuthenticationRequired),
+            },
+            ProvisioningEvent::GalleryFrame(bytes) => match self.accept_gallery_frame(&bytes) {
+                Ok(Some(request))
+                    if matches!(
+                        self.snapshot.phase,
+                        ProvisioningPhase::Connected | ProvisioningPhase::Authenticated
+                    ) =>
+                {
+                    SessionOutput::Gallery(request)
+                }
+                Ok(Some(_)) => SessionOutput::Reject(ProtocolErrorCode::AuthenticationRequired),
+                Ok(None) => SessionOutput::None,
+                Err(error) => SessionOutput::Reject(error),
+            },
             _ => SessionOutput::None,
         }
     }
@@ -242,6 +275,27 @@ impl ProvisioningSession {
             Ok(request) => SessionOutput::Apply(Box::new(request)),
             Err(error) => SessionOutput::Reject(error),
         }
+    }
+
+    fn accept_gallery_frame(
+        &mut self,
+        bytes: &[u8],
+    ) -> Result<Option<GalleryRequest>, ProtocolErrorCode> {
+        if self.snapshot.phase != ProvisioningPhase::Authenticated {
+            return Err(ProtocolErrorCode::AuthenticationRequired);
+        }
+        let frame = decode_frame(bytes).map_err(protocol_error)?;
+        if self.gallery_frames.is_empty() && frame.index != 0 {
+            return Err(ProtocolErrorCode::InvalidRequest);
+        }
+        self.gallery_frames.push(frame);
+        let expected = usize::from(self.gallery_frames[0].count);
+        if self.gallery_frames.len() < expected {
+            return Ok(None);
+        }
+        let json = reassemble_frames(&self.gallery_frames).map_err(protocol_error)?;
+        self.gallery_frames.clear();
+        parse_gallery_request(&json).map(Some)
     }
 }
 
@@ -452,6 +506,24 @@ mod tests {
             session.on_event(ProvisioningEvent::Frame(frames.last().unwrap().clone())),
             SessionOutput::Apply(Box::new(request(0)))
         );
+    }
+
+    #[test]
+    fn disconnect_during_an_active_session_restarts_advertising() {
+        let mut session = ProvisioningSession::new(4);
+        session.begin(123_456, 9, Duration::ZERO);
+        session.on_display_completed(9, Duration::from_secs(20));
+        session.on_event(ProvisioningEvent::Connected);
+        session.on_event(ProvisioningEvent::Authenticated);
+
+        assert_eq!(
+            session.on_event(ProvisioningEvent::Disconnected),
+            SessionOutput::StartAdvertising {
+                remaining: SESSION_LIFETIME,
+            }
+        );
+        assert_eq!(session.snapshot().phase, ProvisioningPhase::Advertising);
+        assert_eq!(session.snapshot().passkey, Some(123_456));
     }
 
     #[test]

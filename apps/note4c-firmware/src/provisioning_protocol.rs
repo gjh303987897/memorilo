@@ -7,10 +7,11 @@ use crate::todo_sync::TodoView;
 
 pub const PROTOCOL_VERSION: u16 = 1;
 pub const CONFIG_SCHEMA_VERSION: u16 = 2;
-pub const MAX_JSON_BYTES: usize = 4_096;
-pub const MAX_CHUNKS: usize = 32;
+pub const MAX_JSON_BYTES: usize = 64 * 1024;
+pub const MAX_CHUNKS: usize = 256;
 pub const MAX_CHUNK_PAYLOAD_BYTES: usize = 384;
 pub const FRAME_HEADER_BYTES: usize = 18;
+pub const MAX_GALLERY_JSON_BYTES: usize = 64 * 1024;
 
 // Bumped to invalidate stale macOS GATT service caches after adding the continuation characteristic.
 pub const SERVICE_UUID: &str = "7b7a1010-6c6f-4d65-8a8b-6d656d6f7269";
@@ -18,6 +19,112 @@ pub const DEVICE_INFO_UUID: &str = "7b7a1001-6c6f-4d65-8a8b-6d656d6f7269";
 pub const PUBLIC_CONFIG_UUID: &str = "7b7a1002-6c6f-4d65-8a8b-6d656d6f7269";
 pub const CONFIG_APPLY_UUID: &str = "7b7a1003-6c6f-4d65-8a8b-6d656d6f7269";
 pub const STATUS_UUID: &str = "7b7a1004-6c6f-4d65-8a8b-6d656d6f7269";
+pub const WIFI_SCAN_UUID: &str = "7b7a1006-6c6f-4d65-8a8b-6d656d6f7269";
+pub const GALLERY_UUID: &str = "7b7a1007-6c6f-4d65-8a8b-6d656d6f7269";
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WifiScanRequest {
+    pub protocol_version: u16,
+    pub request_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WifiNetwork {
+    pub ssid: String,
+    pub rssi: i16,
+    pub security: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WifiScanResponse {
+    pub protocol_version: u16,
+    pub request_id: String,
+    pub networks: Vec<WifiNetwork>,
+}
+
+/// Gallery operations use the same JSON envelope over BLE and USB serial.
+/// `bytesBase64` keeps binary frame data safe for line-delimited serial links;
+/// BLE transports may carry the same payload in framed chunks.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GalleryRequest {
+    pub operation: String,
+    pub protocol_version: u16,
+    pub request_id: String,
+    pub name: Option<String>,
+    pub created_at_unix_seconds: Option<u64>,
+    pub bytes_base64: Option<String>,
+    pub id: Option<u64>,
+    pub order: Option<Vec<u64>>,
+    pub interval_seconds: Option<Option<u32>>,
+}
+
+pub fn parse_gallery_request(json: &[u8]) -> Result<GalleryRequest, ProtocolErrorCode> {
+    if json.len() > MAX_GALLERY_JSON_BYTES {
+        return Err(ProtocolErrorCode::RequestTooLarge);
+    }
+    let request: GalleryRequest =
+        serde_json::from_slice(json).map_err(|_| ProtocolErrorCode::InvalidRequest)?;
+    if request.protocol_version != PROTOCOL_VERSION
+        || !request.operation.starts_with("gallery.")
+        || request.request_id.is_empty()
+        || request.request_id.len() > 64
+        || !request.request_id.is_ascii()
+    {
+        return Err(ProtocolErrorCode::InvalidRequest);
+    }
+    match request.operation.as_str() {
+        "gallery.list" | "gallery.refresh" | "gallery.nextPage" | "gallery.sleep" => {}
+        "gallery.upload" => {
+            let valid = request
+                .name
+                .as_ref()
+                .is_some_and(|value| !value.is_empty() && value.len() <= 64)
+                && request.created_at_unix_seconds.is_some()
+                && request
+                    .bytes_base64
+                    .as_ref()
+                    .is_some_and(|value| value.len() <= 100_000);
+            if !valid {
+                return Err(ProtocolErrorCode::InvalidRequest);
+            }
+        }
+        "gallery.delete" => {
+            if request.id.is_none() {
+                return Err(ProtocolErrorCode::InvalidRequest);
+            }
+        }
+        "gallery.reorder" => {
+            if request.order.as_ref().is_none_or(|order| order.len() > 100) {
+                return Err(ProtocolErrorCode::InvalidRequest);
+            }
+        }
+        "gallery.slideshow" => {}
+        _ => return Err(ProtocolErrorCode::InvalidRequest),
+    }
+    Ok(request)
+}
+
+pub fn parse_wifi_scan_request(json: &[u8]) -> Result<WifiScanRequest, ProtocolErrorCode> {
+    if json.len() > MAX_JSON_BYTES {
+        return Err(ProtocolErrorCode::RequestTooLarge);
+    }
+    let request: WifiScanRequest =
+        serde_json::from_slice(json).map_err(|_| ProtocolErrorCode::InvalidRequest)?;
+    if request.protocol_version != PROTOCOL_VERSION {
+        return Err(ProtocolErrorCode::UnsupportedProtocol);
+    }
+    if request.request_id.is_empty()
+        || request.request_id.len() > 64
+        || !request.request_id.is_ascii()
+    {
+        return Err(ProtocolErrorCode::InvalidRequest);
+    }
+    Ok(request)
+}
 
 const FRAME_MAGIC: [u8; 2] = *b"MP";
 const FRAME_VERSION: u8 = 1;
@@ -142,6 +249,12 @@ pub enum ProtocolErrorCode {
     ChecksumMismatch,
     RequestTooLarge,
     Timeout,
+    AssetNotFound,
+    CapacityExceeded,
+    InvalidAssetLength,
+    InvalidAssetName,
+    InvalidOrder,
+    InvalidSlideshowInterval,
     StorageFailure,
 }
 

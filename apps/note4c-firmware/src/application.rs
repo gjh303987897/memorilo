@@ -140,7 +140,7 @@ pub struct GallerySnapshot {
     pub catalog: GalleryCatalog,
     pub selected: usize,
     pub fullscreen: bool,
-    pub fullscreen_frame: Option<Vec<u8>>,
+    pub selected_frame: Option<Vec<u8>>,
     pub last_error: Option<String>,
 }
 
@@ -362,7 +362,7 @@ impl Application {
             ApplicationCommand::GalleryUpdated(catalog) => self.gallery_updated(catalog),
             ApplicationCommand::EnterGalleryFullscreen => self.enter_gallery_fullscreen(),
             ApplicationCommand::GalleryFrameLoaded(frame) => {
-                self.snapshot.gallery.fullscreen_frame = frame;
+                self.snapshot.gallery.selected_frame = frame;
                 Transition::default()
             }
             ApplicationCommand::GalleryFailed(error) => self.gallery_failed(error),
@@ -415,7 +415,7 @@ impl Application {
                 snapshot.gallery.selected = (snapshot.gallery.selected as isize + delta)
                     .rem_euclid(snapshot.gallery.catalog.assets.len() as isize)
                     as usize;
-                snapshot.gallery.fullscreen_frame = None;
+                snapshot.gallery.selected_frame = None;
             }
             PageId::Gallery => {}
             PageId::Calendar => {
@@ -447,9 +447,6 @@ impl Application {
             return self.mutate(|snapshot| {
                 if !snapshot.gallery.catalog.assets.is_empty() {
                     snapshot.gallery.fullscreen = !snapshot.gallery.fullscreen;
-                    if !snapshot.gallery.fullscreen {
-                        snapshot.gallery.fullscreen_frame = None;
-                    }
                 }
             });
         }
@@ -479,7 +476,6 @@ impl Application {
         self.mutate(|snapshot| {
             if snapshot.page == PageId::Gallery && snapshot.gallery.fullscreen {
                 snapshot.gallery.fullscreen = false;
-                snapshot.gallery.fullscreen_frame = None;
             } else {
                 snapshot.page = snapshot.page.previous();
             }
@@ -490,7 +486,6 @@ impl Application {
         self.mutate(|snapshot| {
             if snapshot.page == PageId::Gallery && snapshot.gallery.fullscreen {
                 snapshot.gallery.fullscreen = false;
-                snapshot.gallery.fullscreen_frame = None;
             } else {
                 snapshot.page = snapshot.page.next();
             }
@@ -522,7 +517,7 @@ impl Application {
         if self.snapshot.gallery.catalog.assets.is_empty() {
             self.snapshot.gallery.fullscreen = false;
         }
-        self.snapshot.gallery.fullscreen_frame = None;
+        self.snapshot.gallery.selected_frame = None;
         self.snapshot.gallery.last_error = None;
         Transition {
             render: (changed && self.snapshot.page == PageId::Gallery).then(|| self.next_render()),
@@ -554,7 +549,7 @@ impl Application {
             return Transition::default();
         }
         self.snapshot.gallery.fullscreen = false;
-        self.snapshot.gallery.fullscreen_frame = None;
+        self.snapshot.gallery.selected_frame = None;
         self.snapshot.gallery.last_error = Some(error);
         Transition {
             render: (self.snapshot.page == PageId::Gallery).then(|| self.next_render()),
@@ -865,9 +860,17 @@ mod tests {
         let mut application = Application::new([ServiceId::Display]);
         application.start();
         application.dispatch(ApplicationCommand::ServiceStarted(ServiceId::Display));
-        let mut todos = TodoModel::default();
-        let extra = todos.items.clone();
-        todos.items.extend(extra);
+        let todos = TodoModel {
+            items: (0..12)
+                .map(|index| TodoItem {
+                    id: TodoId(format!("todo-{index}")),
+                    title: format!("Todo {index}"),
+                    due: String::new(),
+                    status: Status::Open,
+                    indent: 0,
+                })
+                .collect(),
+        };
         application.dispatch(ApplicationCommand::TodosSynced(todos.clone()));
 
         application.dispatch(ApplicationCommand::SelectNext);

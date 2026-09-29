@@ -10,7 +10,8 @@ use serde::Serialize;
 
 use crate::provisioning::ProvisioningEvent;
 use crate::provisioning_protocol::{
-    ApplyStatusEnvelope, DeviceInfoEnvelope, PublicConfigEnvelope, decode_frame, encode_frames,
+    ApplyStatusEnvelope, DeviceInfoEnvelope, PublicConfigEnvelope, WifiNetwork, decode_frame,
+    encode_frames,
 };
 
 const CHARACTERISTIC_CHUNK_BYTES: usize = 180;
@@ -18,6 +19,8 @@ const CHARACTERISTIC_CHUNK_BYTES: usize = 180;
 pub struct BleProvisioningTransport {
     events: Receiver<ProvisioningEvent>,
     status: Arc<Mutex<BLECharacteristic>>,
+    wifi_scan: Arc<Mutex<BLECharacteristic>>,
+    gallery: Arc<Mutex<BLECharacteristic>>,
     stopped: bool,
 }
 
@@ -75,8 +78,10 @@ impl BleProvisioningTransport {
         });
         let authenticated_tx = event_tx.clone();
         server.on_authentication_complete(move |server, desc, result| {
-            let authenticated =
-                result.is_ok() && desc.encrypted() && desc.authenticated() && desc.bonded();
+            // NimBLE may report the link as encrypted/authenticated before its bond
+            // record is committed.  Requiring `bonded()` here disconnects a first-time
+            // macOS pairing even though the protected GATT operations are already safe.
+            let authenticated = result.is_ok() && desc.encrypted() && desc.authenticated();
             log::info!(
                 "provisioning BLE authentication complete conn_handle={} result_ok={} encrypted={} authenticated={} bonded={}",
                 desc.conn_handle(),
@@ -127,16 +132,16 @@ impl BleProvisioningTransport {
             uuid128!("7b7a1003-6c6f-4d65-8a8b-6d656d6f7269"),
             NimbleProperties::WRITE | NimbleProperties::WRITE_ENC | NimbleProperties::WRITE_AUTHEN,
         );
+        let apply_event_tx = event_tx.clone();
         apply_characteristic.lock().on_write(move |args| {
             if !args.desc().encrypted()
                 || !args.desc().authenticated()
-                || !args.desc().bonded()
                 || decode_frame(args.recv_data()).is_err()
             {
                 args.reject();
                 return;
             }
-            if event_tx
+            if apply_event_tx
                 .send(ProvisioningEvent::Frame(args.recv_data().to_vec()))
                 .is_err()
             {
@@ -151,6 +156,50 @@ impl BleProvisioningTransport {
             uuid128!("7b7a1004-6c6f-4d65-8a8b-6d656d6f7269"),
             read_security | NimbleProperties::NOTIFY | NimbleProperties::INDICATE | notify_security,
         );
+        let wifi_scan = service.lock().create_characteristic(
+            uuid128!("7b7a1006-6c6f-4d65-8a8b-6d656d6f7269"),
+            NimbleProperties::WRITE
+                | NimbleProperties::WRITE_ENC
+                | NimbleProperties::WRITE_AUTHEN
+                | NimbleProperties::NOTIFY
+                | NimbleProperties::INDICATE
+                | notify_security,
+        );
+        let wifi_scan_event_tx = event_tx.clone();
+        wifi_scan.lock().on_write(move |args| {
+            if !args.desc().encrypted() || !args.desc().authenticated() {
+                args.reject();
+                return;
+            }
+            if wifi_scan_event_tx
+                .send(ProvisioningEvent::WifiScan(args.recv_data().to_vec()))
+                .is_err()
+            {
+                args.reject();
+            }
+        });
+        let gallery = service.lock().create_characteristic(
+            uuid128!("7b7a1007-6c6f-4d65-8a8b-6d656d6f7269"),
+            NimbleProperties::WRITE
+                | NimbleProperties::WRITE_ENC
+                | NimbleProperties::WRITE_AUTHEN
+                | NimbleProperties::NOTIFY
+                | NimbleProperties::INDICATE
+                | notify_security,
+        );
+        let gallery_event_tx = event_tx.clone();
+        gallery.lock().on_write(move |args| {
+            if !args.desc().encrypted() || !args.desc().authenticated() {
+                args.reject();
+                return;
+            }
+            if gallery_event_tx
+                .send(ProvisioningEvent::GalleryFrame(args.recv_data().to_vec()))
+                .is_err()
+            {
+                args.reject();
+            }
+        });
 
         let mut advertisement = BLEAdvertisementData::new();
         advertisement
@@ -167,6 +216,8 @@ impl BleProvisioningTransport {
         Ok(Self {
             events,
             status,
+            wifi_scan,
+            gallery,
             stopped: false,
         })
     }
@@ -194,6 +245,24 @@ impl BleProvisioningTransport {
         let value = encode_envelope(3, status)?;
         let mut characteristic = self.status.lock();
         characteristic.set_value(&value).notify();
+        Ok(())
+    }
+
+    pub fn notify_wifi_scan(&self, request_id: &str, networks: &[WifiNetwork]) -> Result<()> {
+        let value = serde_json::to_vec(&serde_json::json!({
+            "operation": "scanWifi",
+            "protocolVersion": 1,
+            "requestId": request_id,
+            "networks": networks,
+        }))?;
+        anyhow::ensure!(value.len() <= 480, "Wi-Fi scan response is too large");
+        self.wifi_scan.lock().set_value(&value).notify();
+        Ok(())
+    }
+
+    pub fn notify_gallery(&self, value: &[u8]) -> Result<()> {
+        anyhow::ensure!(value.len() <= 480, "gallery response frame is too large");
+        self.gallery.lock().set_value(value).notify();
         Ok(())
     }
 

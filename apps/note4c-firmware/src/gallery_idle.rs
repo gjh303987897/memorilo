@@ -2,6 +2,17 @@ use std::time::Duration;
 
 pub const GALLERY_AUTO_FULLSCREEN_DELAY: Duration = Duration::from_secs(30);
 
+pub fn gallery_slideshow_interval(
+    fullscreen: bool,
+    asset_count: usize,
+    interval_seconds: Option<u32>,
+) -> Option<Duration> {
+    (fullscreen && asset_count > 1)
+        .then_some(interval_seconds)
+        .flatten()
+        .map(|seconds| Duration::from_secs(u64::from(seconds)))
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GalleryIdleFullscreen {
     delay: Duration,
@@ -75,5 +86,16 @@ mod tests {
         assert!(!idle.update(Duration::from_secs(31), true, false));
         assert!(!idle.update(Duration::from_secs(60), true, false));
         assert!(idle.update(Duration::from_secs(61), true, false));
+    }
+
+    #[test]
+    fn slideshow_requires_fullscreen_and_more_than_one_image() {
+        assert_eq!(gallery_slideshow_interval(false, 2, Some(300)), None);
+        assert_eq!(gallery_slideshow_interval(true, 1, Some(300)), None);
+        assert_eq!(gallery_slideshow_interval(true, 2, None), None);
+        assert_eq!(
+            gallery_slideshow_interval(true, 2, Some(300)),
+            Some(Duration::from_secs(300))
+        );
     }
 }

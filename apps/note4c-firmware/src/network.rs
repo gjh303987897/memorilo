@@ -14,6 +14,14 @@ pub const MAX_RETRY_DELAY: Duration = Duration::from_secs(5 * 60);
 pub const MAX_MANAGEMENT_BODY_BYTES: usize = 1024;
 pub const MAX_TODO_BODY_BYTES: usize = crate::todo_sync::MAX_SNAPSHOT_BYTES;
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WifiNetworkInfo {
+    pub ssid: String,
+    pub rssi: i16,
+    pub security: &'static str,
+}
+
 /// HTTP status classes used by the TODO transport. Keeping this mapping pure
 /// makes the retry and authentication policy independently testable from the
 /// ESP-IDF client implementation.
@@ -594,9 +602,9 @@ pub mod runtime {
         FRAME_BYTES, GalleryDeleteBody, GalleryManagementSnapshot, GalleryMutation,
         GalleryReorderBody, GallerySlideshowBody, ManagementAudit, ManagementMethod,
         ManagementRequest, ManagementRequestError, NetworkAction, NetworkConfiguration,
-        NetworkFailure, NetworkPhase, NetworkPolicy, NetworkSnapshot, decode_gallery_name_header,
-        encode_gallery_status, encode_management_status, encode_todo_status,
-        management_queue_audit, parse_management_request,
+        NetworkFailure, NetworkPhase, NetworkPolicy, NetworkSnapshot, WifiNetworkInfo,
+        decode_gallery_name_header, encode_gallery_status, encode_management_status,
+        encode_todo_status, management_queue_audit, parse_management_request,
     };
     use crate::todo_sync::{MAX_SNAPSHOT_BYTES, SnapshotSource, TodoSyncState};
 
@@ -628,6 +636,7 @@ pub mod runtime {
 
     enum NetworkRuntimeCommand {
         Reconfigure(Option<NetworkConfiguration>),
+        ScanWifi(SyncSender<Result<Vec<WifiNetworkInfo>>>),
         Shutdown,
     }
 
@@ -712,6 +721,16 @@ pub mod runtime {
             self.command_tx
                 .send(NetworkRuntimeCommand::Shutdown)
                 .context("network service command channel closed")
+        }
+
+        pub fn scan_wifi(&self) -> Result<Vec<WifiNetworkInfo>> {
+            let (result_tx, result_rx) = sync_channel(1);
+            self.command_tx
+                .send(NetworkRuntimeCommand::ScanWifi(result_tx))
+                .context("network service command channel closed")?;
+            result_rx
+                .recv_timeout(Duration::from_secs(15))
+                .context("Wi-Fi scan timed out")?
         }
 
         pub fn try_recv(&self) -> Result<Option<NetworkRuntimeEvent>> {
@@ -842,6 +861,53 @@ pub mod runtime {
                     )?;
                     publish_snapshot(&policy, &shared_snapshot, event_tx)?;
                 }
+                Ok(NetworkRuntimeCommand::ScanWifi(result_tx)) => {
+                    if !wifi.is_started().unwrap_or(false) {
+                        // ESP-IDF requires a station configuration before the radio can start,
+                        // even when the caller only wants passive network discovery.
+                        if let Err(error) = wifi.set_configuration(&Configuration::Client(
+                            ClientConfiguration::default(),
+                        )) {
+                            log::warn!("wifi scan configuration failed: {error}");
+                            let _ = result_tx.send(Err(anyhow::Error::from(error)));
+                            continue;
+                        }
+                        if let Err(error) = wifi.start() {
+                            log::warn!("wifi scan radio start failed: {error}");
+                            let _ = result_tx.send(Err(anyhow::Error::from(error)));
+                            continue;
+                        }
+                    }
+                    log::info!("wifi scan started");
+                    let result = wifi
+                        .scan()
+                        .map_err(anyhow::Error::from)
+                        .map(|access_points| {
+                            access_points
+                                .into_iter()
+                                .filter_map(|ap| {
+                                    let ssid = ap.ssid.trim_end_matches('\0').to_owned();
+                                    if ssid.is_empty() {
+                                        return None;
+                                    }
+                                    Some(WifiNetworkInfo {
+                                        ssid,
+                                        rssi: i16::from(ap.signal_strength),
+                                        security: if ap.auth_method == Some(AuthMethod::None) {
+                                            "open"
+                                        } else {
+                                            "secured"
+                                        },
+                                    })
+                                })
+                                .take(12)
+                                .collect()
+                        });
+                    if let Err(error) = &result {
+                        log::warn!("wifi scan failed: {error}");
+                    }
+                    let _ = result_tx.send(result);
+                }
                 Ok(NetworkRuntimeCommand::Shutdown) => {
                     disconnect(&mut wifi, &mut sntp, &mut management_server);
                     return Ok(());
@@ -962,6 +1028,7 @@ pub mod runtime {
                 if mqtt_client.is_none() {
                     if let Some(settings) = config.as_ref().map(|value| &value.todo_sync)
                         && settings.enabled
+                        && settings.has_https_source()
                         && let (Some(broker), Some(_)) =
                             (&settings.mqtt_broker_url, &settings.mqtt_topic)
                     {
@@ -1021,6 +1088,7 @@ pub mod runtime {
                 }
                 if let Some(settings) = config.as_ref().map(|value| &value.todo_sync)
                     && settings.enabled
+                    && settings.has_https_source()
                     && !todo_pull_in_flight
                     && next_todo_pull.is_none_or(|deadline| now >= deadline)
                 {

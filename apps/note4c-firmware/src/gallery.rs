@@ -131,6 +131,9 @@ impl<S: GalleryStorage> GalleryRepository<S> {
             }
         }
         catalog.assets = valid;
+        if catalog.assets.len() < 2 {
+            catalog.slideshow_interval_seconds = None;
+        }
 
         Ok((Self { storage, catalog }, report))
     }
@@ -207,6 +210,9 @@ impl<S: GalleryStorage> GalleryRepository<S> {
         };
         let mut next = self.catalog.clone();
         next.assets.remove(index);
+        if next.assets.len() < 2 {
+            next.slideshow_interval_seconds = None;
+        }
         self.persist_catalog(&next)?;
         self.catalog = next;
         Ok(GalleryDeleteOutcome {
@@ -243,6 +249,9 @@ impl<S: GalleryStorage> GalleryRepository<S> {
         &mut self,
         interval: Option<Duration>,
     ) -> Result<(), GalleryError> {
+        if interval.is_some() && self.catalog.assets.len() < 2 {
+            return Err(GalleryError::InvalidSlideshowInterval);
+        }
         let interval_seconds = match interval {
             Some(interval) if interval < MIN_SLIDESHOW_INTERVAL => {
                 return Err(GalleryError::InvalidSlideshowInterval);
@@ -423,7 +432,7 @@ impl GalleryStorage for EspPartitionGalleryStorage {
             .root
             .join(format!("index-{}.tmp", self.next_index_slot));
         std::fs::write(&temporary, record).map_err(storage_error)?;
-        std::fs::rename(&temporary, &target).map_err(storage_error)?;
+        replace_file(&temporary, &target)?;
         self.generation = generation;
         self.next_index_slot = 1 - self.next_index_slot;
         Ok(())
@@ -447,7 +456,7 @@ impl GalleryStorage for EspPartitionGalleryStorage {
         let target = self.asset_path(id)?;
         let temporary = target.with_extension("tmp");
         std::fs::write(&temporary, bytes).map_err(storage_error)?;
-        std::fs::rename(&temporary, &target).map_err(storage_error)
+        replace_file(&temporary, &target)
     }
 
     fn remove_asset(&mut self, id: GalleryAssetId) -> Result<(), GalleryError> {
@@ -458,6 +467,19 @@ impl GalleryStorage for EspPartitionGalleryStorage {
             Err(error) => Err(storage_error(error)),
         }
     }
+}
+
+#[cfg(target_os = "espidf")]
+fn replace_file(
+    temporary: &std::path::Path,
+    target: &std::path::Path,
+) -> Result<(), GalleryError> {
+    match std::fs::remove_file(target) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(storage_error(error)),
+    }
+    std::fs::rename(temporary, target).map_err(storage_error)
 }
 
 #[cfg(target_os = "espidf")]
@@ -606,9 +628,16 @@ mod tests {
             repository.set_slideshow_interval(Some(Duration::from_secs(60))),
             Err(GalleryError::InvalidSlideshowInterval)
         );
+        assert_eq!(
+            repository.set_slideshow_interval(Some(MIN_SLIDESHOW_INTERVAL)),
+            Err(GalleryError::InvalidSlideshowInterval)
+        );
+        let second = repository.insert("Second", 2, &frame(1)).unwrap();
         repository
             .set_slideshow_interval(Some(MIN_SLIDESHOW_INTERVAL))
             .unwrap();
         assert_eq!(repository.catalog().slideshow_interval_seconds, Some(300));
+        repository.delete(second.id).unwrap();
+        assert_eq!(repository.catalog().slideshow_interval_seconds, None);
     }
 }

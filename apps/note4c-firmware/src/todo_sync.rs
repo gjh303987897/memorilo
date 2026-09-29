@@ -110,6 +110,10 @@ impl TodoSyncConfig {
         self.mqtt_password.is_some()
     }
 
+    pub fn has_https_source(&self) -> bool {
+        !self.https_base_url.is_empty() && self.has_device_token()
+    }
+
     pub fn normalized_default() -> Self {
         Self {
             poll_interval_seconds: 15 * 60,
@@ -127,9 +131,6 @@ impl TodoSyncConfig {
             if token.is_empty() || token.len() > 256 || !token.is_ascii() {
                 return Err(TodoSyncConfigError::InvalidToken);
             }
-        }
-        if self.enabled && (self.https_base_url.is_empty() || !self.has_device_token()) {
-            return Err(TodoSyncConfigError::InvalidHttpsUrl);
         }
         let interval = Duration::from_secs(u64::from(self.poll_interval_seconds));
         if self.enabled && !(MIN_POLL_INTERVAL..=MAX_POLL_INTERVAL).contains(&interval) {
@@ -556,6 +557,21 @@ mod tests {
                 topic_title: "Topic".into(),
             }],
         }
+    }
+
+    #[test]
+    fn enabled_todo_accepts_lan_only_delivery_without_https_credentials() {
+        let mut config = TodoSyncConfig::normalized_default();
+        config.enabled = true;
+        assert!(!config.has_https_source());
+        assert_eq!(config.validate(), Ok(()));
+
+        config.https_base_url = "https://example.test".into();
+        assert!(!config.has_https_source());
+        assert_eq!(config.validate(), Ok(()));
+        config.set_device_token("secret".into());
+        assert!(config.has_https_source());
+        assert_eq!(config.validate(), Ok(()));
     }
 
     #[test]
