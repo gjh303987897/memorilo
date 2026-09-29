@@ -90,12 +90,12 @@ describe('preload IPC bridge', () => {
     const deviceListener = vi.fn()
     const stopDevices = api.subscribeDevices(deviceListener)
     const deviceRegistration = mocks.ipcOn.mock.calls.find(([channel]) => channel === desktopProvisioningChannels.devicesChanged)
-    const handleDevices = deviceRegistration?.[1] as ((event: unknown, devices: readonly DesktopProvisioningDevice[]) => void) | undefined
+    const handleDevices = deviceRegistration?.[1] as ((event: unknown, payload: { devices: readonly DesktopProvisioningDevice[], transport: 'bluetooth' | 'serial' }) => void) | undefined
     if (!handleDevices)
       throw new Error('Preload did not register the Bluetooth device list channel')
-    const devices = [{ deviceId: 'device-1', deviceName: 'Desk display' }]
-    handleDevices({}, devices)
-    expect(deviceListener).toHaveBeenCalledWith(devices)
+    const devices = [{ deviceId: 'device-1', deviceName: 'Desk display', transport: 'bluetooth' as const }]
+    handleDevices({}, { devices, transport: 'bluetooth' })
+    expect(deviceListener).toHaveBeenCalledWith(devices, 'bluetooth')
     stopDevices()
     expect(mocks.ipcRemoveListener).toHaveBeenCalledWith(desktopProvisioningChannels.devicesChanged, handleDevices)
 

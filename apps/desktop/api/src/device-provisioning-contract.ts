@@ -1,6 +1,14 @@
+export type DesktopProvisioningTransport = 'bluetooth' | 'serial'
+
 export interface DesktopProvisioningDevice {
   readonly deviceId: string
   readonly deviceName: string
+  readonly transport: DesktopProvisioningTransport
+}
+
+export interface DesktopProvisioningDevicesChanged {
+  readonly devices: readonly DesktopProvisioningDevice[]
+  readonly transport: DesktopProvisioningTransport
 }
 
 export const memoriloUsbSerialVendorId = 0x303A

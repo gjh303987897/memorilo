@@ -161,7 +161,7 @@ describe('settings window Bluetooth provisioning', () => {
     expect(event.preventDefault).toHaveBeenCalledOnce()
     expect(harness.webContents.send).toHaveBeenCalledWith(
       desktopProvisioningChannels.devicesChanged,
-      [{ deviceId: 'port-4', deviceName: 'Memorilo · USB Serial/JTAG (COM4)' }],
+      { devices: [{ deviceId: 'port-4', deviceName: 'Memorilo · USB Serial/JTAG (COM4)', transport: 'serial' }], transport: 'serial' },
     )
     await ipcHandler(desktopProvisioningChannels.selectDevice)(
       { sender: harness.webContents } as unknown as IpcMainInvokeEvent,
@@ -192,7 +192,7 @@ describe('settings window Bluetooth provisioning', () => {
 
     expect(harness.webContents.send).toHaveBeenCalledWith(
       desktopProvisioningChannels.devicesChanged,
-      [{ deviceId: 'port-4-decimal', deviceName: 'Memorilo · USB Serial/JTAG (COM4)' }],
+      { devices: [{ deviceId: 'port-4-decimal', deviceName: 'Memorilo · USB Serial/JTAG (COM4)', transport: 'serial' }], transport: 'serial' },
     )
     await ipcHandler(desktopProvisioningChannels.selectDevice)(
       { sender: harness.webContents } as unknown as IpcMainInvokeEvent,
@@ -265,6 +265,42 @@ describe('settings window Bluetooth provisioning', () => {
     controller.close()
   })
 
+  it('keeps Bluetooth and USB Serial selections independent during a unified refresh', async () => {
+    const harness = createWindowHarness()
+    mocks.createWindow.mockReturnValue(harness.window)
+    const controller = createSettingsWindowController('C:\\app\\main', createCredentialStore())
+    controller.show()
+
+    const bluetoothCallback = vi.fn()
+    harness.webContents.emit('select-bluetooth-device', { preventDefault: vi.fn() }, [{
+      deviceId: 'bluetooth-1',
+      deviceName: 'Desk display',
+    }], bluetoothCallback)
+
+    const serialCallback = vi.fn()
+    harness.session.emit('select-serial-port', { preventDefault: vi.fn() }, [{
+      displayName: 'USB Serial Device',
+      portId: 'serial-1',
+      portName: 'COM4',
+      productId: '1001',
+      vendorId: '303A',
+    }], harness.webContents, serialCallback)
+
+    await ipcHandler(desktopProvisioningChannels.selectDevice)(
+      { sender: harness.webContents } as unknown as IpcMainInvokeEvent,
+      'serial-1',
+    )
+    expect(serialCallback).toHaveBeenCalledWith('serial-1')
+    expect(bluetoothCallback).not.toHaveBeenCalled()
+
+    await ipcHandler(desktopProvisioningChannels.selectDevice)(
+      { sender: harness.webContents } as unknown as IpcMainInvokeEvent,
+      'bluetooth-1',
+    )
+    expect(bluetoothCallback).toHaveBeenCalledWith('bluetooth-1')
+    controller.close()
+  })
+
   it('cancels pending platform callbacks when the settings window closes', () => {
     const harness = createWindowHarness()
     mocks.createWindow.mockReturnValue(harness.window)
@@ -328,7 +364,7 @@ describe('settings window Bluetooth provisioning', () => {
     expect(callback).not.toHaveBeenCalled()
     expect(harness.webContents.send).toHaveBeenCalledWith(
       desktopProvisioningChannels.devicesChanged,
-      [],
+      { devices: [], transport: 'bluetooth' },
     )
 
     vi.advanceTimersByTime(15_000)

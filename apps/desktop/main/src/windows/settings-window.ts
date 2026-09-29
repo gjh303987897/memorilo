@@ -4,6 +4,7 @@ import type {
   DesktopDeviceGalleryUploadRequest,
   DesktopDeviceTodoPush,
   DesktopProvisioningPairingResponse,
+  DesktopProvisioningTransport,
 } from '@memorilo/desktop-api'
 import type { BrowserWindowConstructorOptions, IpcMainInvokeEvent } from 'electron'
 import type { LocalManagementCredentialStore } from '../storage/electron-local-management-credential-store'
@@ -38,11 +39,11 @@ export function createSettingsWindowController(
   todoDevicePush?: TodoDevicePushService,
 ): SettingsWindowController {
   let settingsWindow: BrowserWindow | null = null
-  let pendingSelection: {
+  const pendingSelections = new Map<DesktopProvisioningTransport, {
     callback: (deviceId: string) => void
     deviceIds: ReadonlySet<string>
     timer: ReturnType<typeof setTimeout>
-  } | null = null
+  }>()
   let pendingPairing: {
     callback: (response: Electron.Response) => void
     requestId: string
@@ -59,18 +60,36 @@ export function createSettingsWindowController(
     return current
   }
 
-  ipcMain.handle(desktopProvisioningChannels.selectDevice, (event, deviceId: unknown) => {
+  ipcMain.handle(desktopProvisioningChannels.selectDevice, (event, deviceId: unknown, transport?: unknown) => {
     requireSettingsSender(event)
-    const pending = pendingSelection
-    if (!pending && deviceId === null)
+    if (deviceId === null) {
+      for (const pending of pendingSelections.values()) {
+        clearTimeout(pending.timer)
+        pending.callback('')
+      }
+      pendingSelections.clear()
       return
+    }
+    if (typeof deviceId !== 'string')
+      throw new TypeError('Selected device id is invalid')
+    const selectedTransport = transport === 'serial' || transport === 'bluetooth'
+      ? transport
+      : undefined
+    const pending = selectedTransport
+      ? pendingSelections.get(selectedTransport)
+      : [...pendingSelections.values()].find(candidate => candidate.deviceIds.has(deviceId))
     if (!pending)
       throw new Error('No device selection is active')
-    if (deviceId !== null && (typeof deviceId !== 'string' || !pending.deviceIds.has(deviceId)))
+    if (!pending.deviceIds.has(deviceId))
       throw new TypeError('Selected device is not available')
-    pendingSelection = null
+    for (const [candidateTransport, candidate] of pendingSelections) {
+      if (candidate === pending) {
+        pendingSelections.delete(candidateTransport)
+        break
+      }
+    }
     clearTimeout(pending.timer)
-    pending.callback(deviceId ?? '')
+    pending.callback(deviceId)
   })
   ipcMain.handle(desktopProvisioningChannels.respondToPairing, (event, response: unknown) => {
     requireSettingsSender(event)
@@ -198,11 +217,11 @@ export function createSettingsWindowController(
   })
 
   const cancelPendingDeviceSelection = (): void => {
-    if (pendingSelection) {
-      clearTimeout(pendingSelection.timer)
-      pendingSelection.callback('')
+    for (const pending of pendingSelections.values()) {
+      clearTimeout(pending.timer)
+      pending.callback('')
     }
-    pendingSelection = null
+    pendingSelections.clear()
     pendingPairing?.callback({ confirmed: false })
     pendingPairing = null
   }
@@ -219,27 +238,27 @@ export function createSettingsWindowController(
       callback('')
       return
     }
-    if (pendingSelection) {
-      clearTimeout(pendingSelection.timer)
-      pendingSelection.callback('')
-    }
     const compatiblePorts = ports.filter(isMemoriloUsbSerialPort)
     const complete = once(callback)
     const selection = {
       callback: complete,
       deviceIds: new Set(compatiblePorts.map(port => port.portId)),
       timer: setTimeout(() => {
-        if (pendingSelection !== selection)
+        if (pendingSelections.get('serial') !== selection)
           return
-        pendingSelection = null
+        pendingSelections.delete('serial')
         selection.callback('')
       }, deviceSelectionTimeoutMilliseconds),
     }
-    pendingSelection = selection
-    safeSend(current, desktopProvisioningChannels.devicesChanged, compatiblePorts.map(port => ({
-      deviceId: port.portId,
-      deviceName: `Memorilo · USB Serial/JTAG (${port.portName})`,
-    })))
+    pendingSelections.set('serial', selection)
+    safeSend(current, desktopProvisioningChannels.devicesChanged, {
+      devices: compatiblePorts.map(port => ({
+        deviceId: port.portId,
+        deviceName: `Memorilo · USB Serial/JTAG (${port.portName})`,
+        transport: 'serial' as const,
+      })),
+      transport: 'serial' as const,
+    })
   }
 
   const show = () => {
@@ -289,6 +308,7 @@ export function createSettingsWindowController(
         return
       }
       const availableDevices = new Map(devices.map(device => [device.deviceId, device]))
+      const pendingSelection = pendingSelections.get('bluetooth')
       if (pendingSelection) {
         // Electron emits repeated list updates for one request. Keep one
         // bounded chooser task and replace its latest callback and snapshot.
@@ -300,18 +320,22 @@ export function createSettingsWindowController(
           callback: complete,
           deviceIds: new Set(availableDevices.keys()),
           timer: setTimeout(() => {
-            if (pendingSelection !== selection)
+            if (pendingSelections.get('bluetooth') !== selection)
               return
-            pendingSelection = null
+            pendingSelections.delete('bluetooth')
             selection.callback('')
           }, deviceSelectionTimeoutMilliseconds),
         }
-        pendingSelection = selection
+        pendingSelections.set('bluetooth', selection)
       }
-      safeSend(current, desktopProvisioningChannels.devicesChanged, devices.map(device => ({
-        deviceId: device.deviceId,
-        deviceName: device.deviceName,
-      })))
+      safeSend(current, desktopProvisioningChannels.devicesChanged, {
+        devices: devices.map(device => ({
+          deviceId: device.deviceId,
+          deviceName: device.deviceName,
+          transport: 'bluetooth' as const,
+        })),
+        transport: 'bluetooth' as const,
+      })
     })
     settingsWindow.webContents.session.on('select-serial-port', handleSerialPortSelection)
     if (process.platform !== 'darwin') {

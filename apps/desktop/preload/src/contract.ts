@@ -17,6 +17,7 @@ import type {
   DesktopProvisioningDevice,
   DesktopProvisioningPairingRequest,
   DesktopProvisioningPairingResponse,
+  DesktopProvisioningTransport,
   DesktopSyncServerEvent,
   DesktopSyncServerStatus,
   DesktopWhiteboardLibraryData,
@@ -51,8 +52,8 @@ export interface DesktopApi {
     saveLocalManagementToken: (deviceId: string, token: string) => Promise<void>
     saveTodoTarget: (deviceId: string, address: string | null) => Promise<void>
     setGallerySlideshow: (target: DesktopDeviceGalleryTarget, intervalSeconds: number | null) => Promise<void>
-    selectDevice: (deviceId: string) => Promise<void>
-    subscribeDevices: (listener: (devices: readonly DesktopProvisioningDevice[]) => void) => () => void
+    selectDevice: (deviceId: string, transport?: 'bluetooth' | 'serial') => Promise<void>
+    subscribeDevices: (listener: (devices: readonly DesktopProvisioningDevice[], transport?: DesktopProvisioningTransport) => void) => () => void
     subscribePairing: (listener: (request: DesktopProvisioningPairingRequest) => void) => () => void
     uploadGalleryAsset: (
       input: DesktopDeviceGalleryUpload,

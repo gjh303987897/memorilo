@@ -1,4 +1,4 @@
-import type { DesktopApi, DesktopConfiguration, DesktopDeviceGalleryUploadProgressEvent, DesktopNoteExternalUpdate, DesktopProvisioningDevice, DesktopProvisioningPairingRequest, DesktopSyncServerEvent } from './contract'
+import type { DesktopApi, DesktopConfiguration, DesktopDeviceGalleryUploadProgressEvent, DesktopNoteExternalUpdate, DesktopProvisioningDevicesChanged, DesktopProvisioningPairingRequest, DesktopSyncServerEvent } from './contract'
 import type { NoteSaveRequest } from './note-save-handshake'
 import { desktopProvisioningChannels, desktopSyncServerEventChannel } from '@memorilo/desktop-api'
 import { desktopConfigurationChangedChannel } from '@memorilo/desktop-config/contract'
@@ -49,9 +49,11 @@ const deviceProvisioning: DesktopApi['deviceProvisioning'] = {
     desktopProvisioningChannels.setGallerySlideshow,
     { ...target, intervalSeconds },
   ),
-  selectDevice: deviceId => ipcRenderer.invoke(desktopProvisioningChannels.selectDevice, deviceId),
+  selectDevice: (deviceId, transport) => transport === undefined
+    ? ipcRenderer.invoke(desktopProvisioningChannels.selectDevice, deviceId)
+    : ipcRenderer.invoke(desktopProvisioningChannels.selectDevice, deviceId, transport),
   subscribeDevices: (listener) => {
-    const handle = (_event: Electron.IpcRendererEvent, devices: readonly DesktopProvisioningDevice[]) => listener(devices)
+    const handle = (_event: Electron.IpcRendererEvent, payload: DesktopProvisioningDevicesChanged) => listener(payload.devices, payload.transport)
     ipcRenderer.on(desktopProvisioningChannels.devicesChanged, handle)
     return () => ipcRenderer.removeListener(desktopProvisioningChannels.devicesChanged, handle)
   },

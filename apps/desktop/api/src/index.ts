@@ -27,8 +27,10 @@ export type {
   DesktopDeviceTodoStatusValue,
   DesktopDeviceTodoTargetState,
   DesktopProvisioningDevice,
+  DesktopProvisioningDevicesChanged,
   DesktopProvisioningPairingRequest,
   DesktopProvisioningPairingResponse,
+  DesktopProvisioningTransport,
 } from './device-provisioning-contract'
 export type {
   DesktopHonoRequestContextHandler,
