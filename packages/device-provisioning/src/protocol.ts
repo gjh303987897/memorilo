@@ -1,7 +1,7 @@
 export const PROTOCOL_VERSION = 1
 export const CONFIG_SCHEMA_VERSION = 2
-export const MAX_JSON_BYTES = 4096
-export const MAX_CHUNKS = 32
+export const MAX_JSON_BYTES = 64 * 1024
+export const MAX_CHUNKS = 256
 export const MAX_CHUNK_PAYLOAD_BYTES = 384
 export const FRAME_HEADER_BYTES = 18
 
@@ -12,6 +12,8 @@ export const PROVISIONING_UUIDS = {
   publicConfigContinuation: '7b7a1005-6c6f-4d65-8a8b-6d656d6f7269',
   configApply: '7b7a1003-6c6f-4d65-8a8b-6d656d6f7269',
   status: '7b7a1004-6c6f-4d65-8a8b-6d656d6f7269',
+  wifiScan: '7b7a1006-6c6f-4d65-8a8b-6d656d6f7269',
+  gallery: '7b7a1007-6c6f-4d65-8a8b-6d656d6f7269',
 } as const
 
 const FRAME_MAGIC = [0x4D, 0x50] as const
@@ -52,6 +54,102 @@ export interface PublicConfigEnvelope {
   todoSyncMqttTopic?: string
   todoSyncMqttUsername?: string
   todoSyncMqttPasswordIsSet?: boolean
+}
+
+export interface WifiNetwork {
+  ssid: string
+  rssi: number
+  security: 'open' | 'secured'
+}
+
+/** Transport-neutral gallery contract shared by LAN, Bluetooth and USB serial. */
+export interface GalleryAsset {
+  id: number
+  name: string
+  byteLength: number
+  checksum: number
+  createdAtUnixSeconds: number
+}
+
+export interface GalleryCatalog {
+  assets: GalleryAsset[]
+  slideshowIntervalSeconds: number | null
+}
+
+export interface GalleryStatus {
+  capacityBytes: number
+  catalog: GalleryCatalog
+  fullRefreshSeconds: number
+  imageBytes: number
+  lastError: string | null
+  maxAssets: number
+  mutationRevision: number
+}
+
+export type GalleryRequest
+  = | { operation: 'gallery.list', protocolVersion: typeof PROTOCOL_VERSION, requestId: string }
+    | { operation: 'gallery.upload', protocolVersion: typeof PROTOCOL_VERSION, requestId: string, name: string, createdAtUnixSeconds: number, bytesBase64: string }
+    | { operation: 'gallery.delete', protocolVersion: typeof PROTOCOL_VERSION, requestId: string, id: number }
+    | { operation: 'gallery.reorder', protocolVersion: typeof PROTOCOL_VERSION, requestId: string, order: number[] }
+    | { operation: 'gallery.slideshow', protocolVersion: typeof PROTOCOL_VERSION, requestId: string, intervalSeconds: number | null }
+    | { operation: 'gallery.refresh' | 'gallery.nextPage' | 'gallery.sleep', protocolVersion: typeof PROTOCOL_VERSION, requestId: string }
+
+export interface GalleryResponse {
+  operation: GalleryRequest['operation']
+  requestId: string
+  status: 'ok' | 'error'
+  gallery?: GalleryStatus
+  error?: ProtocolErrorCode
+}
+
+export function parseGalleryRequest(json: Uint8Array): GalleryRequest {
+  const value = parseJsonRecord(json)
+  if (value.protocolVersion !== PROTOCOL_VERSION
+    || typeof value.requestId !== 'string'
+    || value.requestId.length === 0
+    || value.requestId.length > 64
+    || !isAscii(value.requestId)
+    || typeof value.operation !== 'string'
+    || !value.operation.startsWith('gallery.')) {
+    throw new ProvisioningProtocolError('invalid-request')
+  }
+  switch (value.operation) {
+    case 'gallery.list':
+    case 'gallery.refresh':
+    case 'gallery.nextPage':
+    case 'gallery.sleep':
+      return value as unknown as GalleryRequest
+    case 'gallery.upload':
+      if (typeof value.name !== 'string' || value.name.length === 0 || value.name.length > 64
+        || !Number.isSafeInteger(value.createdAtUnixSeconds) || (value.createdAtUnixSeconds as number) < 0
+        || typeof value.bytesBase64 !== 'string' || value.bytesBase64.length > 100_000) {
+        throw new ProvisioningProtocolError('invalid-request')
+      }
+      return value as unknown as GalleryRequest
+    case 'gallery.delete':
+      if (!isAssetId(value.id))
+        throw new ProvisioningProtocolError('invalid-request')
+      return value as unknown as GalleryRequest
+    case 'gallery.reorder':
+      if (!Array.isArray(value.order) || value.order.length > 100
+        || !value.order.every(item => isAssetId(item))
+        || new Set(value.order).size !== value.order.length) {
+        throw new ProvisioningProtocolError('invalid-request')
+      }
+      return value as unknown as GalleryRequest
+    case 'gallery.slideshow':
+      if (value.intervalSeconds !== null
+        && (!Number.isSafeInteger(value.intervalSeconds) || (value.intervalSeconds as number) < 300 || (value.intervalSeconds as number) > 604_800)) {
+        throw new ProvisioningProtocolError('invalid-request')
+      }
+      return value as unknown as GalleryRequest
+    default:
+      throw new ProvisioningProtocolError('invalid-request')
+  }
+}
+
+function isAssetId(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
 }
 
 export type TodoView = 'today' | 'all'
@@ -117,6 +215,12 @@ export type ProtocolErrorCode
     | 'checksum-mismatch'
     | 'request-too-large'
     | 'timeout'
+    | 'asset-not-found'
+    | 'capacity-exceeded'
+    | 'invalid-asset-length'
+    | 'invalid-asset-name'
+    | 'invalid-order'
+    | 'invalid-slideshow-interval'
     | 'storage-failure'
 
 export interface ApplyStatusEnvelope {
@@ -426,6 +530,12 @@ function isProtocolErrorCode(value: unknown): value is ProtocolErrorCode {
     'checksum-mismatch',
     'request-too-large',
     'timeout',
+    'asset-not-found',
+    'capacity-exceeded',
+    'invalid-asset-length',
+    'invalid-asset-name',
+    'invalid-order',
+    'invalid-slideshow-interval',
     'storage-failure',
   ].includes(value)
 }

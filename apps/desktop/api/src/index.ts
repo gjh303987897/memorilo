@@ -4,12 +4,19 @@ export type { DesktopHonoClient } from './client'
 export { createDesktopApiClient, createDesktopHonoClient } from './client'
 export type { ConfigurationRouteHandlers } from './configuration-routes'
 export type * from './contract'
-export { desktopProvisioningChannels } from './device-provisioning-contract'
+export {
+  desktopProvisioningChannels,
+  memoriloUsbSerialProductId,
+  memoriloUsbSerialVendorId,
+} from './device-provisioning-contract'
 export type {
   DesktopDeviceGalleryAsset,
   DesktopDeviceGalleryStatus,
   DesktopDeviceGalleryTarget,
   DesktopDeviceGalleryUpload,
+  DesktopDeviceGalleryUploadProgress,
+  DesktopDeviceGalleryUploadProgressEvent,
+  DesktopDeviceGalleryUploadRequest,
   DesktopDeviceNetworkPhase,
   DesktopDeviceStatus,
   DesktopDeviceTodoItem,

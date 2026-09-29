@@ -24,10 +24,11 @@ vi.mock('electron', () => ({
 
 interface WindowHarness {
   pairingHandler: ((details: Electron.BluetoothPairingHandlerHandlerDetails, callback: (response: Electron.Response) => void) => void) | null
-  session: {
+  session: EventEmitter & {
     setBluetoothPairingHandler: ReturnType<typeof vi.fn>
   }
   webContents: EventEmitter & {
+    isDestroyed: ReturnType<typeof vi.fn>
     mainFrame: object
     send: ReturnType<typeof vi.fn>
     session: WindowHarness['session']
@@ -47,12 +48,13 @@ interface WindowHarness {
 
 function createWindowHarness(): WindowHarness {
   const harness = {} as WindowHarness
-  const session = {
+  const session = Object.assign(new EventEmitter(), {
     setBluetoothPairingHandler: vi.fn((handler) => {
       harness.pairingHandler = handler
     }),
-  }
+  })
   const webContents = Object.assign(new EventEmitter(), {
+    isDestroyed: vi.fn(() => false),
     mainFrame: {},
     send: vi.fn(),
     session,
@@ -94,6 +96,112 @@ afterEach(() => {
 })
 
 describe('settings window Bluetooth provisioning', () => {
+  it('routes LAN gallery upload progress only to the invoking settings renderer', async () => {
+    const request = vi.fn(async (_url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const reader = (init?.body as ReadableStream<Uint8Array>).getReader()
+      while (!(await reader.read()).done) {
+        // Consume the actual streamed request body so each progress event is observable.
+      }
+      return new Response(null, { status: 202 })
+    })
+    vi.stubGlobal('fetch', request)
+    const harness = createWindowHarness()
+    mocks.createWindow.mockReturnValue(harness.window)
+    const controller = createSettingsWindowController('C:\\app\\main', createCredentialStore())
+    controller.show()
+    const event = { sender: harness.webContents } as unknown as IpcMainInvokeEvent
+    const token = await ipcHandler(desktopProvisioningChannels.generateLocalManagementToken)(event, undefined)
+    await ipcHandler(desktopProvisioningChannels.saveLocalManagementToken)(event, {
+      deviceId: 'device-1',
+      token,
+    })
+
+    await ipcHandler(desktopProvisioningChannels.uploadGalleryAsset)(event, {
+      address: '192.168.4.23',
+      bytes: new Uint8Array(30_000),
+      createdAtUnixSeconds: 1,
+      deviceId: 'device-1',
+      name: 'Image',
+      requestId: 'upload-1',
+    })
+
+    const progress = harness.webContents.send.mock.calls
+      .filter(([channel]) => channel === desktopProvisioningChannels.galleryUploadProgress)
+      .map(([, update]) => update as { requestId: string, sentBytes: number, totalBytes: number })
+    expect(progress.length).toBeGreaterThan(3)
+    expect(progress[0]).toEqual({ requestId: 'upload-1', sentBytes: 0, totalBytes: 30_000 })
+    expect(progress.at(-1)).toEqual({ requestId: 'upload-1', sentBytes: 30_000, totalBytes: 30_000 })
+    expect(progress.every(update => update.requestId === 'upload-1')).toBe(true)
+    controller.close()
+  })
+
+  it('routes Web Serial selection through the same device picker', async () => {
+    const harness = createWindowHarness()
+    mocks.createWindow.mockReturnValue(harness.window)
+    const controller = createSettingsWindowController('C:\\app\\main', createCredentialStore())
+    controller.show()
+
+    const callback = vi.fn()
+    const event = { preventDefault: vi.fn() }
+    harness.session.emit('select-serial-port', event, [
+      {
+        displayName: 'Communications Port',
+        portId: 'port-1',
+        portName: 'COM1',
+      },
+      {
+        displayName: 'USB Serial Device',
+        portId: 'port-4',
+        portName: 'COM4',
+        productId: '1001',
+        vendorId: '303A',
+      },
+    ], harness.webContents, callback)
+
+    expect(event.preventDefault).toHaveBeenCalledOnce()
+    expect(harness.webContents.send).toHaveBeenCalledWith(
+      desktopProvisioningChannels.devicesChanged,
+      [{ deviceId: 'port-4', deviceName: 'Memorilo · USB Serial/JTAG (COM4)' }],
+    )
+    await ipcHandler(desktopProvisioningChannels.selectDevice)(
+      { sender: harness.webContents } as unknown as IpcMainInvokeEvent,
+      'port-4',
+    )
+    expect(callback).toHaveBeenCalledWith('port-4')
+    controller.close()
+  })
+
+  it('accepts decimal USB IDs reported by Electron on Windows', async () => {
+    const harness = createWindowHarness()
+    mocks.createWindow.mockReturnValue(harness.window)
+    const controller = createSettingsWindowController('C:\\app\\main', createCredentialStore())
+    controller.show()
+
+    const callback = vi.fn()
+    const event = { preventDefault: vi.fn() }
+    harness.session.emit('select-serial-port', event, [
+      {
+        displayName: 'USB Serial Device',
+        portId: 'port-4-decimal',
+        portName: 'COM4',
+        // 0x303A/0x1001 expressed as decimal strings.
+        productId: '4097',
+        vendorId: '12346',
+      },
+    ], harness.webContents, callback)
+
+    expect(harness.webContents.send).toHaveBeenCalledWith(
+      desktopProvisioningChannels.devicesChanged,
+      [{ deviceId: 'port-4-decimal', deviceName: 'Memorilo · USB Serial/JTAG (COM4)' }],
+    )
+    await ipcHandler(desktopProvisioningChannels.selectDevice)(
+      { sender: harness.webContents } as unknown as IpcMainInvokeEvent,
+      'port-4-decimal',
+    )
+    expect(callback).toHaveBeenCalledWith('port-4-decimal')
+    controller.close()
+  })
+
   it('leaves pairing to the operating system on macOS', () => {
     vi.spyOn(process, 'platform', 'get').mockReturnValue('darwin')
     const harness = createWindowHarness()
@@ -181,6 +289,28 @@ describe('settings window Bluetooth provisioning', () => {
     expect(pairingCallback).toHaveBeenCalledWith({ confirmed: false })
     expect(harness.session.setBluetoothPairingHandler).toHaveBeenLastCalledWith(null)
     controller.close()
+  })
+
+  it('does not invoke a completed device selection callback again during close', async () => {
+    const harness = createWindowHarness()
+    mocks.createWindow.mockReturnValue(harness.window)
+    const controller = createSettingsWindowController('C:\\app\\main', createCredentialStore())
+    controller.show()
+
+    const callback = vi.fn()
+    harness.webContents.emit('select-bluetooth-device', { preventDefault: vi.fn() }, [{
+      deviceId: 'device-1',
+      deviceName: 'Desk display',
+    }], callback)
+    await ipcHandler(desktopProvisioningChannels.selectDevice)(
+      { sender: harness.webContents } as unknown as IpcMainInvokeEvent,
+      'device-1',
+    )
+    harness.window.emit('closed')
+    controller.close()
+
+    expect(callback).toHaveBeenCalledOnce()
+    expect(callback).toHaveBeenCalledWith('device-1')
   })
 
   it('bounds an empty Bluetooth scan and leaves cancellation idempotent', () => {

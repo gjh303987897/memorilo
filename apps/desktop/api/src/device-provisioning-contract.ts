@@ -3,6 +3,9 @@ export interface DesktopProvisioningDevice {
   readonly deviceName: string
 }
 
+export const memoriloUsbSerialVendorId = 0x303A
+export const memoriloUsbSerialProductId = 0x1001
+
 export interface DesktopProvisioningPairingRequest {
   readonly deviceId: string
   readonly pairingKind: 'confirm' | 'confirmPin' | 'providePin'
@@ -63,6 +66,19 @@ export interface DesktopDeviceGalleryUpload extends DesktopDeviceGalleryTarget {
   readonly name: string
 }
 
+export interface DesktopDeviceGalleryUploadProgress {
+  readonly sentBytes: number
+  readonly totalBytes: number
+}
+
+export interface DesktopDeviceGalleryUploadProgressEvent extends DesktopDeviceGalleryUploadProgress {
+  readonly requestId: string
+}
+
+export interface DesktopDeviceGalleryUploadRequest extends DesktopDeviceGalleryUpload {
+  readonly requestId: string
+}
+
 export type DesktopDeviceTodoStatusValue = 'todo' | 'in-progress' | 'done'
 
 export interface DesktopDeviceTodoItem {
@@ -117,6 +133,7 @@ export const desktopProvisioningChannels = {
   generateLocalManagementToken: 'memorilo:device-provisioning:generate-local-management-token',
   hasLocalManagementToken: 'memorilo:device-provisioning:has-local-management-token',
   loadGallery: 'memorilo:device-provisioning:load-gallery',
+  galleryUploadProgress: 'memorilo:device-provisioning:gallery-upload-progress',
   loadStatus: 'memorilo:device-provisioning:load-status',
   loadTodos: 'memorilo:device-provisioning:load-todos',
   loadTodoTarget: 'memorilo:device-provisioning:load-todo-target',

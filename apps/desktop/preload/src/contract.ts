@@ -3,6 +3,7 @@ import type {
   DesktopDeviceGalleryStatus,
   DesktopDeviceGalleryTarget,
   DesktopDeviceGalleryUpload,
+  DesktopDeviceGalleryUploadProgress,
   DesktopDeviceStatus,
   DesktopDeviceTodoPush,
   DesktopDeviceTodoState,
@@ -53,7 +54,10 @@ export interface DesktopApi {
     selectDevice: (deviceId: string) => Promise<void>
     subscribeDevices: (listener: (devices: readonly DesktopProvisioningDevice[]) => void) => () => void
     subscribePairing: (listener: (request: DesktopProvisioningPairingRequest) => void) => () => void
-    uploadGalleryAsset: (input: DesktopDeviceGalleryUpload) => Promise<void>
+    uploadGalleryAsset: (
+      input: DesktopDeviceGalleryUpload,
+      onProgress?: (progress: DesktopDeviceGalleryUploadProgress) => void,
+    ) => Promise<void>
   }
   loadWhiteboardLibrary: () => Promise<DesktopWhiteboardLibraryData>
   request: (request: DesktopFetchRequest) => Promise<DesktopFetchResponse>

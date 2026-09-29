@@ -1,4 +1,4 @@
-import type { DesktopApi, DesktopConfiguration, DesktopNoteExternalUpdate, DesktopProvisioningDevice, DesktopProvisioningPairingRequest, DesktopSyncServerEvent } from './contract'
+import type { DesktopApi, DesktopConfiguration, DesktopDeviceGalleryUploadProgressEvent, DesktopNoteExternalUpdate, DesktopProvisioningDevice, DesktopProvisioningPairingRequest, DesktopSyncServerEvent } from './contract'
 import type { NoteSaveRequest } from './note-save-handshake'
 import { desktopProvisioningChannels, desktopSyncServerEventChannel } from '@memorilo/desktop-api'
 import { desktopConfigurationChangedChannel } from '@memorilo/desktop-config/contract'
@@ -60,10 +60,28 @@ const deviceProvisioning: DesktopApi['deviceProvisioning'] = {
     ipcRenderer.on(desktopProvisioningChannels.pairingRequested, handle)
     return () => ipcRenderer.removeListener(desktopProvisioningChannels.pairingRequested, handle)
   },
-  uploadGalleryAsset: input => ipcRenderer.invoke(
-    desktopProvisioningChannels.uploadGalleryAsset,
-    input,
-  ),
+  uploadGalleryAsset: async (input, onProgress) => {
+    const requestId = globalThis.crypto.randomUUID()
+    const handleProgress = (
+      _event: Electron.IpcRendererEvent,
+      progress: DesktopDeviceGalleryUploadProgressEvent,
+    ): void => {
+      if (progress.requestId === requestId)
+        onProgress?.({ sentBytes: progress.sentBytes, totalBytes: progress.totalBytes })
+    }
+    if (onProgress)
+      ipcRenderer.on(desktopProvisioningChannels.galleryUploadProgress, handleProgress)
+    try {
+      await ipcRenderer.invoke(desktopProvisioningChannels.uploadGalleryAsset, {
+        ...input,
+        requestId,
+      })
+    }
+    finally {
+      if (onProgress)
+        ipcRenderer.removeListener(desktopProvisioningChannels.galleryUploadProgress, handleProgress)
+    }
+  },
 }
 
 function subscribeConfiguration(listener: (configuration: DesktopConfiguration) => void): () => void {

@@ -67,6 +67,40 @@ describe('device local management client', () => {
     expect(request).not.toHaveBeenCalled()
   })
 
+  it('reports monotonic request-body progress while uploading an image', async () => {
+    const uploadedChunks: number[] = []
+    const request = vi.fn(async (_url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const reader = (init?.body as ReadableStream<Uint8Array>).getReader()
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done)
+          break
+        uploadedChunks.push(value.byteLength)
+      }
+      return new Response(null, { status: 202 })
+    })
+    const client = new DeviceLocalManagementClient(credentialStore(token), request as typeof fetch)
+    const progress: Array<{ sentBytes: number, totalBytes: number }> = []
+
+    await Effect.runPromise(client.uploadAsset({
+      address: '192.168.4.23',
+      bytes: new Uint8Array(30_000),
+      createdAtUnixSeconds: 1,
+      deviceId: 'device-1',
+      name: 'Image',
+    }, update => progress.push(update)))
+
+    expect(uploadedChunks.length).toBeGreaterThan(1)
+    expect(uploadedChunks.every(length => length <= 1_024)).toBe(true)
+    expect(progress[0]).toEqual({ sentBytes: 0, totalBytes: 30_000 })
+    expect(progress.at(-1)).toEqual({ sentBytes: 30_000, totalBytes: 30_000 })
+    expect(progress.every((update, index) => index === 0 || update.sentBytes >= progress[index - 1]!.sentBytes)).toBe(true)
+    expect(request).toHaveBeenCalledWith(expect.any(URL), expect.objectContaining({
+      duplex: 'half',
+      headers: expect.objectContaining({ 'Content-Length': '30000' }),
+    }))
+  })
+
   it('pushes and reads bounded read-only TODO snapshots', async () => {
     const snapshot = {
       generatedAt: '2026-09-05T00:00:00Z',

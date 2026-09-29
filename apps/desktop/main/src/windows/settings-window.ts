@@ -1,6 +1,7 @@
 import type {
   DesktopDeviceGalleryTarget,
   DesktopDeviceGalleryUpload,
+  DesktopDeviceGalleryUploadRequest,
   DesktopDeviceTodoPush,
   DesktopProvisioningPairingResponse,
 } from '@memorilo/desktop-api'
@@ -10,7 +11,11 @@ import type { TodoDevicePushService } from '../todo/todo-device-push-service'
 import type { TodoDeviceTargetStore } from '../todo/todo-device-target-store'
 import { join } from 'node:path'
 import process from 'node:process'
-import { desktopProvisioningChannels } from '@memorilo/desktop-api'
+import {
+  desktopProvisioningChannels,
+  memoriloUsbSerialProductId,
+  memoriloUsbSerialVendorId,
+} from '@memorilo/desktop-api'
 import { Effect } from 'effect'
 import { BrowserWindow, ipcMain } from 'electron'
 import { DeviceLocalManagementClient } from '../device-local-management-client'
@@ -24,7 +29,7 @@ export interface SettingsWindowController {
   show: () => void
 }
 
-const bluetoothSelectionTimeoutMilliseconds = 15_000
+const deviceSelectionTimeoutMilliseconds = 15_000
 
 export function createSettingsWindowController(
   mainDirectory: string,
@@ -35,7 +40,7 @@ export function createSettingsWindowController(
   let settingsWindow: BrowserWindow | null = null
   let pendingSelection: {
     callback: (deviceId: string) => void
-    devices: ReadonlyMap<string, Electron.BluetoothDevice>
+    deviceIds: ReadonlySet<string>
     timer: ReturnType<typeof setTimeout>
   } | null = null
   let pendingPairing: {
@@ -60,9 +65,9 @@ export function createSettingsWindowController(
     if (!pending && deviceId === null)
       return
     if (!pending)
-      throw new Error('No Bluetooth device selection is active')
-    if (deviceId !== null && (typeof deviceId !== 'string' || !pending.devices.has(deviceId)))
-      throw new TypeError('Selected Bluetooth device is not available')
+      throw new Error('No device selection is active')
+    if (deviceId !== null && (typeof deviceId !== 'string' || !pending.deviceIds.has(deviceId)))
+      throw new TypeError('Selected device is not available')
     pendingSelection = null
     clearTimeout(pending.timer)
     pending.callback(deviceId ?? '')
@@ -154,8 +159,21 @@ export function createSettingsWindowController(
     todoDevicePush.setTargets(targets)
   })
   ipcMain.handle(desktopProvisioningChannels.uploadGalleryAsset, async (event, input: unknown) => {
-    requireSettingsSender(event)
-    return Effect.runPromise(localManagement.uploadAsset(requireGalleryUpload(input)))
+    const sender = requireSettingsSender(event).webContents
+    const { requestId, ...upload } = requireGalleryUploadRequest(input)
+    return Effect.runPromise(localManagement.uploadAsset(upload, (progress) => {
+      try {
+        if (!sender.isDestroyed()) {
+          sender.send(desktopProvisioningChannels.galleryUploadProgress, {
+            ...progress,
+            requestId,
+          })
+        }
+      }
+      catch {
+        // The renderer may close between the liveness check and the progress send.
+      }
+    }))
   })
   ipcMain.handle(desktopProvisioningChannels.deleteGalleryAsset, async (event, input: unknown) => {
     requireSettingsSender(event)
@@ -179,7 +197,7 @@ export function createSettingsWindowController(
     return Effect.runPromise(localManagement.setSlideshow(target, input.intervalSeconds))
   })
 
-  const cancelPendingBluetooth = (): void => {
+  const cancelPendingDeviceSelection = (): void => {
     if (pendingSelection) {
       clearTimeout(pendingSelection.timer)
       pendingSelection.callback('')
@@ -187,6 +205,41 @@ export function createSettingsWindowController(
     pendingSelection = null
     pendingPairing?.callback({ confirmed: false })
     pendingPairing = null
+  }
+
+  const handleSerialPortSelection = (
+    event: Electron.Event,
+    ports: Electron.SerialPort[],
+    webContents: Electron.WebContents,
+    callback: (portId: string) => void,
+  ): void => {
+    event.preventDefault()
+    const current = settingsWindow
+    if (!current || current.isDestroyed() || webContents !== current.webContents) {
+      callback('')
+      return
+    }
+    if (pendingSelection) {
+      clearTimeout(pendingSelection.timer)
+      pendingSelection.callback('')
+    }
+    const compatiblePorts = ports.filter(isMemoriloUsbSerialPort)
+    const complete = once(callback)
+    const selection = {
+      callback: complete,
+      deviceIds: new Set(compatiblePorts.map(port => port.portId)),
+      timer: setTimeout(() => {
+        if (pendingSelection !== selection)
+          return
+        pendingSelection = null
+        selection.callback('')
+      }, deviceSelectionTimeoutMilliseconds),
+    }
+    pendingSelection = selection
+    safeSend(current, desktopProvisioningChannels.devicesChanged, compatiblePorts.map(port => ({
+      deviceId: port.portId,
+      deviceName: `Memorilo · USB Serial/JTAG (${port.portName})`,
+    })))
   }
 
   const show = () => {
@@ -239,27 +292,28 @@ export function createSettingsWindowController(
       if (pendingSelection) {
         // Electron emits repeated list updates for one request. Keep one
         // bounded chooser task and replace its latest callback and snapshot.
-        pendingSelection.callback = callback
-        pendingSelection.devices = availableDevices
+        pendingSelection.deviceIds = new Set(availableDevices.keys())
       }
       else {
+        const complete = once(callback)
         const selection = {
-          callback,
-          devices: availableDevices,
+          callback: complete,
+          deviceIds: new Set(availableDevices.keys()),
           timer: setTimeout(() => {
             if (pendingSelection !== selection)
               return
             pendingSelection = null
             selection.callback('')
-          }, bluetoothSelectionTimeoutMilliseconds),
+          }, deviceSelectionTimeoutMilliseconds),
         }
         pendingSelection = selection
       }
-      current.webContents.send(
-        desktopProvisioningChannels.devicesChanged,
-        devices.map(device => ({ deviceId: device.deviceId, deviceName: device.deviceName })),
-      )
+      safeSend(current, desktopProvisioningChannels.devicesChanged, devices.map(device => ({
+        deviceId: device.deviceId,
+        deviceName: device.deviceName,
+      })))
     })
+    settingsWindow.webContents.session.on('select-serial-port', handleSerialPortSelection)
     if (process.platform !== 'darwin') {
       settingsWindow.webContents.session.setBluetoothPairingHandler((details, callback) => {
         const current = settingsWindow
@@ -271,7 +325,7 @@ export function createSettingsWindowController(
         pairingRequestSequence += 1
         const requestId = `bluetooth-pairing-${pairingRequestSequence}`
         pendingPairing = { callback, pairingKind: details.pairingKind, requestId }
-        current.webContents.send(desktopProvisioningChannels.pairingRequested, {
+        safeSend(current, desktopProvisioningChannels.pairingRequested, {
           deviceId: details.deviceId,
           pairingKind: details.pairingKind,
           pin: details.pin,
@@ -283,8 +337,9 @@ export function createSettingsWindowController(
     if (shouldShowWindow)
       settingsWindow.once('ready-to-show', () => settingsWindow?.show())
     settingsWindow.on('closed', () => {
-      cancelPendingBluetooth()
-      settingsWindow?.webContents.session.setBluetoothPairingHandler(null)
+      const closedWindow = settingsWindow
+      cancelPendingDeviceSelection()
+      detachWindowSession(closedWindow, handleSerialPortSelection)
       settingsWindow = null
     })
     settingsWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
@@ -292,7 +347,8 @@ export function createSettingsWindowController(
     const rendererUrl = process.env.ELECTRON_RENDERER_URL
     if (rendererUrl) {
       const baseUrl = rendererUrl.endsWith('/') ? rendererUrl : `${rendererUrl}/`
-      void settingsWindow.loadURL(new URL('settings.html', baseUrl).toString())
+      const url = new URL('settings.html', baseUrl)
+      void settingsWindow.loadURL(url.toString())
     }
     else {
       void settingsWindow.loadFile(join(mainDirectory, '../renderer/settings.html'))
@@ -302,10 +358,16 @@ export function createSettingsWindowController(
   const close = (): void => {
     const current = settingsWindow
     settingsWindow = null
-    cancelPendingBluetooth()
-    current?.webContents.session.setBluetoothPairingHandler(null)
-    if (current && !current.isDestroyed())
-      current.destroy()
+    cancelPendingDeviceSelection()
+    detachWindowSession(current, handleSerialPortSelection)
+    if (current && !current.isDestroyed()) {
+      try {
+        current.destroy()
+      }
+      catch {
+        // The native window may have been destroyed by the OS already.
+      }
+    }
     ipcMain.removeHandler(desktopProvisioningChannels.selectDevice)
     ipcMain.removeHandler(desktopProvisioningChannels.respondToPairing)
     ipcMain.removeHandler(desktopProvisioningChannels.generateLocalManagementToken)
@@ -353,6 +415,73 @@ function requireGalleryUpload(value: unknown): DesktopDeviceGalleryUpload {
     createdAtUnixSeconds: value.createdAtUnixSeconds,
     name: value.name,
   }
+}
+
+function requireGalleryUploadRequest(value: unknown): DesktopDeviceGalleryUploadRequest {
+  if (!isRecord(value)
+    || typeof value.requestId !== 'string'
+    || value.requestId.length === 0
+    || value.requestId.length > 128) {
+    throw new TypeError('Invalid gallery upload request')
+  }
+  return { ...requireGalleryUpload(value), requestId: value.requestId }
+}
+
+function once<Value>(callback: (value: Value) => void): (value: Value) => void {
+  let called = false
+  return (value) => {
+    if (called)
+      return
+    called = true
+    callback(value)
+  }
+}
+
+function detachWindowSession(
+  window: BrowserWindow | null,
+  serialPortHandler: (event: Electron.Event, ports: Electron.SerialPort[], webContents: Electron.WebContents, callback: (portId: string) => void) => void,
+): void {
+  if (!window || window.isDestroyed())
+    return
+  try {
+    window.webContents.session.off('select-serial-port', serialPortHandler)
+    window.webContents.session.setBluetoothPairingHandler(null)
+  }
+  catch {
+    // Window teardown is idempotent even if Chromium has already released its session.
+  }
+}
+
+function safeSend(window: BrowserWindow, channel: string, ...arguments_: unknown[]): void {
+  if (window.isDestroyed() || window.webContents.isDestroyed())
+    return
+  try {
+    window.webContents.send(channel, ...arguments_)
+  }
+  catch {
+    // Native window teardown can race an event callback; the operation is already cancelled.
+  }
+}
+
+function isMemoriloUsbSerialPort(port: Electron.SerialPort): boolean {
+  return usbIdEquals(port.vendorId, memoriloUsbSerialVendorId)
+    && usbIdEquals(port.productId, memoriloUsbSerialProductId)
+}
+
+function usbIdEquals(value: string | undefined, expected: number): boolean {
+  if (!value)
+    return false
+  const normalized = value.trim().replace(/^0x/iu, '')
+  if (!/^[\dA-F]+$/iu.test(normalized))
+    return false
+
+  // Electron has returned both USB hexadecimal IDs (for example `303A`) and
+  // decimal IDs (for example `12346`) across Chromium/Windows versions.
+  // Accept either representation at this boundary; the caller still requires
+  // both the Espressif VID and the ESP32-S3 USB Serial/JTAG PID to match.
+  const hexadecimal = Number.parseInt(normalized, 16)
+  const decimal = /^\d+$/u.test(normalized) ? Number.parseInt(normalized, 10) : Number.NaN
+  return hexadecimal === expected || decimal === expected
 }
 
 function requireTodoPush(value: unknown): DesktopDeviceTodoPush {

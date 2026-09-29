@@ -2,6 +2,7 @@ import type {
   DesktopDeviceGalleryStatus,
   DesktopDeviceGalleryTarget,
   DesktopDeviceGalleryUpload,
+  DesktopDeviceGalleryUploadProgress,
   DesktopDeviceStatus,
   DesktopDeviceTodoPush,
   DesktopDeviceTodoSnapshot,
@@ -15,6 +16,10 @@ const imageBytes = 30_000
 const requestTimeoutMilliseconds = 15_000
 const maxResponseBytes = 64 * 1024
 const maxTodoSnapshotBytes = 32 * 1024
+const uploadChunkBytes = 1_024
+
+type GalleryUploadProgressListener = (progress: DesktopDeviceGalleryUploadProgress) => void
+type StreamingRequestInit = RequestInit & { duplex: 'half' }
 
 // eslint-disable-next-line unicorn/throw-new-error
 export class DeviceLocalManagementError extends Data.TaggedError('DeviceLocalManagementError')<{
@@ -73,7 +78,10 @@ export class DeviceLocalManagementClient {
     })
   }
 
-  uploadAsset(input: DesktopDeviceGalleryUpload): Effect.Effect<void, DeviceLocalManagementError> {
+  uploadAsset(
+    input: DesktopDeviceGalleryUpload,
+    onProgress?: GalleryUploadProgressListener,
+  ): Effect.Effect<void, DeviceLocalManagementError> {
     if (!(input.bytes instanceof Uint8Array)
       || input.bytes.byteLength !== imageBytes
       || input.name.length === 0
@@ -82,15 +90,18 @@ export class DeviceLocalManagementClient {
       || input.createdAtUnixSeconds < 0) {
       return Effect.fail(invalidInput())
     }
-    return this.mutate(input, '/v1/gallery/assets', {
-      body: Buffer.from(input.bytes),
+    const init: StreamingRequestInit = {
+      body: createUploadBody(input.bytes, onProgress),
+      duplex: 'half',
       headers: {
+        'Content-Length': String(input.bytes.byteLength),
         'Content-Type': 'application/octet-stream',
         'X-Memorilo-Asset-Name': encodeURIComponent(input.name),
         'X-Memorilo-Created-At': String(input.createdAtUnixSeconds),
       },
       method: 'POST',
-    })
+    }
+    return this.mutate(input, '/v1/gallery/assets', init)
   }
 
   deleteAsset(target: DesktopDeviceGalleryTarget, id: number): Effect.Effect<void, DeviceLocalManagementError> {
@@ -190,6 +201,29 @@ export class DeviceLocalManagementClient {
       })
     })
   }
+}
+
+function createUploadBody(
+  bytes: Uint8Array,
+  onProgress?: GalleryUploadProgressListener,
+): ReadableStream<Uint8Array> {
+  let offset = 0
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (offset === 0)
+        onProgress?.({ sentBytes: 0, totalBytes: bytes.byteLength })
+      if (offset >= bytes.byteLength) {
+        controller.close()
+        return
+      }
+      const nextOffset = Math.min(offset + uploadChunkBytes, bytes.byteLength)
+      controller.enqueue(bytes.slice(offset, nextOffset))
+      offset = nextOffset
+      onProgress?.({ sentBytes: offset, totalBytes: bytes.byteLength })
+      if (offset === bytes.byteLength)
+        controller.close()
+    },
+  })
 }
 
 export function parseLocalDeviceAddress(address: string): URL {

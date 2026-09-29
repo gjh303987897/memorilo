@@ -76,6 +76,10 @@ describe('preload IPC bridge', () => {
     })
     expect(mocks.ipcInvoke).toHaveBeenCalledWith(desktopProvisioningChannels.clearLocalManagementToken, 'device-1')
     expect(mocks.ipcInvoke).toHaveBeenCalledWith(desktopProvisioningChannels.loadGallery, target)
+    expect(mocks.ipcInvoke).toHaveBeenCalledWith(desktopProvisioningChannels.uploadGalleryAsset, expect.objectContaining({
+      ...target,
+      requestId: expect.any(String),
+    }))
     expect(mocks.ipcInvoke).toHaveBeenCalledWith(desktopProvisioningChannels.deleteGalleryAsset, { ...target, id: 1 })
     expect(mocks.ipcInvoke).toHaveBeenCalledWith(desktopProvisioningChannels.reorderGallery, { ...target, order: [1] })
     expect(mocks.ipcInvoke).toHaveBeenCalledWith(desktopProvisioningChannels.setGallerySlideshow, {
@@ -111,6 +115,46 @@ describe('preload IPC bridge', () => {
     expect(pairingListener).toHaveBeenCalledWith(request)
     stopPairing()
     expect(mocks.ipcRemoveListener).toHaveBeenCalledWith(desktopProvisioningChannels.pairingRequested, handlePairing)
+  })
+
+  it('filters gallery upload progress by request and always removes its listener', async () => {
+    let rejectUpload!: (cause: unknown) => void
+    mocks.ipcInvoke.mockReturnValueOnce(new Promise((_resolve, reject) => {
+      rejectUpload = reject
+    }))
+    const progressListener = vi.fn()
+    const input = {
+      address: '192.168.4.23',
+      bytes: new Uint8Array(30_000),
+      createdAtUnixSeconds: 1,
+      deviceId: 'device-1',
+      name: 'Image',
+    }
+
+    const upload = exposedApi().deviceProvisioning.uploadGalleryAsset(input, progressListener)
+    const invocation = mocks.ipcInvoke.mock.calls.at(-1)?.[1] as { requestId?: string } | undefined
+    const registration = mocks.ipcOn.mock.calls
+      .filter(([channel]) => channel === desktopProvisioningChannels.galleryUploadProgress)
+      .at(-1)
+    const handleProgress = registration?.[1] as ((event: unknown, progress: {
+      requestId: string
+      sentBytes: number
+      totalBytes: number
+    }) => void) | undefined
+    if (!invocation?.requestId || !handleProgress)
+      throw new Error('Preload did not register the gallery upload progress channel')
+
+    handleProgress({}, { requestId: 'another-upload', sentBytes: 1_024, totalBytes: 30_000 })
+    handleProgress({}, { requestId: invocation.requestId, sentBytes: 1_024, totalBytes: 30_000 })
+    expect(progressListener).toHaveBeenCalledOnce()
+    expect(progressListener).toHaveBeenCalledWith({ sentBytes: 1_024, totalBytes: 30_000 })
+
+    rejectUpload(new Error('device disconnected'))
+    await expect(upload).rejects.toThrow('device disconnected')
+    expect(mocks.ipcRemoveListener).toHaveBeenCalledWith(
+      desktopProvisioningChannels.galleryUploadProgress,
+      handleProgress,
+    )
   })
 
   it('invokes the stable application-owned Fetch channel with the original request', async () => {
