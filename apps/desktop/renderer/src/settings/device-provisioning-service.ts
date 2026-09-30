@@ -4,6 +4,7 @@ import type {
   DesktopDeviceGalleryUpload,
   DesktopDeviceStatus,
   DesktopDeviceTodoPush,
+  DesktopDeviceTodoSnapshot,
   DesktopDeviceTodoState,
   DesktopDeviceTodoTargetState,
   DesktopProvisioningDevice,
@@ -21,6 +22,7 @@ import type {
   PublicConfigEnvelope,
   SerialProvisioningRequest,
   SerialProvisioningResponse,
+  TodoSyncResponse,
   WifiNetwork,
 } from '@memorilo/device-provisioning'
 import {
@@ -30,10 +32,12 @@ import {
   decodeFrameSequence,
   encodeFrames,
   encodeSerialProvisioningRequest,
+  MAX_TODO_SNAPSHOT_BYTES,
   parseApplyStatusEnvelope,
   parseDeviceInfoEnvelope,
   parsePublicConfigEnvelope,
   parseSerialProvisioningResponse,
+  parseTodoSyncResponse,
   PROTOCOL_VERSION,
   PROVISIONING_UUIDS,
   ProvisioningProtocolError,
@@ -131,6 +135,7 @@ interface PairingBridge {
   loadGallery: (target: DesktopDeviceGalleryTarget) => Promise<DesktopDeviceGalleryStatus>
   loadStatus: (target: DesktopDeviceGalleryTarget) => Promise<DesktopDeviceStatus>
   loadTodos: (target: DesktopDeviceGalleryTarget) => Promise<DesktopDeviceTodoState>
+  loadTodoSnapshot: () => Promise<DesktopDeviceTodoSnapshot>
   loadTodoTarget: (deviceId: string) => Promise<DesktopDeviceTodoTargetState>
   pushTodos: (input: DesktopDeviceTodoPush) => Promise<void>
   refreshDevice: (target: DesktopDeviceGalleryTarget) => Promise<void>
@@ -157,6 +162,7 @@ export interface DeviceProvisioningClient {
   loadGallery: (target: DesktopDeviceGalleryTarget) => Effect.Effect<DesktopDeviceGalleryStatus, DeviceProvisioningError>
   loadStatus: (target: DesktopDeviceGalleryTarget) => Effect.Effect<DesktopDeviceStatus, DeviceProvisioningError>
   loadTodos: (target: DesktopDeviceGalleryTarget) => Effect.Effect<DesktopDeviceTodoState, DeviceProvisioningError>
+  loadTodoSnapshot: () => Effect.Effect<DesktopDeviceTodoSnapshot, DeviceProvisioningError>
   loadTodoTarget: (deviceId: string) => Effect.Effect<DesktopDeviceTodoTargetState, DeviceProvisioningError>
   pushTodos: (input: DesktopDeviceTodoPush) => Effect.Effect<void, DeviceProvisioningError>
   refreshDevice: (target: DesktopDeviceGalleryTarget) => Effect.Effect<void, DeviceProvisioningError>
@@ -185,6 +191,7 @@ export interface DeviceProvisioningSession {
   subscribeDisconnected: (listener: () => void) => () => void
   readonly device: ProvisionedDevice
   apply: (patch: DeviceConfigPatch) => Effect.Effect<ApplyStatusEnvelope, DeviceProvisioningError>
+  pushTodos: (snapshot: DesktopDeviceTodoSnapshot) => Effect.Effect<void, DeviceProvisioningError>
   loadGallery: () => Effect.Effect<DesktopDeviceGalleryStatus, DeviceProvisioningError>
   uploadGalleryAsset: (bytes: Uint8Array, name: string, createdAtUnixSeconds: number, onProgress?: GalleryUploadProgressListener) => Effect.Effect<void, DeviceProvisioningError>
   deleteGalleryAsset: (id: number) => Effect.Effect<void, DeviceProvisioningError>
@@ -200,6 +207,7 @@ export class DeviceProvisioningConnection {
   private readonly statusWaiters = new Map<string, Deferred.Deferred<ApplyStatusEnvelope, DeviceProvisioningError>>()
   private readonly wifiScanWaiters = new Map<string, Deferred.Deferred<readonly WifiNetwork[], DeviceProvisioningError>>()
   private readonly galleryWaiters = new Map<string, Deferred.Deferred<GalleryResponse, DeviceProvisioningError>>()
+  private readonly todoWaiters = new Map<string, Deferred.Deferred<TodoSyncResponse, DeviceProvisioningError>>()
   private galleryFrames: ChunkFrame[] = []
   private readonly disconnected = Deferred.makeUnsafe<never, DeviceProvisioningError>()
   private readonly disconnectListeners = new Set<() => void>()
@@ -314,6 +322,41 @@ export class DeviceProvisioningConnection {
       }),
       ({ requestId }) => Effect.sync(() => { this.wifiScanWaiters.delete(requestId) }),
     )
+  }
+
+  pushTodos(snapshot: DesktopDeviceTodoSnapshot): Effect.Effect<void, DeviceProvisioningError> {
+    if (!todoSnapshotFitsProtocol(snapshot))
+      return Effect.fail(new DeviceProvisioningError({ code: 'protocol-error' }))
+    if (!this.galleryCharacteristic)
+      return Effect.fail(new DeviceProvisioningError({ code: 'gallery-unavailable' }))
+    return Effect.acquireUseRelease(Effect.sync(() => {
+      const requestId = crypto.randomUUID()
+      const waiter = Deferred.makeUnsafe<TodoSyncResponse, DeviceProvisioningError>()
+      this.todoWaiters.set(requestId, waiter)
+      return { requestId, waiter }
+    }), ({ requestId, waiter }) => Effect.gen({ self: this }, function* () {
+      const frames = yield* Effect.try({
+        try: () => encodeFrames(randomRequestToken(), new TextEncoder().encode(JSON.stringify({
+          operation: 'todo.sync',
+          protocolVersion: PROTOCOL_VERSION,
+          requestId,
+          snapshot,
+        })), characteristicChunkBytes),
+        catch: cause => toProvisioningError('protocol-error', cause),
+      })
+      for (const frame of frames) {
+        yield* Effect.tryPromise({
+          try: () => this.galleryCharacteristic!.writeValueWithResponse(new Uint8Array(frame)),
+          catch: cause => toProvisioningError('connection-failed', cause),
+        })
+      }
+      const response = yield* Deferred.await(waiter).pipe(Effect.timeoutOrElse({
+        duration: applyTimeoutMilliseconds,
+        onTimeout: () => Effect.fail(new DeviceProvisioningError({ code: 'timeout' })),
+      }))
+      if (response.status !== 'accepted')
+        return yield* Effect.fail(new DeviceProvisioningError({ code: 'apply-rejected', cause: response.error }))
+    }), ({ requestId }) => Effect.sync(() => { this.todoWaiters.delete(requestId) }))
   }
 
   loadGallery(): Effect.Effect<DesktopDeviceGalleryStatus, DeviceProvisioningError> {
@@ -445,15 +488,28 @@ export class DeviceProvisioningConnection {
       this.galleryFrames.push(frame)
       if (this.galleryFrames.length < frame.count)
         return
-      const response = JSON.parse(new TextDecoder().decode(reassembleFrames(this.galleryFrames))) as GalleryResponse
+      const json = reassembleFrames(this.galleryFrames)
       this.galleryFrames = []
-      const waiter = this.galleryWaiters.get(response.requestId)
-      if (waiter)
-        Deferred.doneUnsafe(waiter, Effect.succeed(response))
+      const raw = JSON.parse(new TextDecoder().decode(json)) as { operation?: unknown, requestId?: unknown }
+      if (raw.operation === 'todo.sync') {
+        const response = parseTodoSyncResponse(json)
+        const waiter = this.todoWaiters.get(response.requestId)
+        if (waiter)
+          Deferred.doneUnsafe(waiter, Effect.succeed(response))
+      }
+      else {
+        const response = raw as GalleryResponse
+        const waiter = this.galleryWaiters.get(String(response.requestId))
+        if (waiter)
+          Deferred.doneUnsafe(waiter, Effect.succeed(response))
+      }
     }
     catch (error) {
       for (const waiter of this.galleryWaiters.values()) Deferred.doneUnsafe(waiter, Effect.fail(toProvisioningError('protocol-error', error)))
       this.galleryWaiters.clear()
+      for (const waiter of this.todoWaiters.values())
+        Deferred.doneUnsafe(waiter, Effect.fail(toProvisioningError('protocol-error', error)))
+      this.todoWaiters.clear()
     }
   }
 }
@@ -547,6 +603,28 @@ export class SerialProvisioningConnection implements DeviceProvisioningSession {
           config: applyConfigPatch(this.device.config, patch, response.status.revision),
         }
         return Effect.succeed(response.status)
+      }),
+      Effect.onError(() => this.close()),
+      Effect.onInterrupt(() => this.close()),
+    )
+  }
+
+  pushTodos(snapshot: DesktopDeviceTodoSnapshot): Effect.Effect<void, DeviceProvisioningError> {
+    if (!todoSnapshotFitsProtocol(snapshot))
+      return Effect.fail(new DeviceProvisioningError({ code: 'protocol-error' }))
+    const requestId = globalThis.crypto.randomUUID()
+    return this.exchange({
+      operation: 'todo.sync',
+      protocolVersion: PROTOCOL_VERSION,
+      requestId,
+      snapshot,
+    }).pipe(
+      Effect.flatMap((response) => {
+        if (response.operation !== 'todo.sync')
+          return Effect.fail(new DeviceProvisioningError({ code: 'protocol-error' }))
+        if (response.status !== 'accepted')
+          return Effect.fail(new DeviceProvisioningError({ code: 'apply-rejected', cause: response.error }))
+        return Effect.void
       }),
       Effect.onError(() => this.close()),
       Effect.onInterrupt(() => this.close()),
@@ -952,6 +1030,10 @@ export class DeviceProvisioningService {
     return this.managementEffect(() => this.bridge.loadTodos(target))
   }
 
+  loadTodoSnapshot(): Effect.Effect<DesktopDeviceTodoSnapshot, DeviceProvisioningError> {
+    return this.managementEffect(() => this.bridge.loadTodoSnapshot())
+  }
+
   loadTodoTarget(deviceId: string): Effect.Effect<DesktopDeviceTodoTargetState, DeviceProvisioningError> {
     return this.managementEffect(() => this.bridge.loadTodoTarget(deviceId))
   }
@@ -1252,4 +1334,8 @@ function toProvisioningError(
   cause: unknown,
 ): DeviceProvisioningError {
   return new DeviceProvisioningError({ cause, code })
+}
+
+function todoSnapshotFitsProtocol(snapshot: DesktopDeviceTodoSnapshot): boolean {
+  return new TextEncoder().encode(JSON.stringify(snapshot)).byteLength <= MAX_TODO_SNAPSHOT_BYTES
 }

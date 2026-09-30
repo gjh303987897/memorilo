@@ -31,6 +31,7 @@ describe('device settings', () => {
       { rssi: -42, security: 'secured' as const, ssid: 'Study' },
       { rssi: -55, security: 'open' as const, ssid: 'Guest' },
     ]))
+    const sessionPushTodos = vi.fn(() => Effect.void)
     const session: DeviceProvisioningSession = {
       connected: true,
       subscribeDisconnected: (listener) => {
@@ -40,6 +41,7 @@ describe('device settings', () => {
         }
       },
       apply,
+      pushTodos: sessionPushTodos,
       loadGallery: () => Effect.fail(new DeviceProvisioningError({ code: 'gallery-unavailable' })),
       uploadGalleryAsset: () => Effect.fail(new DeviceProvisioningError({ code: 'gallery-unavailable' })),
       deleteGalleryAsset: () => Effect.fail(new DeviceProvisioningError({ code: 'gallery-unavailable' })),
@@ -96,6 +98,7 @@ describe('device settings', () => {
           return { status: null, target: null }
         })
       : Effect.succeed({ status: null, target: savedAddress ? { address: savedAddress, deviceId: 'device-1' } : null }))
+    const loadTodoSnapshot = vi.fn(() => Effect.succeed({ generatedAt: '2026-09-30T00:00:00.000Z', items: [], revision: 'empty' }))
     const loadGallery = vi.fn(() => Effect.fail(new DeviceProvisioningError({ code: 'local-management' })))
     const loadStatus = vi.fn(() => Effect.fail(new DeviceProvisioningError({ code: 'local-management' })))
     const loadTodos = vi.fn(() => Effect.fail(new DeviceProvisioningError({ code: 'local-management' })))
@@ -126,6 +129,7 @@ describe('device settings', () => {
       loadStatus,
       loadTodos,
       loadTodoTarget,
+      loadTodoSnapshot,
       pushTodos,
       refreshDevice,
       nextDevicePage,
@@ -205,6 +209,8 @@ describe('device settings', () => {
     }
     const name = await rendered.findByRole('textbox', { name: 'Device name' })
     expect(name).toHaveValue('Desk display')
+    await waitFor(() => expect(loadTodoSnapshot).toHaveBeenCalledOnce())
+    expect(sessionPushTodos).toHaveBeenCalledWith({ generatedAt: '2026-09-30T00:00:00.000Z', items: [], revision: 'empty' })
     expect(rendered.getByLabelText('Wi-Fi password')).toHaveValue('')
     for (const label of [
       'Almanac note',

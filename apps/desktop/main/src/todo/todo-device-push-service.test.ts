@@ -55,4 +55,14 @@ describe('tODO device push service', () => {
     service.close()
     vi.useRealTimers()
   })
+
+  it('builds an explicit empty snapshot for a desktop with no TODOs', async () => {
+    const service = createTodoDevicePushService({
+      listTasks: async () => [],
+      push: async () => undefined,
+      targets: [],
+    })
+    await expect(service.snapshot()).resolves.toMatchObject({ items: [] })
+    service.close()
+  })
 })

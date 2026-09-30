@@ -307,6 +307,7 @@ function session(overrides: Partial<DeviceProvisioningSession> = {}): DeviceProv
     close: () => Effect.void,
     connected: true,
     deleteGalleryAsset: unused,
+    pushTodos: () => Effect.void,
     device: {
       config: {
         configSchemaVersion: 1,
@@ -358,6 +359,7 @@ function client(overrides: Partial<DeviceProvisioningClient> = {}): DeviceProvis
     loadStatus: unused,
     loadTodos: unused,
     loadTodoTarget: () => Effect.succeed({ status: null, target: null }),
+    loadTodoSnapshot: () => Effect.succeed({ generatedAt: '2026-09-30T00:00:00.000Z', items: [], revision: 'empty' }),
     pushTodos: () => Effect.void,
     refreshDevice: () => Effect.void,
     nextDevicePage: () => Effect.void,

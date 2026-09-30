@@ -145,6 +145,7 @@ export const desktopProvisioningChannels = {
   loadStatus: 'memorilo:device-provisioning:load-status',
   loadTodos: 'memorilo:device-provisioning:load-todos',
   loadTodoTarget: 'memorilo:device-provisioning:load-todo-target',
+  loadTodoSnapshot: 'memorilo:device-provisioning:load-todo-snapshot',
   pairingRequested: 'memorilo:device-provisioning:pairing-requested',
   respondToPairing: 'memorilo:device-provisioning:respond-to-pairing',
   saveLocalManagementToken: 'memorilo:device-provisioning:save-local-management-token',

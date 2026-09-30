@@ -180,6 +180,13 @@ export function DeviceSettings({ client }: { client?: DeviceProvisioningClient }
           await Effect.runPromise(nextConnection.close())
           return
         }
+        const todoSnapshot = await Effect.runPromise(service.loadTodoSnapshot(), { signal: controller.signal })
+        await Effect.runPromise(nextConnection.pushTodos(todoSnapshot), { signal: controller.signal })
+        if (operation.current !== currentOperation) {
+          connectionRef.current = null
+          await Effect.runPromise(nextConnection.close())
+          return
+        }
         setConnection(nextConnection)
         setConnected(nextConnection.connected)
         unsubscribeDisconnectRef.current = nextConnection.subscribeDisconnected(() => {

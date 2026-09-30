@@ -6,6 +6,7 @@ import type {
   DesktopDeviceGalleryUploadProgress,
   DesktopDeviceStatus,
   DesktopDeviceTodoPush,
+  DesktopDeviceTodoSnapshot,
   DesktopDeviceTodoState,
   DesktopDeviceTodoTargetState,
   DesktopNoteExternalUpdate,
@@ -42,6 +43,7 @@ export interface DesktopApi {
     loadGallery: (target: DesktopDeviceGalleryTarget) => Promise<DesktopDeviceGalleryStatus>
     loadStatus: (target: DesktopDeviceGalleryTarget) => Promise<DesktopDeviceStatus>
     loadTodos: (target: DesktopDeviceGalleryTarget) => Promise<DesktopDeviceTodoState>
+    loadTodoSnapshot: () => Promise<DesktopDeviceTodoSnapshot>
     loadTodoTarget: (deviceId: string) => Promise<DesktopDeviceTodoTargetState>
     pushTodos: (input: DesktopDeviceTodoPush) => Promise<void>
     refreshDevice: (target: DesktopDeviceGalleryTarget) => Promise<void>

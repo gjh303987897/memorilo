@@ -12,6 +12,7 @@ export interface TodoDevicePushService {
   readonly notifyLocalMutation: () => void
   readonly setTargets: (targets: readonly TodoDevicePushTarget[]) => void
   readonly statuses: () => readonly DesktopDeviceTodoPushStatus[]
+  readonly snapshot: () => Promise<DesktopDeviceTodoSnapshot>
 }
 
 interface TodoDevicePushServiceOptions {
@@ -110,6 +111,7 @@ export function createTodoDevicePushService(options: TodoDevicePushServiceOption
       }
     },
     statuses: () => [...statuses.values()],
+    snapshot: async () => buildSnapshot(await options.listTasks(), now()),
   }
 }
 

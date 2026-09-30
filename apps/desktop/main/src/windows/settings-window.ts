@@ -140,6 +140,12 @@ export function createSettingsWindowController(
     requireSettingsSender(event)
     return Effect.runPromise(localManagement.loadTodos(requireGalleryTarget(input)))
   })
+  ipcMain.handle(desktopProvisioningChannels.loadTodoSnapshot, async (event) => {
+    requireSettingsSender(event)
+    if (!todoDevicePush)
+      throw new Error('TODO device snapshot service is unavailable')
+    return todoDevicePush.snapshot()
+  })
   ipcMain.handle(desktopProvisioningChannels.pushTodos, async (event, input: unknown) => {
     requireSettingsSender(event)
     return Effect.runPromise(localManagement.pushTodos(requireTodoPush(input)))
@@ -401,6 +407,7 @@ export function createSettingsWindowController(
     ipcMain.removeHandler(desktopProvisioningChannels.loadGallery)
     ipcMain.removeHandler(desktopProvisioningChannels.loadStatus)
     ipcMain.removeHandler(desktopProvisioningChannels.loadTodos)
+    ipcMain.removeHandler(desktopProvisioningChannels.loadTodoSnapshot)
     ipcMain.removeHandler(desktopProvisioningChannels.pushTodos)
     ipcMain.removeHandler(desktopProvisioningChannels.refreshDevice)
     ipcMain.removeHandler(desktopProvisioningChannels.nextDevicePage)

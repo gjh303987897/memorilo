@@ -19,6 +19,7 @@ export function createDesktopApi(
     loadGallery: async () => { throw new Error('Device gallery is unavailable') },
     loadStatus: async () => { throw new Error('Device status is unavailable') },
     loadTodos: async () => { throw new Error('Device TODO synchronization is unavailable') },
+    loadTodoSnapshot: async () => ({ generatedAt: new Date(0).toISOString(), items: [], revision: 'empty' }),
     loadTodoTarget: async () => ({ status: null, target: null }),
     pushTodos: async () => undefined,
     refreshDevice: async () => undefined,

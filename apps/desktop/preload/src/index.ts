@@ -27,6 +27,7 @@ const deviceProvisioning: DesktopApi['deviceProvisioning'] = {
   loadGallery: target => ipcRenderer.invoke(desktopProvisioningChannels.loadGallery, target),
   loadStatus: target => ipcRenderer.invoke(desktopProvisioningChannels.loadStatus, target),
   loadTodos: target => ipcRenderer.invoke(desktopProvisioningChannels.loadTodos, target),
+  loadTodoSnapshot: () => ipcRenderer.invoke(desktopProvisioningChannels.loadTodoSnapshot),
   loadTodoTarget: deviceId => ipcRenderer.invoke(desktopProvisioningChannels.loadTodoTarget, deviceId),
   pushTodos: input => ipcRenderer.invoke(desktopProvisioningChannels.pushTodos, input),
   refreshDevice: target => ipcRenderer.invoke(desktopProvisioningChannels.refreshDevice, target),
