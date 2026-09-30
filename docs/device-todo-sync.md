@@ -5,8 +5,10 @@ Memorilo keeps NOTE4C TODO data read-only. The server's HTTPS snapshot is author
 ## Paths
 
 - Server to device: `mqtts://` notification topic, followed by an HTTPS `GET` with bearer authentication and `ETag`.
-- Memorilo to device: desktop-initiated authenticated LAN `POST /v1/todos` after local TODO changes. The desktop may use `GET /v1/todos` to verify the cached revision.
-- Device to desktop: no callback and no inbound desktop listener. BLE is used only for pairing and provisioning.
+- Memorilo to device: desktop-initiated authenticated LAN `POST /v1/todos` after local TODO changes, or a direct TODO snapshot push over an authenticated BLE or USB Serial provisioning session.
+- Device to desktop: no callback and no inbound desktop listener. BLE and USB Serial are outbound provisioning transports; they carry the same bounded snapshot contract as LAN.
+
+When a device is connected from Device Settings, Desktop immediately sends the current snapshot over the selected BLE or USB Serial session. An empty snapshot is intentional: it clears any TODOs retained in device storage. The same `generatedAt`, `revision`, and item projection is used by LAN, BLE, and Serial, so the transport does not change the device result.
 
 MQTT topics are device-scoped:
 

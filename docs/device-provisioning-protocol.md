@@ -13,6 +13,7 @@ Memorilo configures a device over either a five-minute, physically initiated BLE
 | Configuration apply | `7b7a1003-6c6f-4d65-8a8b-6d656d6f7269` | authenticated write |
 | Status | `7b7a1004-6c6f-4d65-8a8b-6d656d6f7269` | authenticated read/notify |
 | Wi-Fi scan | `7b7a1006-6c6f-4d65-8a8b-6d656d6f7269` | authenticated write/notify |
+| Gallery and TODO sync | `7b7a1007-6c6f-4d65-8a8b-6d656d6f7269` | authenticated write/notify |
 
 Device information reports protocol/config schema versions, firmware version, device ID, current configuration revision, and capabilities. Redacted configuration reports `wifiPasswordIsSet` and `localManagementTokenIsSet`, but never password or token material.
 
@@ -36,6 +37,26 @@ scan characteristic. The response contains the request ID and a bounded list of
 `{ ssid, rssi, security }` entries and is delivered on the same transport. Empty
 SSIDs are omitted because they represent hidden networks; users can still enter
 those names manually in the Device Settings SSID field.
+
+### TODO synchronization
+
+Both transports also accept a bounded `todo.sync` request on the gallery
+characteristic/serial envelope:
+
+```json
+{
+  "operation": "todo.sync",
+  "protocolVersion": 1,
+  "requestId": "todo-1",
+  "snapshot": { "generatedAt": "...", "revision": "...", "items": [] }
+}
+```
+
+The response is `accepted` or `rejected`. `items: []` is a valid authoritative
+snapshot and clears the device's retained TODO model; it is never treated as a
+missing update. Device Settings sends the current Desktop snapshot immediately
+after a BLE or USB Serial connection is established, so a newly provisioned
+device starts empty until Desktop supplies TODO data.
 
 ### Glance-page configuration
 

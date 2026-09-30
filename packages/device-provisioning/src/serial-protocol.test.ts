@@ -105,4 +105,28 @@ describe('serial provisioning protocol', () => {
       status: 'error',
     })
   })
+
+  it('round trips an empty TODO snapshot so it can clear the device', () => {
+    const request = {
+      operation: 'todo.sync' as const,
+      protocolVersion: 1 as const,
+      requestId: 'todo-empty-1',
+      snapshot: {
+        generatedAt: '2026-09-30T00:00:00.000Z',
+        items: [],
+        revision: 'empty-revision',
+      },
+    }
+    const encoded = new TextDecoder().decode(encodeSerialProvisioningRequest(request)).trimEnd()
+    expect(parseSerialProvisioningRequest(encoded)).toEqual(request)
+    expect(parseSerialProvisioningResponse(`${SERIAL_PROVISIONING_PREFIX}${JSON.stringify({
+      operation: 'todo.sync',
+      requestId: request.requestId,
+      status: 'accepted',
+    })}`)).toEqual({
+      operation: 'todo.sync',
+      requestId: request.requestId,
+      status: 'accepted',
+    })
+  })
 })

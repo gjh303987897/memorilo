@@ -4,6 +4,7 @@ export const MAX_JSON_BYTES = 64 * 1024
 export const MAX_CHUNKS = 256
 export const MAX_CHUNK_PAYLOAD_BYTES = 384
 export const FRAME_HEADER_BYTES = 18
+export const MAX_TODO_SNAPSHOT_BYTES = 32 * 1024
 
 export const PROVISIONING_UUIDS = {
   service: '7b7a1010-6c6f-4d65-8a8b-6d656d6f7269',
@@ -60,6 +61,67 @@ export interface WifiNetwork {
   ssid: string
   rssi: number
   security: 'open' | 'secured'
+}
+
+/** The transport-neutral TODO projection sent from Desktop to a device. */
+export interface TodoSnapshot {
+  generatedAt: string
+  items: readonly TodoSnapshotItem[]
+  revision: string
+}
+
+export interface TodoSnapshotItem {
+  allDay: boolean
+  dueDate: string | null
+  dueTime: string | null
+  id: string
+  noteTitle: string
+  parentId: string | null
+  revision: string
+  status: 'todo' | 'in-progress' | 'done'
+  text: string
+  topicTitle: string
+}
+
+export interface TodoSyncRequest {
+  operation: 'todo.sync'
+  protocolVersion: typeof PROTOCOL_VERSION
+  requestId: string
+  snapshot: TodoSnapshot
+}
+
+export interface TodoSyncResponse {
+  operation: 'todo.sync'
+  requestId: string
+  status: 'accepted' | 'rejected'
+  error?: ProtocolErrorCode
+}
+
+export function parseTodoSyncRequest(json: Uint8Array): TodoSyncRequest {
+  const value = parseJsonRecord(json)
+  if (value.operation !== 'todo.sync'
+    || value.protocolVersion !== PROTOCOL_VERSION
+    || typeof value.requestId !== 'string'
+    || value.requestId.length === 0
+    || value.requestId.length > 64
+    || !isAscii(value.requestId)
+    || !isTodoSnapshot(value.snapshot)) {
+    throw new ProvisioningProtocolError('invalid-request')
+  }
+  return value as unknown as TodoSyncRequest
+}
+
+export function parseTodoSyncResponse(json: Uint8Array): TodoSyncResponse {
+  const value = parseJsonRecord(json)
+  if (value.operation !== 'todo.sync'
+    || typeof value.requestId !== 'string'
+    || value.requestId.length === 0
+    || (value.status !== 'accepted' && value.status !== 'rejected')
+    || (value.error !== undefined && value.error !== null && !isProtocolErrorCode(value.error))) {
+    throw new ProvisioningProtocolError('invalid-request')
+  }
+  const { error, ...response } = value
+  return (error === null ? response : value) as unknown as TodoSyncResponse
 }
 
 /** Transport-neutral gallery contract shared by LAN, Bluetooth and USB serial. */
@@ -298,6 +360,29 @@ export function parseApplyConfigEnvelope(json: Uint8Array): ApplyConfigEnvelope 
   if (value.requiredCapabilities.some(capability => capability !== 'config-v1'))
     throw new ProvisioningProtocolError('unsupported-capability')
   return value as unknown as ApplyConfigEnvelope
+}
+
+export function isTodoSnapshot(value: unknown): value is TodoSnapshot {
+  if (!isRecord(value)
+    || typeof value.generatedAt !== 'string'
+    || value.generatedAt.length === 0
+    || typeof value.revision !== 'string'
+    || value.revision.length === 0
+    || !Array.isArray(value.items)
+    || value.items.length > 64) {
+    return false
+  }
+  return value.items.every(item => isRecord(item)
+    && typeof item.allDay === 'boolean'
+    && (item.dueDate === null || typeof item.dueDate === 'string')
+    && (item.dueTime === null || typeof item.dueTime === 'string')
+    && typeof item.id === 'string'
+    && typeof item.noteTitle === 'string'
+    && (item.parentId === null || typeof item.parentId === 'string')
+    && typeof item.revision === 'string'
+    && (item.status === 'todo' || item.status === 'in-progress' || item.status === 'done')
+    && typeof item.text === 'string'
+    && typeof item.topicTitle === 'string')
 }
 
 export function encodeFrames(

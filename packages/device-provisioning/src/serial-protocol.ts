@@ -6,6 +6,7 @@ import type {
   GalleryResponse,
   GalleryStatus,
   PublicConfigEnvelope,
+  TodoSnapshot,
   WifiNetwork,
 } from './protocol'
 import {
@@ -14,6 +15,8 @@ import {
   parseDeviceInfoEnvelope,
   parseGalleryRequest,
   parsePublicConfigEnvelope,
+  parseTodoSyncRequest,
+  parseTodoSyncResponse,
   PROTOCOL_VERSION,
   ProvisioningProtocolError,
 } from './protocol'
@@ -41,7 +44,14 @@ export interface SerialProvisioningApplyRequest {
   readonly request: ApplyConfigEnvelope
 }
 
-export type SerialProvisioningRequest = SerialProvisioningApplyRequest | SerialProvisioningReadRequest | SerialProvisioningWifiScanRequest | SerialProvisioningGalleryRequest
+export interface SerialProvisioningTodoSyncRequest {
+  readonly operation: 'todo.sync'
+  readonly protocolVersion: typeof PROTOCOL_VERSION
+  readonly requestId: string
+  readonly snapshot: TodoSnapshot
+}
+
+export type SerialProvisioningRequest = SerialProvisioningApplyRequest | SerialProvisioningReadRequest | SerialProvisioningWifiScanRequest | SerialProvisioningTodoSyncRequest | SerialProvisioningGalleryRequest
 
 export interface SerialProvisioningReadResponse {
   readonly deviceInfo: DeviceInfoEnvelope
@@ -66,7 +76,14 @@ export interface SerialProvisioningGalleryResponse extends GalleryResponse {
   readonly gallery?: GalleryStatus
 }
 
-export type SerialProvisioningResponse = SerialProvisioningApplyResponse | SerialProvisioningReadResponse | SerialProvisioningWifiScanResponse | SerialProvisioningGalleryResponse
+export interface SerialProvisioningTodoSyncResponse {
+  readonly operation: 'todo.sync'
+  readonly requestId: string
+  readonly status: 'accepted' | 'rejected'
+  readonly error?: string
+}
+
+export type SerialProvisioningResponse = SerialProvisioningApplyResponse | SerialProvisioningReadResponse | SerialProvisioningWifiScanResponse | SerialProvisioningTodoSyncResponse | SerialProvisioningGalleryResponse
 
 export function encodeSerialProvisioningRequest(request: SerialProvisioningRequest): Uint8Array {
   const json = JSON.stringify(request)
@@ -107,6 +124,9 @@ export function parseSerialProvisioningResponse(line: string): SerialProvisionin
       operation: 'scanWifi',
       requestId: value.requestId,
     }
+  }
+  if (value.operation === 'todo.sync') {
+    return parseTodoSyncResponse(bytes)
   }
   if (value.operation === 'apply' && isRecord(value.status)) {
     const status = parseApplyStatusEnvelope(jsonBytes(value.status))
@@ -182,6 +202,9 @@ export function parseSerialProvisioningRequest(line: string): SerialProvisioning
     && value.requestId.length > 0
     && value.requestId.length <= 64) {
     return value as unknown as SerialProvisioningWifiScanRequest
+  }
+  if (value.operation === 'todo.sync') {
+    return parseTodoSyncRequest(bytes)
   }
   if (value.operation === 'apply' && isRecord(value.request)) {
     return {

@@ -52,17 +52,17 @@ mod firmware {
     #[cfg(not(feature = "color-test"))]
     use memorilo_device_firmware::provisioning_protocol::{
         ApplyConfigEnvelope, ApplyStatus, ApplyStatusEnvelope, CONFIG_SCHEMA_VERSION,
-        DeviceInfoEnvelope, PROTOCOL_VERSION, ProtocolErrorCode, PublicConfigEnvelope, WifiNetwork,
-        encode_frames,
+        DeviceInfoEnvelope, PROTOCOL_VERSION, ProtocolErrorCode, PublicConfigEnvelope, TodoRequest,
+        WifiNetwork, encode_frames,
     };
     #[cfg(not(feature = "color-test"))]
     use memorilo_device_firmware::provisioning_serial::{
         SerialProvisioningCommand, SerialProvisioningTransport, decode_gallery_bytes,
         encode_apply_response, encode_gallery_error_response, encode_gallery_status_response,
-        encode_read_response, encode_wifi_scan_response,
+        encode_read_response, encode_todo_response, encode_wifi_scan_response,
     };
     #[cfg(not(feature = "color-test"))]
-    use memorilo_device_firmware::todo_sync::{Admission, TodoSyncEvent};
+    use memorilo_device_firmware::todo_sync::{Admission, SnapshotSource, TodoSyncEvent};
     #[cfg(not(feature = "color-test"))]
     use memorilo_device_firmware::ui;
     #[cfg(not(feature = "color-test"))]
@@ -527,6 +527,18 @@ mod firmware {
                                 };
                                 serial.write(&response)?;
                             }
+                            SerialProvisioningCommand::Todo(request) => {
+                                let error = commit_todo_snapshot(
+                                    &request,
+                                    now,
+                                    &network,
+                                    &mut application,
+                                    &mut persistence,
+                                    &mut coordinator,
+                                    &refresh_tx,
+                                )?;
+                                serial.write(&encode_todo_response(&request.request_id, error)?)?;
+                            }
                         }
                     }
                 }
@@ -920,6 +932,33 @@ mod firmware {
                     }
                 }
             }
+            SessionOutput::Todo(request) => {
+                let request_id = request.request_id.clone();
+                let error = commit_todo_snapshot(
+                    &request,
+                    now,
+                    network,
+                    application,
+                    persistence,
+                    coordinator,
+                    refresh_tx,
+                )?;
+                let payload = encode_todo_response(&request_id, error)?;
+                let json = payload
+                    .strip_prefix(
+                        memorilo_device_firmware::provisioning_serial::SERIAL_PROVISIONING_PREFIX
+                            .as_bytes(),
+                    )
+                    .and_then(|value| value.strip_suffix(b"\n"))
+                    .unwrap_or(payload.as_slice());
+                let frames = encode_frames(0x544F_444F, json, 180)
+                    .map_err(|error| anyhow::anyhow!("TODO response framing failed: {error:?}"))?;
+                if let Some(transport) = transport.as_ref() {
+                    for frame in frames {
+                        transport.notify_gallery(&frame)?;
+                    }
+                }
+            }
             SessionOutput::Reject(error) => {
                 if let Some(transport) = transport.as_ref() {
                     transport.notify_status(&provisioning.status(
@@ -954,8 +993,7 @@ mod firmware {
                     .as_deref()
                     .ok_or(ProtocolErrorCode::InvalidRequest)
                     .and_then(|value| {
-                        decode_gallery_bytes(value)
-                            .map_err(|_| ProtocolErrorCode::InvalidRequest)
+                        decode_gallery_bytes(value).map_err(|_| ProtocolErrorCode::InvalidRequest)
                     })?;
                 if bytes.len() != FRAME_BYTES {
                     return Err(ProtocolErrorCode::InvalidAssetLength);
@@ -1018,6 +1056,44 @@ mod firmware {
             GalleryError::InvalidSlideshowInterval => ProtocolErrorCode::InvalidSlideshowInterval,
             GalleryError::Storage(_) => ProtocolErrorCode::StorageFailure,
         }
+    }
+
+    #[cfg(not(feature = "color-test"))]
+    fn commit_todo_snapshot(
+        request: &TodoRequest,
+        now: Duration,
+        network: &NetworkRuntime,
+        application: &mut Application,
+        persistence: &mut PersistenceManager<EspNvsBlobStore>,
+        coordinator: &mut DisplayCoordinator,
+        refresh_tx: &SyncSender<RefreshRequest>,
+    ) -> Result<Option<ProtocolErrorCode>> {
+        let mut candidate = application.persistent_state();
+        let mut todo_sync = candidate.todo_sync.clone();
+        match todo_sync.admit(
+            request.snapshot.clone(),
+            SnapshotSource::ClientLanPush,
+            unix_seconds(),
+        ) {
+            Admission::Accepted { .. } | Admission::Unchanged => {
+                candidate.todos = todo_sync.model.clone();
+                candidate.todo_sync = todo_sync.clone();
+            }
+            Admission::Rejected(error) => {
+                log::warn!("rejected TODO snapshot from provisioning: {error}");
+                return Ok(Some(ProtocolErrorCode::InvalidRequest));
+            }
+        }
+        persistence.schedule(candidate.clone(), now);
+        if let Err(error) = persistence.flush() {
+            log::error!("TODO provisioning commit failed: {error}");
+            return Ok(Some(ProtocolErrorCode::StorageFailure));
+        }
+        let transition = application.dispatch(ApplicationCommand::TodosSynced(candidate.todos));
+        application.dispatch(ApplicationCommand::TodoSyncStatus(todo_sync.clone()));
+        network.publish_todos(todo_sync)?;
+        queue_render(application, coordinator, refresh_tx, transition.render)?;
+        Ok(None)
     }
 
     #[cfg(not(feature = "color-test"))]

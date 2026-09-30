@@ -3,8 +3,8 @@ use crate::gallery::GalleryCatalog;
 use crate::gallery::{GALLERY_CAPACITY_BYTES, MAX_GALLERY_ASSETS};
 use crate::provisioning_protocol::{
     ApplyConfigEnvelope, ApplyStatusEnvelope, DeviceInfoEnvelope, GalleryRequest, MAX_JSON_BYTES,
-    PROTOCOL_VERSION, ProtocolErrorCode, PublicConfigEnvelope, WifiNetwork, parse_apply_request,
-    parse_gallery_request,
+    PROTOCOL_VERSION, ProtocolErrorCode, PublicConfigEnvelope, TodoRequest, WifiNetwork,
+    parse_apply_request, parse_gallery_request, parse_todo_request,
 };
 use serde::Serialize;
 
@@ -18,6 +18,7 @@ pub enum SerialProvisioningCommand {
     ScanWifi { request_id: String },
     Apply(Box<ApplyConfigEnvelope>),
     Gallery(GalleryRequest),
+    Todo(TodoRequest),
 }
 
 #[derive(Debug, Default)]
@@ -97,6 +98,9 @@ fn parse_command(json: &[u8]) -> Result<SerialProvisioningCommand, String> {
         operation if operation.starts_with("gallery.") => parse_gallery_request(json)
             .map(SerialProvisioningCommand::Gallery)
             .map_err(|error| format!("invalid gallery request: {error:?}")),
+        "todo.sync" => parse_todo_request(json)
+            .map(SerialProvisioningCommand::Todo)
+            .map_err(|error| format!("invalid TODO request: {error:?}")),
         _ => Err("unsupported serial provisioning operation".into()),
     }
 }
@@ -226,6 +230,31 @@ pub fn encode_gallery_status_response(
             max_assets: MAX_GALLERY_ASSETS,
             mutation_revision,
         },
+    })
+}
+
+pub fn encode_todo_response(
+    request_id: &str,
+    error: Option<ProtocolErrorCode>,
+) -> Result<Vec<u8>, serde_json::Error> {
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct TodoResponse<'a> {
+        operation: &'static str,
+        request_id: &'a str,
+        status: &'static str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error: Option<ProtocolErrorCode>,
+    }
+    encode_response(&TodoResponse {
+        operation: "todo.sync",
+        request_id,
+        status: if error.is_some() {
+            "rejected"
+        } else {
+            "accepted"
+        },
+        error,
     })
 }
 

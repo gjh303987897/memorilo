@@ -597,6 +597,29 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_client_snapshot_clears_existing_todos() {
+        let mut state = TodoSyncState::default();
+        assert!(matches!(
+            state.admit(
+                snapshot("revision-with-items", "remove me"),
+                SnapshotSource::ClientLanPush,
+                Some(1)
+            ),
+            Admission::Accepted { .. }
+        ));
+
+        let mut empty = snapshot("revision-empty", "unused");
+        empty.generated_at = "2026-09-05T00:01:00Z".into();
+        empty.items.clear();
+        assert!(matches!(
+            state.admit(empty, SnapshotSource::ClientLanPush, Some(2)),
+            Admission::Accepted { .. }
+        ));
+        assert!(state.model.items.is_empty());
+        assert_eq!(state.last_event, Some(TodoSyncEvent::Empty));
+    }
+
+    #[test]
     fn rejects_invalid_dates_duplicate_ids_and_cycles() {
         let mut invalid = snapshot("a", "text");
         invalid.items[0].due_date = Some("2026-02-30".into());

@@ -3,8 +3,9 @@ use std::time::Duration;
 use crate::persistence::{PersistentState, validate};
 use crate::provisioning_protocol::{
     ApplyConfigEnvelope, ApplyStatus, ApplyStatusEnvelope, ChunkFrame, FrameError, GalleryRequest,
-    PROTOCOL_VERSION, ProtocolErrorCode, WifiScanRequest, decode_frame, parse_apply_request,
-    parse_gallery_request, parse_wifi_scan_request, reassemble_frames, validate_base_revision,
+    PROTOCOL_VERSION, ProtocolErrorCode, TodoRequest, WifiScanRequest, decode_frame,
+    parse_apply_request, parse_gallery_request, parse_todo_request, parse_wifi_scan_request,
+    reassemble_frames, validate_base_revision,
 };
 
 pub const SESSION_LIFETIME: Duration = Duration::from_secs(5 * 60);
@@ -48,6 +49,7 @@ pub enum SessionOutput {
     Apply(Box<ApplyConfigEnvelope>),
     ScanWifi(WifiScanRequest),
     Gallery(GalleryRequest),
+    Todo(TodoRequest),
     Stop,
     Reject(ProtocolErrorCode),
 }
@@ -163,7 +165,7 @@ impl ProvisioningSession {
                         ProvisioningPhase::Connected | ProvisioningPhase::Authenticated
                     ) =>
                 {
-                    SessionOutput::Gallery(request)
+                    request
                 }
                 Ok(Some(_)) => SessionOutput::Reject(ProtocolErrorCode::AuthenticationRequired),
                 Ok(None) => SessionOutput::None,
@@ -280,7 +282,7 @@ impl ProvisioningSession {
     fn accept_gallery_frame(
         &mut self,
         bytes: &[u8],
-    ) -> Result<Option<GalleryRequest>, ProtocolErrorCode> {
+    ) -> Result<Option<SessionOutput>, ProtocolErrorCode> {
         if self.snapshot.phase != ProvisioningPhase::Authenticated {
             return Err(ProtocolErrorCode::AuthenticationRequired);
         }
@@ -295,7 +297,13 @@ impl ProvisioningSession {
         }
         let json = reassemble_frames(&self.gallery_frames).map_err(protocol_error)?;
         self.gallery_frames.clear();
-        parse_gallery_request(&json).map(Some)
+        let operation = serde_json::from_slice::<serde_json::Value>(&json)
+            .map_err(|_| ProtocolErrorCode::InvalidRequest)?;
+        if operation.get("operation").and_then(|value| value.as_str()) == Some("todo.sync") {
+            parse_todo_request(&json).map(|request| Some(SessionOutput::Todo(request)))
+        } else {
+            parse_gallery_request(&json).map(|request| Some(SessionOutput::Gallery(request)))
+        }
     }
 }
 

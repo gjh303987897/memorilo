@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::persistence::{AlmanacConfig, SelectionPolicy, WeatherConfig};
 use crate::todo_sync::TodoView;
+use crate::todo_sync::{MAX_SNAPSHOT_BYTES, TodoSnapshot, validate_snapshot};
 
 pub const PROTOCOL_VERSION: u16 = 1;
 pub const CONFIG_SCHEMA_VERSION: u16 = 2;
@@ -21,6 +22,33 @@ pub const CONFIG_APPLY_UUID: &str = "7b7a1003-6c6f-4d65-8a8b-6d656d6f7269";
 pub const STATUS_UUID: &str = "7b7a1004-6c6f-4d65-8a8b-6d656d6f7269";
 pub const WIFI_SCAN_UUID: &str = "7b7a1006-6c6f-4d65-8a8b-6d656d6f7269";
 pub const GALLERY_UUID: &str = "7b7a1007-6c6f-4d65-8a8b-6d656d6f7269";
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TodoRequest {
+    pub operation: String,
+    pub protocol_version: u16,
+    pub request_id: String,
+    pub snapshot: TodoSnapshot,
+}
+
+pub fn parse_todo_request(json: &[u8]) -> Result<TodoRequest, ProtocolErrorCode> {
+    if json.len() > MAX_JSON_BYTES || json.len() > MAX_SNAPSHOT_BYTES + 512 {
+        return Err(ProtocolErrorCode::RequestTooLarge);
+    }
+    let request: TodoRequest =
+        serde_json::from_slice(json).map_err(|_| ProtocolErrorCode::InvalidRequest)?;
+    if request.operation != "todo.sync"
+        || request.protocol_version != PROTOCOL_VERSION
+        || request.request_id.is_empty()
+        || request.request_id.len() > 64
+        || !request.request_id.is_ascii()
+        || validate_snapshot(&request.snapshot).is_err()
+    {
+        return Err(ProtocolErrorCode::InvalidRequest);
+    }
+    Ok(request)
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
