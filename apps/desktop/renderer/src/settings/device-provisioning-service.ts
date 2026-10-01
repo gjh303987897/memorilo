@@ -13,7 +13,6 @@ import type {
   DesktopProvisioningTransport,
 } from '@memorilo/desktop-api'
 import type {
-  ApplyConfigEnvelope,
   ApplyStatusEnvelope,
   ChunkFrame,
   DeviceConfigPatch,
@@ -25,14 +24,11 @@ import type {
   TodoSyncResponse,
   WifiNetwork,
 } from '@memorilo/device-provisioning'
-import {
-} from '@memorilo/desktop-api'
+import type { BleConnectStage } from './device-provisioning-support'
 import {
   decodeFrame,
-  decodeFrameSequence,
   encodeFrames,
   encodeSerialProvisioningRequest,
-  MAX_TODO_SNAPSHOT_BYTES,
   parseApplyStatusEnvelope,
   parseDeviceInfoEnvelope,
   parsePublicConfigEnvelope,
@@ -40,11 +36,30 @@ import {
   parseTodoSyncResponse,
   PROTOCOL_VERSION,
   PROVISIONING_UUIDS,
-  ProvisioningProtocolError,
   reassembleFrames,
   SERIAL_PROVISIONING_PREFIX,
 } from '@memorilo/device-provisioning'
-import { Data, Deferred, Effect } from 'effect'
+
+import { Deferred, Effect } from 'effect'
+import { DeviceProvisioningError } from './device-provisioning-error'
+import {
+  abortReason,
+  applyConfigPatch,
+  bytesToBase64,
+  concatDataViews,
+  createApplyRequest,
+  decodeEnvelope,
+  isGalleryResponse,
+  notifyGalleryUploadProgress,
+  randomRequestToken,
+  recordBleConnectDiagnostic,
+  resetBleConnectDiagnostics,
+  todoSnapshotFitsProtocol,
+  toProvisioningError,
+  viewBytes,
+} from './device-provisioning-support'
+
+export { DeviceProvisioningError } from './device-provisioning-error'
 
 const characteristicChunkBytes = 180
 const serialUploadChunkBytes = 1_024
@@ -53,17 +68,6 @@ const applyTimeoutMilliseconds = 15_000
 const connectInitializationTimeoutMilliseconds = 35_000
 const connectRetryDelayMilliseconds = 500
 const connectRetryWindowMilliseconds = 30_000
-const bleConnectDiagnosticStorageKey = 'memorilo:ble-diagnostic:connect'
-
-type BleConnectStage = 'characteristics' | 'connect' | 'decode' | 'notifications' | 'read' | 'selection' | 'service'
-type BleConnectOutcome = 'failure' | 'start' | 'success'
-
-// The Effect factory returns the base class; it is intentionally invoked without `new` here.
-// eslint-disable-next-line unicorn/throw-new-error
-export class DeviceProvisioningError extends Data.TaggedError('DeviceProvisioningError')<{
-  readonly cause?: unknown
-  readonly code: 'apply-rejected' | 'bluetooth-unavailable' | 'connection-failed' | 'gallery-unavailable' | 'local-management' | 'protocol-error' | 'secure-storage' | 'serial-unavailable' | 'timeout' | 'wifi-scan-unavailable'
-}> {}
 
 export type DeviceProvisioningTransport = DesktopProvisioningTransport
 
@@ -1111,71 +1115,6 @@ export class DeviceProvisioningService {
   }
 }
 
-function applyConfigPatch(
-  config: PublicConfigEnvelope,
-  patch: DeviceConfigPatch,
-  revision: number,
-): PublicConfigEnvelope {
-  return {
-    ...config,
-    ...(patch.deviceName === undefined ? {} : { deviceName: patch.deviceName }),
-    ...(patch.idleSleepSeconds === undefined ? {} : { idleSleepSeconds: patch.idleSleepSeconds }),
-    ...(patch.selectionPolicy === undefined ? {} : { selectionPolicy: patch.selectionPolicy }),
-    ...(patch.timezone === undefined ? {} : { timezone: patch.timezone }),
-    ...(patch.weather === undefined ? {} : { weather: patch.weather }),
-    ...(patch.almanac === undefined ? {} : { almanac: patch.almanac }),
-    ...(patch.todoSync?.enabled === undefined ? {} : { todoSyncEnabled: patch.todoSync.enabled }),
-    ...(patch.todoSync?.httpsBaseUrl === undefined ? {} : { todoSyncUrl: patch.todoSync.httpsBaseUrl }),
-    ...(patch.todoSync?.clearDeviceToken !== true && patch.todoSync?.deviceToken === undefined
-      ? {}
-      : { todoSyncTokenIsSet: patch.todoSync?.clearDeviceToken !== true }),
-    ...(patch.todoSync?.pollIntervalSeconds === undefined ? {} : { todoSyncPollIntervalSeconds: patch.todoSync.pollIntervalSeconds }),
-    ...(patch.todoSync?.view === undefined ? {} : { todoSyncView: patch.todoSync.view }),
-    ...(patch.todoSync?.mqttBrokerUrl === undefined ? {} : { todoSyncMqttBrokerUrl: patch.todoSync.mqttBrokerUrl }),
-    ...(patch.todoSync?.mqttTopic === undefined ? {} : { todoSyncMqttTopic: patch.todoSync.mqttTopic }),
-    ...(patch.todoSync?.mqttUsername === undefined ? {} : { todoSyncMqttUsername: patch.todoSync.mqttUsername }),
-    ...(patch.todoSync?.clearMqttPassword !== true && patch.todoSync?.mqttPassword === undefined
-      ? {}
-      : { todoSyncMqttPasswordIsSet: patch.todoSync?.clearMqttPassword !== true }),
-    ...(patch.wifi?.ssid === undefined ? {} : { wifiSsid: patch.wifi.ssid }),
-    ...(patch.wifi?.password === undefined && patch.wifi?.clearPassword !== true
-      ? {}
-      : { wifiPasswordIsSet: patch.wifi?.clearPassword !== true }),
-    ...(patch.localManagement?.token === undefined && patch.localManagement?.clearToken !== true
-      ? {}
-      : { localManagementTokenIsSet: patch.localManagement?.clearToken !== true }),
-    revision,
-  }
-}
-
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = ''
-  for (const byte of bytes)
-    binary += String.fromCharCode(byte)
-  return btoa(binary)
-}
-
-function isGalleryResponse(value: SerialProvisioningResponse): value is GalleryResponse {
-  return typeof value === 'object'
-    && value !== null
-    && typeof (value as GalleryResponse).operation === 'string'
-    && (value as GalleryResponse).operation.startsWith('gallery.')
-}
-
-function createApplyRequest(
-  baseRevision: number,
-  config: DeviceConfigPatch,
-  requestId: string,
-): ApplyConfigEnvelope {
-  return {
-    baseRevision,
-    config,
-    protocolVersion: PROTOCOL_VERSION,
-    requestId,
-    requiredCapabilities: ['config-v1'],
-  }
-}
-
 export function createDeviceProvisioningService(): DeviceProvisioningService {
   const bluetooth = (navigator as Navigator & { bluetooth?: BluetoothAdapter }).bluetooth
   const serial = (navigator as Navigator & { serial?: SerialAdapter }).serial
@@ -1188,61 +1127,6 @@ export function createDeviceProvisioningService(): DeviceProvisioningService {
     return new DeviceProvisioningService(unavailable, window.desktop.deviceProvisioning, serial)
   }
   return new DeviceProvisioningService(bluetooth, window.desktop.deviceProvisioning, serial)
-}
-
-function decodeEnvelope<Value>(
-  value: DataView,
-  characteristic: 'device-info' | 'public-config' | 'status',
-  parse: (json: Uint8Array) => Value,
-): Value {
-  const diagnostic: {
-    characteristic: typeof characteristic
-    stage: 'frames' | 'reassembly' | 'envelope' | 'complete'
-    bytes: number
-    frames?: number
-    expectedFrames?: number
-    jsonBytes?: number
-    error?: string
-  } = { characteristic, stage: 'frames', bytes: value.byteLength }
-  try {
-    const frames = decodeFrameSequence(viewBytes(value))
-    diagnostic.frames = frames.length
-    diagnostic.expectedFrames = frames[0]?.count
-    diagnostic.stage = 'reassembly'
-    const json = reassembleFrames(frames)
-    diagnostic.jsonBytes = json.byteLength
-    diagnostic.stage = 'envelope'
-    const result = parse(json)
-    diagnostic.stage = 'complete'
-    return result
-  }
-  catch (error) {
-    diagnostic.error = error instanceof ProvisioningProtocolError ? error.code : 'unexpected-error'
-    throw error
-  }
-  finally {
-    // Retain only bounded, non-payload metadata while diagnosing real GATT reads.
-    if (import.meta.env.DEV) {
-      const summary = JSON.stringify(diagnostic)
-      console.warn('[DEBUG-ble-response] %s', summary)
-      try {
-        globalThis.sessionStorage?.setItem(`memorilo:ble-diagnostic:${characteristic}`, summary)
-      }
-      catch {
-        // Diagnostics must not replace the original protocol outcome.
-      }
-    }
-  }
-}
-
-function concatDataViews(...values: DataView[]): DataView {
-  const bytes = new Uint8Array(values.reduce((length, value) => length + value.byteLength, 0))
-  let offset = 0
-  for (const value of values) {
-    bytes.set(viewBytes(value), offset)
-    offset += value.byteLength
-  }
-  return new DataView(bytes.buffer)
 }
 
 function connectWithRetry(
@@ -1262,80 +1146,4 @@ function connectWithRetry(
       yield* Effect.sleep(Math.min(connectRetryDelayMilliseconds, remaining))
     }
   })
-}
-
-function recordBleConnectDiagnostic(
-  stage: BleConnectStage,
-  attempt: number,
-  startedAt: number,
-  outcome: BleConnectOutcome,
-  cause?: unknown,
-): void {
-  if (!import.meta.env.DEV)
-    return
-  const diagnostic = {
-    attempt,
-    elapsedMs: Math.max(0, Date.now() - startedAt),
-    outcome,
-    stage,
-    ...(cause instanceof DOMException
-      ? { domException: { message: cause.message.slice(0, 240), name: cause.name.slice(0, 80) } }
-      : {}),
-  }
-  console.warn('[DEBUG-ble-connect] %s', JSON.stringify(diagnostic))
-  try {
-    const stored = globalThis.sessionStorage?.getItem(bleConnectDiagnosticStorageKey)
-    const parsed: unknown = stored === null || stored === undefined ? [] : JSON.parse(stored)
-    const timeline = Array.isArray(parsed) ? parsed.slice(-63) : []
-    globalThis.sessionStorage?.setItem(bleConnectDiagnosticStorageKey, JSON.stringify([...timeline, diagnostic]))
-  }
-  catch {
-    // Diagnostics must not replace the original connection outcome.
-  }
-}
-
-function resetBleConnectDiagnostics(): void {
-  if (!import.meta.env.DEV)
-    return
-  try {
-    globalThis.sessionStorage?.removeItem(bleConnectDiagnosticStorageKey)
-  }
-  catch {
-    // Diagnostics must not replace the original connection outcome.
-  }
-}
-
-function abortReason(signal: AbortSignal): unknown {
-  return signal.reason ?? new DOMException('The operation was aborted', 'AbortError')
-}
-
-function viewBytes(value: DataView): Uint8Array {
-  return new Uint8Array(value.buffer, value.byteOffset, value.byteLength)
-}
-
-function randomRequestToken(): number {
-  const bytes = new Uint32Array(1)
-  globalThis.crypto.getRandomValues(bytes)
-  return bytes[0] ?? 0
-}
-
-function notifyGalleryUploadProgress(
-  listener: GalleryUploadProgressListener | undefined,
-  sentBytes: number,
-  totalBytes: number,
-): Effect.Effect<void> {
-  return listener
-    ? Effect.sync(() => listener({ sentBytes, totalBytes }))
-    : Effect.void
-}
-
-function toProvisioningError(
-  code: DeviceProvisioningError['code'],
-  cause: unknown,
-): DeviceProvisioningError {
-  return new DeviceProvisioningError({ cause, code })
-}
-
-function todoSnapshotFitsProtocol(snapshot: DesktopDeviceTodoSnapshot): boolean {
-  return new TextEncoder().encode(JSON.stringify(snapshot)).byteLength <= MAX_TODO_SNAPSHOT_BYTES
 }

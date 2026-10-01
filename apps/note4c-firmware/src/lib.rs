@@ -14,6 +14,7 @@ pub mod power;
 pub mod provisioning;
 pub mod provisioning_protocol;
 pub mod provisioning_serial;
+pub mod rtc;
 pub mod todo_sync;
 pub mod ui;
 pub mod weather;

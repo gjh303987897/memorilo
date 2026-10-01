@@ -15,9 +15,9 @@ mod firmware {
     };
     use memorilo_device_firmware::board::Board;
     #[cfg(not(feature = "color-test"))]
-    use memorilo_device_firmware::device_status::{
-        DeviceStatusService, rtc_datetime_from_iso8601, rtc_datetime_from_unix_seconds,
-        timezone_offset_minutes,
+    use memorilo_device_firmware::device_status::DeviceStatusService;
+    use memorilo_device_firmware::rtc::{
+        datetime_from_iso8601, datetime_from_unix_seconds, timezone_offset_minutes,
     };
     use memorilo_device_firmware::diagnostics::{self, RefreshMeasurement};
     use memorilo_device_firmware::display::Display;
@@ -260,7 +260,7 @@ mod firmware {
                                     &application.snapshot().config.timezone,
                                 );
                                 if let Some(local_time) =
-                                    rtc_datetime_from_unix_seconds(unix_seconds, offset)
+                                    datetime_from_unix_seconds(unix_seconds, offset)
                                 {
                                     if let Err(error) = status_service
                                         .synchronize_time(unix_seconds, local_time)
@@ -865,7 +865,7 @@ mod firmware {
             .time_zone_offset_minutes
             .unwrap_or_else(|| timezone_offset_minutes(timezone));
         let Some((unix_seconds, local_time)) =
-            rtc_datetime_from_iso8601(&snapshot.generated_at, offset_minutes)
+            datetime_from_iso8601(&snapshot.generated_at, offset_minutes)
         else {
             log::warn!(
                 "TODO snapshot time was not a supported ISO-8601 timestamp: {}",
