@@ -15,7 +15,10 @@ mod firmware {
     };
     use memorilo_device_firmware::board::Board;
     #[cfg(not(feature = "color-test"))]
-    use memorilo_device_firmware::device_status::DeviceStatusService;
+    use memorilo_device_firmware::device_status::{
+        DeviceStatusService, rtc_datetime_from_iso8601, rtc_datetime_from_unix_seconds,
+        timezone_offset_minutes,
+    };
     use memorilo_device_firmware::diagnostics::{self, RefreshMeasurement};
     use memorilo_device_firmware::display::Display;
     #[cfg(not(feature = "color-test"))]
@@ -62,7 +65,9 @@ mod firmware {
         encode_read_response, encode_todo_response, encode_wifi_scan_response,
     };
     #[cfg(not(feature = "color-test"))]
-    use memorilo_device_firmware::todo_sync::{Admission, SnapshotSource, TodoSyncEvent};
+    use memorilo_device_firmware::todo_sync::{
+        Admission, SnapshotSource, TodoSnapshot, TodoSyncEvent,
+    };
     #[cfg(not(feature = "color-test"))]
     use memorilo_device_firmware::ui;
     #[cfg(not(feature = "color-test"))]
@@ -236,6 +241,8 @@ mod firmware {
                 while let Some(event) = network.try_recv()? {
                     match event {
                         NetworkRuntimeEvent::Snapshot(snapshot) => {
+                            let network_time_became_valid = snapshot.time_synchronized
+                                && !application.snapshot().network.time_synchronized;
                             if snapshot.phase == NetworkPhase::Connecting {
                                 power.acquire_lease(
                                     SleepBlocker::Network,
@@ -246,6 +253,24 @@ mod firmware {
                                 power.release_lease(SleepBlocker::Network);
                             }
                             application.dispatch(ApplicationCommand::NetworkUpdated(snapshot));
+                            if network_time_became_valid
+                                && let Some(unix_seconds) = unix_seconds()
+                            {
+                                let offset = timezone_offset_minutes(
+                                    &application.snapshot().config.timezone,
+                                );
+                                if let Some(local_time) =
+                                    rtc_datetime_from_unix_seconds(unix_seconds, offset)
+                                {
+                                    if let Err(error) = status_service
+                                        .synchronize_time(unix_seconds, local_time)
+                                    {
+                                        log::warn!(
+                                            "SNTP time synchronization could not update RTC: {error:#}"
+                                        );
+                                    }
+                                }
+                            }
                         }
                         NetworkRuntimeEvent::Management(request) => {
                             power.note_activity(now);
@@ -322,6 +347,13 @@ mod firmware {
                             )?;
                         }
                         NetworkRuntimeEvent::TodoSnapshot { body, source, etag } => {
+                            if let Ok(snapshot) = serde_json::from_slice::<TodoSnapshot>(&body) {
+                                synchronize_snapshot_time(
+                                    &snapshot,
+                                    &application.snapshot().config.timezone,
+                                    &mut status_service,
+                                );
+                            }
                             match todo_sync.admit_json(&body, source, unix_timestamp()) {
                                 Admission::Accepted { model, .. } => {
                                     todo_sync.etag = etag;
@@ -426,6 +458,7 @@ mod firmware {
                         &mut provisioning_transport,
                         &network,
                         &mut application,
+                        &mut status_service,
                         &mut persistence,
                         &mut gallery,
                         &mut gallery_mutation_revision,
@@ -449,6 +482,7 @@ mod firmware {
                         &mut provisioning_transport,
                         &network,
                         &mut application,
+                        &mut status_service,
                         &mut persistence,
                         &mut gallery,
                         &mut gallery_mutation_revision,
@@ -533,6 +567,7 @@ mod firmware {
                                     now,
                                     &network,
                                     &mut application,
+                                    &mut status_service,
                                     &mut persistence,
                                     &mut coordinator,
                                     &refresh_tx,
@@ -550,6 +585,7 @@ mod firmware {
                     &mut provisioning_transport,
                     &network,
                     &mut application,
+                    &mut status_service,
                     &mut persistence,
                     &mut gallery,
                     &mut gallery_mutation_revision,
@@ -682,6 +718,7 @@ mod firmware {
                             &mut provisioning_transport,
                             &network,
                             &mut application,
+                            &mut status_service,
                             &mut persistence,
                             &mut gallery,
                             &mut gallery_mutation_revision,
@@ -819,6 +856,29 @@ mod firmware {
     }
 
     #[cfg(not(feature = "color-test"))]
+    fn synchronize_snapshot_time(
+        snapshot: &TodoSnapshot,
+        timezone: &str,
+        status_service: &mut DeviceStatusService,
+    ) {
+        let offset_minutes = snapshot
+            .time_zone_offset_minutes
+            .unwrap_or_else(|| timezone_offset_minutes(timezone));
+        let Some((unix_seconds, local_time)) =
+            rtc_datetime_from_iso8601(&snapshot.generated_at, offset_minutes)
+        else {
+            log::warn!(
+                "TODO snapshot time was not a supported ISO-8601 timestamp: {}",
+                snapshot.generated_at
+            );
+            return;
+        };
+        if let Err(error) = status_service.synchronize_time(unix_seconds, local_time) {
+            log::warn!("TODO snapshot time synchronization failed: {error:#}");
+        }
+    }
+
+    #[cfg(not(feature = "color-test"))]
     fn handle_provisioning_output(
         output: SessionOutput,
         now: Duration,
@@ -826,6 +886,7 @@ mod firmware {
         transport: &mut Option<BleProvisioningTransport>,
         network: &NetworkRuntime,
         application: &mut Application,
+        status_service: &mut DeviceStatusService,
         persistence: &mut PersistenceManager<EspNvsBlobStore>,
         gallery: &mut GalleryRepository<EspPartitionGalleryStorage>,
         gallery_mutation_revision: &mut u64,
@@ -939,6 +1000,7 @@ mod firmware {
                     now,
                     network,
                     application,
+                    status_service,
                     persistence,
                     coordinator,
                     refresh_tx,
@@ -1064,11 +1126,17 @@ mod firmware {
         now: Duration,
         network: &NetworkRuntime,
         application: &mut Application,
+        status_service: &mut DeviceStatusService,
         persistence: &mut PersistenceManager<EspNvsBlobStore>,
         coordinator: &mut DisplayCoordinator,
         refresh_tx: &SyncSender<RefreshRequest>,
     ) -> Result<Option<ProtocolErrorCode>> {
         let mut candidate = application.persistent_state();
+        synchronize_snapshot_time(
+            &request.snapshot,
+            &candidate.config.timezone,
+            status_service,
+        );
         let mut todo_sync = candidate.todo_sync.clone();
         match todo_sync.admit(
             request.snapshot.clone(),

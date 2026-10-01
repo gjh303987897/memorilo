@@ -184,6 +184,8 @@ impl std::error::Error for TodoSyncConfigError {}
 #[serde(rename_all = "camelCase")]
 pub struct TodoSnapshot {
     pub generated_at: String,
+    #[serde(default)]
+    pub time_zone_offset_minutes: Option<i16>,
     pub items: Vec<TodoSnapshotItem>,
     pub revision: String,
 }
@@ -543,6 +545,7 @@ mod tests {
     fn snapshot(revision: &str, text: &str) -> TodoSnapshot {
         TodoSnapshot {
             generated_at: "2026-09-05T00:00:00Z".into(),
+            time_zone_offset_minutes: Some(480),
             revision: revision.into(),
             items: vec![TodoSnapshotItem {
                 all_day: true,

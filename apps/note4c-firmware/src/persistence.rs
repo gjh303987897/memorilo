@@ -1040,6 +1040,7 @@ mod tests {
             .collect();
         oversized.todo_sync.snapshot = Some(crate::todo_sync::TodoSnapshot {
             generated_at: "2026-01-01T00:00:00Z".into(),
+            time_zone_offset_minutes: Some(480),
             items: (0..2048)
                 .map(|index| crate::todo_sync::TodoSnapshotItem {
                     all_day: true,

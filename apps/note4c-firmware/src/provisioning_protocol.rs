@@ -43,6 +43,10 @@ pub fn parse_todo_request(json: &[u8]) -> Result<TodoRequest, ProtocolErrorCode>
         || request.request_id.is_empty()
         || request.request_id.len() > 64
         || !request.request_id.is_ascii()
+        || request
+            .snapshot
+            .time_zone_offset_minutes
+            .is_some_and(|offset| !(-840..=840).contains(&offset))
         || validate_snapshot(&request.snapshot).is_err()
     {
         return Err(ProtocolErrorCode::InvalidRequest);
@@ -537,6 +541,14 @@ mod tests {
             parse_apply_request(unsupported),
             Err(ProtocolErrorCode::UnsupportedCapability)
         );
+    }
+
+    #[test]
+    fn todo_sync_accepts_a_wall_clock_offset_and_rejects_impossible_offsets() {
+        let valid = br#"{"operation":"todo.sync","protocolVersion":1,"requestId":"todo-time","snapshot":{"generatedAt":"2026-09-30T00:00:00.000Z","timeZoneOffsetMinutes":480,"items":[],"revision":"empty"}}"#;
+        assert_eq!(parse_todo_request(valid).unwrap().snapshot.time_zone_offset_minutes, Some(480));
+        let invalid = br#"{"operation":"todo.sync","protocolVersion":1,"requestId":"todo-time","snapshot":{"generatedAt":"2026-09-30T00:00:00.000Z","timeZoneOffsetMinutes":1000,"items":[],"revision":"empty"}}"#;
+        assert_eq!(parse_todo_request(invalid), Err(ProtocolErrorCode::InvalidRequest));
     }
 
     #[test]
