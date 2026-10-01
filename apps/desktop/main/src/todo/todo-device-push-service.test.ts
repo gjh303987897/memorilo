@@ -34,6 +34,7 @@ describe('tODO device push service', () => {
     const second = await buildSnapshot([task({ status: 'doing' })], new Date('2026-09-05T01:00:00.000Z'))
     expect(first.revision).toBe(second.revision)
     expect(first.items[0]?.status).toBe('in-progress')
+    expect(first.timeZoneOffsetMinutes).toBe(-new Date('2026-09-05T00:00:00.000Z').getTimezoneOffset())
   })
 
   it('debounces local mutations and keeps LAN failures out of the caller', async () => {

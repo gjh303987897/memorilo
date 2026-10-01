@@ -13,6 +13,7 @@ import {
   parseApplyStatusEnvelope,
   parseDeviceInfoEnvelope,
   parsePublicConfigEnvelope,
+  parseTodoSyncRequest,
   reassembleFrames,
 } from './protocol'
 
@@ -100,6 +101,32 @@ describe('provisioning protocol', () => {
       code: 'stale-revision',
     }))
     expect(() => assertCurrentRevision(request, 4)).not.toThrow()
+  })
+
+  it('accepts the optional Desktop wall-clock offset on TODO snapshots', () => {
+    const request = parseTodoSyncRequest(new TextEncoder().encode(JSON.stringify({
+      operation: 'todo.sync',
+      protocolVersion: 1,
+      requestId: 'todo-time-1',
+      snapshot: {
+        generatedAt: '2026-09-30T00:00:00.000Z',
+        timeZoneOffsetMinutes: 480,
+        items: [],
+        revision: 'empty',
+      },
+    })))
+    expect(request.snapshot.timeZoneOffsetMinutes).toBe(480)
+    expect(() => parseTodoSyncRequest(new TextEncoder().encode(JSON.stringify({
+      operation: 'todo.sync',
+      protocolVersion: 1,
+      requestId: 'todo-time-2',
+      snapshot: {
+        generatedAt: '2026-09-30T00:00:00.000Z',
+        timeZoneOffsetMinutes: 1_000,
+        items: [],
+        revision: 'empty',
+      },
+    })))).toThrow()
   })
 
   it('models public configuration without readable password material', () => {

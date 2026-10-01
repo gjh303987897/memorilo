@@ -328,28 +328,37 @@ function parseTodoState(value: unknown): DesktopDeviceTodoState {
 }
 
 function isTodoSnapshot(value: unknown): value is DesktopDeviceTodoSnapshot {
-  return isRecord(value)
-    && typeof value.generatedAt === 'string'
-    && value.generatedAt.length <= 64
-    && typeof value.revision === 'string'
-    && value.revision.length > 0
-    && value.revision.length <= 128
-    && Array.isArray(value.items)
-    && value.items.length <= 64
-    && value.items.every(item => isRecord(item)
-      && typeof item.allDay === 'boolean'
-      && (item.dueDate === null || typeof item.dueDate === 'string')
-      && (item.dueTime === null || typeof item.dueTime === 'string')
-      && typeof item.id === 'string'
-      && item.id.length > 0
-      && item.id.length <= 256
-      && typeof item.noteTitle === 'string'
-      && (item.parentId === null || typeof item.parentId === 'string')
-      && typeof item.revision === 'string'
-      && (item.status === 'todo' || item.status === 'in-progress' || item.status === 'done')
-      && typeof item.text === 'string'
-      && item.text.length > 0
-      && typeof item.topicTitle === 'string')
+  if (!isRecord(value)
+    || typeof value.generatedAt !== 'string'
+    || value.generatedAt.length > 64
+    || typeof value.revision !== 'string'
+    || value.revision.length === 0
+    || value.revision.length > 128
+    || !Array.isArray(value.items)
+    || value.items.length > 64) {
+    return false
+  }
+  if (value.timeZoneOffsetMinutes !== undefined
+    && (typeof value.timeZoneOffsetMinutes !== 'number'
+      || !Number.isInteger(value.timeZoneOffsetMinutes)
+      || value.timeZoneOffsetMinutes < -840
+      || value.timeZoneOffsetMinutes > 840)) {
+    return false
+  }
+  return value.items.every(item => isRecord(item)
+    && typeof item.allDay === 'boolean'
+    && (item.dueDate === null || typeof item.dueDate === 'string')
+    && (item.dueTime === null || typeof item.dueTime === 'string')
+    && typeof item.id === 'string'
+    && item.id.length > 0
+    && item.id.length <= 256
+    && typeof item.noteTitle === 'string'
+    && (item.parentId === null || typeof item.parentId === 'string')
+    && typeof item.revision === 'string'
+    && (item.status === 'todo' || item.status === 'in-progress' || item.status === 'done')
+    && typeof item.text === 'string'
+    && item.text.length > 0
+    && typeof item.topicTitle === 'string')
 }
 
 function readBoundedJson(response: Response): Effect.Effect<unknown, DeviceLocalManagementError> {

@@ -104,6 +104,8 @@ export interface DesktopDeviceTodoItem {
 
 export interface DesktopDeviceTodoSnapshot {
   readonly generatedAt: string
+  /** Local wall-clock offset east of UTC at generatedAt, in minutes. */
+  readonly timeZoneOffsetMinutes?: number
   readonly items: readonly DesktopDeviceTodoItem[]
   readonly revision: string
 }

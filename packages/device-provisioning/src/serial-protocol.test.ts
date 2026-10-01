@@ -113,6 +113,7 @@ describe('serial provisioning protocol', () => {
       requestId: 'todo-empty-1',
       snapshot: {
         generatedAt: '2026-09-30T00:00:00.000Z',
+        timeZoneOffsetMinutes: 480,
         items: [],
         revision: 'empty-revision',
       },

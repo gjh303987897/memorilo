@@ -66,6 +66,8 @@ export interface WifiNetwork {
 /** The transport-neutral TODO projection sent from Desktop to a device. */
 export interface TodoSnapshot {
   generatedAt: string
+  /** Local wall-clock offset east of UTC at generatedAt, in minutes. */
+  timeZoneOffsetMinutes?: number
   items: readonly TodoSnapshotItem[]
   revision: string
 }
@@ -370,6 +372,13 @@ export function isTodoSnapshot(value: unknown): value is TodoSnapshot {
     || value.revision.length === 0
     || !Array.isArray(value.items)
     || value.items.length > 64) {
+    return false
+  }
+  if (value.timeZoneOffsetMinutes !== undefined
+    && (typeof value.timeZoneOffsetMinutes !== 'number'
+      || !Number.isInteger(value.timeZoneOffsetMinutes)
+      || value.timeZoneOffsetMinutes < -840
+      || value.timeZoneOffsetMinutes > 840)) {
     return false
   }
   return value.items.every(item => isRecord(item)

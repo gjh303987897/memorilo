@@ -131,6 +131,7 @@ export async function buildSnapshot(tasks: readonly TodoTask[], now = new Date()
   const canonical = JSON.stringify(items)
   return {
     generatedAt: now.toISOString(),
+    timeZoneOffsetMinutes: -now.getTimezoneOffset(),
     items,
     revision: createHash('sha256').update(canonical).digest('hex'),
   }
