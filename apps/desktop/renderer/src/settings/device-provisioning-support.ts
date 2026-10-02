@@ -213,6 +213,22 @@ export function toProvisioningError(
   return new DeviceProvisioningError({ cause, code })
 }
 
+export function isSerialAccessDenied(cause: unknown): boolean {
+  const name = cause instanceof Error
+    ? cause.name
+    : typeof cause === 'object' && cause !== null && 'name' in cause && typeof cause.name === 'string'
+      ? cause.name
+      : ''
+  const message = cause instanceof Error
+    ? cause.message
+    : typeof cause === 'object' && cause !== null && 'message' in cause && typeof cause.message === 'string'
+      ? cause.message
+      : typeof cause === 'string' ? cause : ''
+  return name === 'NetworkError'
+    || name === 'NotAllowedError'
+    || /access[ _-]denied|file_error_access_denied/iu.test(message)
+}
+
 export function todoSnapshotFitsProtocol(snapshot: DesktopDeviceTodoSnapshot): boolean {
   return new TextEncoder().encode(JSON.stringify(snapshot)).byteLength <= MAX_TODO_SNAPSHOT_BYTES
 }

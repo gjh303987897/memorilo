@@ -776,6 +776,8 @@ function statusTranslationKey(
       return 'deviceStatusBluetoothUnavailable'
     if (errorCode === 'serial-unavailable')
       return 'deviceStatusSerialUnavailable'
+    if (errorCode === 'serial-access-denied')
+      return 'deviceStatusSerialAccessDenied'
     if (errorCode === 'wifi-scan-unavailable')
       return 'deviceStatusWifiScanUnavailable'
     if (errorCode === 'apply-rejected')

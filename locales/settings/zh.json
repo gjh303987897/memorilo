@@ -99,6 +99,7 @@
   "deviceStatusTimeout": "设备未及时响应，请检查配置模式后重试。",
   "deviceStatusBluetoothUnavailable": "当前环境无法使用蓝牙。",
   "deviceStatusSerialUnavailable": "当前环境无法使用 USB 串口。",
+  "deviceStatusSerialAccessDenied": "USB 串口无法打开，可能正被其他串口监视器占用。请关闭其他串口工具后重试。",
   "deviceStatusWifiScanUnavailable": "设备暂时无法扫描 Wi-Fi；仍可手动输入隐藏网络。",
   "deviceStatusApplyRejected": "设备拒绝了这些设置，请重新连接以载入最新配置。",
   "deviceStatusProtocolError": "设备返回了不支持或无效的响应。",

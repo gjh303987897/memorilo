@@ -50,6 +50,7 @@ import {
   createApplyRequest,
   decodeEnvelope,
   isGalleryResponse,
+  isSerialAccessDenied,
   notifyGalleryUploadProgress,
   randomRequestToken,
   recordBleConnectDiagnostic,
@@ -545,7 +546,7 @@ export class SerialProvisioningConnection implements DeviceProvisioningSession {
           await port.open({ baudRate: 115_200 })
           return { connection: new SerialProvisioningConnection(port), transferred: false }
         },
-        catch: cause => toProvisioningError('connection-failed', cause),
+        catch: cause => toProvisioningError(isSerialAccessDenied(cause) ? 'serial-access-denied' : 'connection-failed', cause),
       }),
       resource => Effect.gen(function* () {
         const response = yield* resource.connection.exchange({

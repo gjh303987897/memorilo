@@ -130,6 +130,7 @@
   "deviceStatusTimeout": "The device did not respond in time. Check configuration mode and try again.",
   "deviceStatusBluetoothUnavailable": "Bluetooth is unavailable in this environment.",
   "deviceStatusSerialUnavailable": "USB serial is unavailable in this environment.",
+  "deviceStatusSerialAccessDenied": "The USB serial port is busy or unavailable. Close other serial monitors and try again.",
   "deviceStatusWifiScanUnavailable": "Wi-Fi scanning is unavailable; enter a hidden network manually.",
   "deviceStatusApplyRejected": "The device rejected these settings. Reconnect to load the latest configuration.",
   "deviceStatusProtocolError": "The device returned an unsupported or invalid response.",
