@@ -37,6 +37,25 @@ describe('tODO device push service', () => {
     expect(first.timeZoneOffsetMinutes).toBe(-new Date('2026-09-05T00:00:00.000Z').getTimezoneOffset())
   })
 
+  it('filters completed tasks before applying the device limit', async () => {
+    const snapshot = await buildSnapshot([
+      ...Array.from({ length: 64 }, (_, index) => task({ blockId: `done-${index}`, status: 'done' })),
+      task({ blockId: 'open-task', status: 'todo' }),
+    ])
+
+    expect(snapshot.items).toHaveLength(1)
+    expect(snapshot.items[0]?.id).toBe('open-task')
+  })
+
+  it('does not leave a child pointing at a filtered parent', async () => {
+    const snapshot = await buildSnapshot([
+      task({ blockId: 'done-parent', status: 'done' }),
+      task({ blockId: 'open-child', parentId: 'done-parent' }),
+    ])
+
+    expect(snapshot.items[0]?.parentId).toBeNull()
+  })
+
   it('debounces local mutations and keeps LAN failures out of the caller', async () => {
     vi.useFakeTimers()
     const push = vi.fn(async () => {

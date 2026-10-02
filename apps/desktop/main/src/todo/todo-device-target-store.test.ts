@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { createTodoDeviceTargetStore } from './todo-device-target-store'
+import { createTodoDeviceTargetStore, loadTodoDeviceTargetsForStartup } from './todo-device-target-store'
 
 describe('todo device target store', () => {
   const directories: string[] = []
@@ -33,5 +33,15 @@ describe('todo device target store', () => {
 
     await expect(store.replace({ address: '8.8.8.8', deviceId: 'device-1' })).rejects.toThrow()
     await expect(store.replace({ address: '192.168.4.23', deviceId: '' })).rejects.toThrow()
+  })
+
+  it('turns a damaged persisted file into an empty startup target list', async () => {
+    const store = {
+      load: async () => {
+        throw new Error('invalid JSON')
+      },
+    }
+
+    await expect(loadTodoDeviceTargetsForStartup(store)).resolves.toEqual([])
   })
 })

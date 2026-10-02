@@ -21,9 +21,6 @@ export type DeviceTodoErrorCode
     | 'forbidden'
     | 'internal_error'
     | 'invalid_request'
-    | 'operation_conflict'
-    | 'revision_conflict'
-    | 'todo_not_found'
     | 'unauthorized'
 
 export class DeviceTodoError extends Error {
@@ -72,6 +69,8 @@ export interface DeviceTodoModule {
   }) => Effect.Effect<DeviceTodoSnapshot, DeviceTodoError>
   readonly listTokens: (accountId: string) => Effect.Effect<readonly SyncDeviceTodoToken[], DeviceTodoError>
   readonly revokeToken: (accountId: string, deviceId: string) => Effect.Effect<boolean, DeviceTodoError>
+  readonly invalidateAccount: (accountId: string, generation?: number) => void
+  readonly revision: (accountId: string, generation: number) => Effect.Effect<string, DeviceTodoError>
 }
 
 interface TodoIdentity {
@@ -91,11 +90,16 @@ export interface DeviceTodoModuleOptions {
   readonly store: SyncDeviceTodoStore
 }
 
+const maxTokenLifetimeMs = 365 * 24 * 60 * 60 * 1000
+
+interface TodoProjection {
+  readonly todos: readonly ProjectedTodo[]
+  readonly revision: string
+}
+
 function fail(error: unknown): DeviceTodoError {
   if (error instanceof DeviceTodoError)
     return error
-  if (error instanceof Error && error.message === 'Device todo operation idempotency conflict')
-    return new DeviceTodoError('operation_conflict', error.message, { cause: error })
   return new DeviceTodoError('internal_error', 'Device Todo operation failed', { cause: error })
 }
 
@@ -127,80 +131,22 @@ function noteRevision(snapshot: SyncNoteSnapshotRecord): string {
   return revision
 }
 
-export function deviceTodoRevision(snapshots: readonly SyncNoteSnapshotRecord[]): string {
+function buildProjection(snapshots: readonly SyncNoteSnapshotRecord[]): TodoProjection {
   const hash = createHash('sha256')
-  for (const snapshot of snapshots)
-    hash.update(snapshot.noteId).update('\0').update(noteRevision(snapshot)).update('\0')
-  return hash.digest('hex')
-}
-
-function projectedDate(todo: Pick<ProjectedTodo, 'dueDate' | 'journalDate'>): string | null {
-  return todo.dueDate ?? todo.journalDate
-}
-
-function projectSnapshot(snapshot: SyncNoteSnapshotRecord): readonly ProjectedTodo[] {
-  const revision = noteRevision(snapshot)
-  const note = createEditorNote({ id: snapshot.noteId, snapshot: new Uint8Array(Buffer.from(snapshot.snapshot, 'base64url')) })
-  const identity = note.getIdentity()
-  const journalDate = identity.kind === 'journal' ? identity.journalDate : null
-  const noteTitle = note.getTitle()
-  const projected: ProjectedTodo[] = []
-  for (const entry of note.getEntries()) {
-    if (entry.kind !== 'topic')
-      continue
-    const content = note.getTopicContent(entry.id)
-    const blockById = new Map(content.blocks.map(block => [block.id, block]))
-    for (const block of content.blocks) {
-      if (block.kind !== 'task')
-        continue
-      let ancestorId = block.parentId
-      let todoParent: string | null = null
-      const visited = new Set([block.id])
-      while (ancestorId !== null) {
-        if (visited.has(ancestorId))
-          throw new Error(`Todo ${block.id} contains a cyclic parent chain`)
-        visited.add(ancestorId)
-        const ancestor = blockById.get(ancestorId)
-        if (!ancestor)
-          break
-        if (ancestor.kind === 'task') {
-          todoParent = todoId({ blockId: ancestor.id, noteId: snapshot.noteId, topicId: entry.id })
-          break
-        }
-        ancestorId = ancestor.parentId
+  const todos: ProjectedTodo[] = []
+  for (const snapshot of snapshots) {
+    try {
+      const projected = projectSnapshot(snapshot)
+      if (projected.length > 0) {
+        todos.push(...projected)
+        hash.update(snapshot.noteId).update('\0').update(noteRevision(snapshot)).update('\0')
       }
-      const dueDateValue = block.attributes.dueDate
-      const dueTimeValue = block.attributes.dueTime
-      const dueDate = dueDateValue === undefined || dueDateValue === null ? null : parseTaskDueDate(dueDateValue)
-      const dueTime = dueTimeValue === undefined || dueTimeValue === null ? null : parseTaskTime(dueTimeValue)
-      if ((dueDateValue !== undefined && dueDateValue !== null && dueDate === null)
-        || (dueTimeValue !== undefined && dueTimeValue !== null && dueTime === null)) {
-        throw new Error(`Todo ${block.id} contains invalid due metadata`)
-      }
-      projected.push({
-        allDay: block.attributes.allDay === true,
-        attributes: block.attributes,
-        blockId: block.id,
-        dueDate,
-        dueTime,
-        id: todoId({ blockId: block.id, noteId: snapshot.noteId, topicId: entry.id }),
-        journalDate,
-        noteId: snapshot.noteId,
-        noteTitle,
-        parentId: todoParent,
-        revision,
-        status: readTaskStatus(block.attributes.status),
-        text: block.text,
-        topicId: entry.id,
-        topicTitle: content.title,
-      })
+    }
+    catch (error) {
+      console.warn(`Skipping invalid Todo note ${snapshot.noteId} while computing revision`, error)
     }
   }
-  return projected
-}
-
-function projectAll(snapshots: readonly SyncNoteSnapshotRecord[]): readonly ProjectedTodo[] {
-  return snapshots.flatMap(projectSnapshot).sort((left, right) => {
+  todos.sort((left, right) => {
     const leftDate = projectedDate(left) ?? '9999-12-31'
     const rightDate = projectedDate(right) ?? '9999-12-31'
     return leftDate.localeCompare(rightDate)
@@ -210,15 +156,119 @@ function projectAll(snapshots: readonly SyncNoteSnapshotRecord[]): readonly Proj
       || left.text.localeCompare(right.text)
       || left.id.localeCompare(right.id)
   })
+  return { revision: hash.digest('hex'), todos }
 }
 
-function publicTodo(todo: ProjectedTodo): DeviceTodoItem {
+export function deviceTodoRevision(snapshots: readonly SyncNoteSnapshotRecord[]): string {
+  return buildProjection(snapshots).revision
+}
+
+function projectedDate(todo: Pick<ProjectedTodo, 'dueDate' | 'journalDate'>): string | null {
+  return todo.dueDate ?? todo.journalDate
+}
+
+function projectSnapshot(snapshot: SyncNoteSnapshotRecord): readonly ProjectedTodo[] {
+  try {
+    const revision = noteRevision(snapshot)
+    const note = createEditorNote({ id: snapshot.noteId, snapshot: new Uint8Array(Buffer.from(snapshot.snapshot, 'base64url')) })
+    const identity = note.getIdentity()
+    const journalDate = identity.kind === 'journal' ? identity.journalDate : null
+    const noteTitle = note.getTitle()
+    const projected: ProjectedTodo[] = []
+    for (const entry of note.getEntries()) {
+      if (entry.kind !== 'topic')
+        continue
+      const content = note.getTopicContent(entry.id)
+      const blockById = new Map(content.blocks.map(block => [block.id, block]))
+      for (const block of content.blocks) {
+        if (block.kind !== 'task')
+          continue
+        try {
+          let ancestorId = block.parentId
+          let todoParent: string | null = null
+          const visited = new Set([block.id])
+          while (ancestorId !== null) {
+            if (visited.has(ancestorId))
+              throw new Error(`Todo ${block.id} contains a cyclic parent chain`)
+            visited.add(ancestorId)
+            const ancestor = blockById.get(ancestorId)
+            if (!ancestor)
+              break
+            if (ancestor.kind === 'task' && todoParent === null)
+              todoParent = todoId({ blockId: ancestor.id, noteId: snapshot.noteId, topicId: entry.id })
+            ancestorId = ancestor.parentId
+          }
+          const dueDateValue = block.attributes.dueDate
+          const dueTimeValue = block.attributes.dueTime
+          const dueDate = dueDateValue === undefined || dueDateValue === null ? null : parseTaskDueDate(dueDateValue)
+          const dueTime = dueTimeValue === undefined || dueTimeValue === null ? null : parseTaskTime(dueTimeValue)
+          if ((dueDateValue !== undefined && dueDateValue !== null && dueDate === null)
+            || (dueTimeValue !== undefined && dueTimeValue !== null && dueTime === null)) {
+            throw new Error(`Todo ${block.id} contains invalid due metadata`)
+          }
+          projected.push({
+            allDay: block.attributes.allDay === true,
+            attributes: block.attributes,
+            blockId: block.id,
+            dueDate,
+            dueTime,
+            id: todoId({ blockId: block.id, noteId: snapshot.noteId, topicId: entry.id }),
+            journalDate,
+            noteId: snapshot.noteId,
+            noteTitle,
+            parentId: todoParent,
+            revision,
+            status: readTaskStatus(block.attributes.status),
+            text: block.text,
+            topicId: entry.id,
+            topicTitle: content.title,
+          })
+        }
+        catch (error) {
+          console.warn(`Skipping invalid Todo ${block.id} in note ${snapshot.noteId}`, error)
+        }
+      }
+    }
+    return projected
+  }
+  catch (error) {
+    console.warn(`Skipping invalid Todo note ${snapshot.noteId}`, error)
+    return []
+  }
+}
+
+function publicTodo(todo: ProjectedTodo, selectedIds: ReadonlySet<string>): DeviceTodoItem {
   const { allDay, dueDate, dueTime, id, noteTitle, parentId, revision, status, text, topicTitle } = todo
-  return { allDay, dueDate, dueTime, id, noteTitle, parentId, revision, status, text, topicTitle }
+  return {
+    allDay,
+    dueDate,
+    dueTime,
+    id,
+    noteTitle,
+    parentId: parentId !== null && selectedIds.has(parentId) ? parentId : null,
+    revision,
+    status,
+    text,
+    topicTitle,
+  }
 }
 
 export function createDeviceTodoModule(options: DeviceTodoModuleOptions): DeviceTodoModule {
   const now = options.now ?? Date.now
+  const projectionCache = new Map<string, TodoProjection>()
+
+  const cacheKey = (accountId: string, generation: number): string => `${accountId}:${generation}`
+
+  const getProjection = async (accountId: string, generation: number): Promise<TodoProjection> => {
+    const key = cacheKey(accountId, generation)
+    const cached = projectionCache.get(key)
+    if (cached)
+      return cached
+    const snapshots = await options.repository.listNoteSnapshots(accountId, generation)
+    const projection = buildProjection(snapshots)
+    projectionCache.set(key, projection)
+    return projection
+  }
 
   const authorize = async (token: string, scope: SyncDeviceTodoScope): Promise<SyncDeviceTodoToken> => {
     if (!token.startsWith(deviceTokenPrefix) || token.length > 256)
@@ -246,6 +296,8 @@ export function createDeviceTodoModule(options: DeviceTodoModuleOptions): Device
         throw new DeviceTodoError('invalid_request', 'Device name must contain 1-64 characters')
       if (!Number.isSafeInteger(input.expiresAt) || input.expiresAt <= now())
         throw new DeviceTodoError('invalid_request', 'Device token expiry must be in the future')
+      if (input.expiresAt > now() + maxTokenLifetimeMs)
+        throw new DeviceTodoError('invalid_request', 'Device token expiry must be within one year')
       const scopes = [...new Set(input.scopes)]
       if (scopes.length !== 1 || scopes[0] !== 'todos:read')
         throw new DeviceTodoError('invalid_request', 'Device Todo is read-only and requires the todos:read scope')
@@ -264,6 +316,13 @@ export function createDeviceTodoModule(options: DeviceTodoModuleOptions): Device
     }),
     listTokens: accountId => attempt(() => options.store.listTokens(accountId)),
     revokeToken: (accountId, deviceId) => attempt(() => options.store.revokeToken(accountId, deviceId, now())),
+    invalidateAccount: (accountId, generation) => {
+      for (const key of projectionCache.keys()) {
+        if (key.startsWith(`${accountId}:`) && (generation === undefined || key === cacheKey(accountId, generation)))
+          projectionCache.delete(key)
+      }
+    },
+    revision: (accountId, generation) => attempt(async () => (await getProjection(accountId, generation)).revision),
     list: input => attempt(async () => {
       if (!validDate(input.date))
         throw new DeviceTodoError('invalid_request', 'Device Todo date must be a valid YYYY-MM-DD date')
@@ -271,14 +330,16 @@ export function createDeviceTodoModule(options: DeviceTodoModuleOptions): Device
         throw new DeviceTodoError('invalid_request', 'Device Todo limit must be between 1 and 100')
       const credential = await authorize(input.token, 'todos:read')
       const state = await accountState(credential.accountId)
-      const snapshots = await options.repository.listNoteSnapshots(credential.accountId, state.generation)
-      const todos = projectAll(snapshots).filter(todo => input.view === 'all'
+      const projection = await getProjection(credential.accountId, state.generation)
+      const todos = projection.todos.filter(todo => input.view === 'all'
         ? todo.status !== 'done'
         : todo.status !== 'done' && projectedDate(todo) === input.date)
+      const selected = todos.slice(0, input.limit)
+      const selectedIds = new Set(selected.map(todo => todo.id))
       return {
         generatedAt: new Date(now()).toISOString(),
-        items: todos.slice(0, input.limit).map(publicTodo),
-        revision: deviceTodoRevision(snapshots),
+        items: selected.map(todo => publicTodo(todo, selectedIds)),
+        revision: projection.revision,
       }
     }),
   }

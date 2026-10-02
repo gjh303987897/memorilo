@@ -347,6 +347,17 @@ mod firmware {
                             )?;
                         }
                         NetworkRuntimeEvent::TodoSnapshot { body, source, etag } => {
+                            if !application
+                                .snapshot()
+                                .config
+                                .todo_sync
+                                .allows_snapshot_source(source)
+                            {
+                                log::warn!(
+                                    "ignored local TODO snapshot while HTTPS source is configured"
+                                );
+                                continue;
+                            }
                             if let Ok(snapshot) = serde_json::from_slice::<TodoSnapshot>(&body) {
                                 synchronize_snapshot_time(
                                     &snapshot,

@@ -15,6 +15,7 @@ describe('device local management client', () => {
     expect(() => parseLocalDeviceAddress('https://192.168.4.23')).toThrow()
     expect(() => parseLocalDeviceAddress('8.8.8.8')).toThrow()
     expect(() => parseLocalDeviceAddress('device.example.com')).toThrow()
+    expect(parseLocalDeviceAddress('memorilo-note4.local').toString()).toBe('http://memorilo-note4.local/')
   })
 
   it('keeps the bearer token in main and parses bounded gallery metadata', async () => {

@@ -1,4 +1,4 @@
-import type { SyncAccountState, SyncDeviceTodoActionRecord, SyncDeviceTodoToken, SyncLearningEntityRecord, SyncNoteSnapshotRecord, SyncObjectMetadata, SyncResetJob, VersionVector } from '@memorilo/sync'
+import type { SyncAccountState, SyncDeviceTodoToken, SyncLearningEntityRecord, SyncNoteSnapshotRecord, SyncObjectMetadata, SyncResetJob, VersionVector } from '@memorilo/sync'
 import { createHash } from 'node:crypto'
 import { mergeVersionVectors } from '@memorilo/sync'
 
@@ -12,10 +12,6 @@ export function noteSnapshotRevision(snapshot: Pick<SyncNoteSnapshotRecord, 'sna
 
 export function deviceTodoTokenFromRow<Row extends SyncDeviceTodoToken>(row: Row): SyncDeviceTodoToken {
   return { ...row, scopes: [...row.scopes] }
-}
-
-export function deviceTodoActionFromRow<Row extends SyncDeviceTodoActionRecord>(row: Row): SyncDeviceTodoActionRecord {
-  return { ...row }
 }
 
 export function frontierFromRows(rows: readonly { readonly deviceId: string, readonly sequence: number }[]): VersionVector {

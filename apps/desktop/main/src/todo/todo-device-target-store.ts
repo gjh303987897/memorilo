@@ -12,6 +12,23 @@ export interface TodoDeviceTargetStore {
   readonly remove: (deviceId: string) => Promise<readonly DesktopDeviceGalleryTarget[]>
 }
 
+/**
+ * A damaged optional target file must not make the desktop runtime fail to boot.
+ * Settings operations still use `load()` so callers can surface validation
+ * errors when the user explicitly edits the target list.
+ */
+export async function loadTodoDeviceTargetsForStartup(
+  store: Pick<TodoDeviceTargetStore, 'load'>,
+): Promise<readonly DesktopDeviceGalleryTarget[]> {
+  try {
+    return await store.load()
+  }
+  catch (error) {
+    console.warn('Ignoring invalid persisted TODO device targets; continuing startup', error)
+    return []
+  }
+}
+
 export function createTodoDeviceTargetStore(path: string): TodoDeviceTargetStore {
   const read = async (): Promise<DesktopDeviceGalleryTarget[]> => {
     let raw: string

@@ -7,7 +7,7 @@ import type { DeviceTodoModule } from './device-todo'
 import type { SyncPeerMetrics, SyncServerMetrics } from './metrics'
 import type { RateLimiter } from './rate-limiter'
 import { Buffer } from 'node:buffer'
-import { randomUUID, timingSafeEqual } from 'node:crypto'
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { extname, join } from 'node:path'
 import { encodeSyncServerCredentialBundle } from '@memorilo/sync'
@@ -91,6 +91,21 @@ function json(body: unknown, status = 200, headers = new Headers()): Response {
 
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback
+}
+
+function deviceTodoErrorStatus(error: DeviceTodoError): 400 | 401 | 403 | 500 | 503 {
+  switch (error.code) {
+    case 'unauthorized':
+      return 401
+    case 'forbidden':
+      return 403
+    case 'invalid_request':
+      return 400
+    case 'account_not_authoritative':
+      return 503
+    case 'internal_error':
+      return 500
+  }
 }
 
 export function createSyncServerApp(config: SyncServerConfig, services: SyncServerAppServices): SyncServerApp {
@@ -438,7 +453,13 @@ export function createSyncServerApp(config: SyncServerConfig, services: SyncServ
     }
     if (!deviceTodo)
       return context.json({ code: 'device_todo_unavailable' }, 503)
-    const body = await context.req.json<{ deviceName?: unknown, expiresAt?: unknown, scopes?: unknown }>()
+    let body: { deviceName?: unknown, expiresAt?: unknown, scopes?: unknown }
+    try {
+      body = await context.req.json<{ deviceName?: unknown, expiresAt?: unknown, scopes?: unknown }>()
+    }
+    catch {
+      return context.json({ code: 'invalid_request' }, 400)
+    }
     const result = await runDeviceTodo(deviceTodo.issueToken({
       accountId: account.accountId,
       deviceName: typeof body.deviceName === 'string' ? body.deviceName : '',
@@ -446,7 +467,7 @@ export function createSyncServerApp(config: SyncServerConfig, services: SyncServ
       scopes: Array.isArray(body.scopes) ? body.scopes as never : [],
     }))
     if (!result.ok)
-      return context.json({ code: result.error.code }, result.error.code === 'invalid_request' ? 400 : 409)
+      return context.json({ code: result.error.code }, deviceTodoErrorStatus(result.error))
     await recordAudit({ accountId: account.accountId, action: 'device.todo-token.issue', actorId: account.accountId, actorType: 'browser', details: { deviceId: result.value.credential.deviceId }, outcome: 'success', remoteAddress: context.get('remoteAddress'), requestId: context.get('requestId') })
     return context.json({
       credential: result.value.token,
@@ -467,8 +488,10 @@ export function createSyncServerApp(config: SyncServerConfig, services: SyncServ
       return context.json({ code: 'unauthorized' }, 401)
     if (!deviceTodo)
       return context.json({ code: 'device_todo_unavailable' }, 503)
-    const tokens = await Effect.runPromise(deviceTodo.listTokens(account.accountId))
-    return context.json({ tokens: tokens.filter(token => token.revokedAt === null).map(token => ({ createdAt: token.createdAt, deviceId: token.deviceId, deviceName: token.deviceName, expiresAt: token.expiresAt, scopes: token.scopes })) })
+    const result = await runDeviceTodo(deviceTodo.listTokens(account.accountId))
+    if (!result.ok)
+      return context.json({ code: result.error.code }, deviceTodoErrorStatus(result.error))
+    return context.json({ tokens: result.value.filter(token => token.revokedAt === null).map(token => ({ createdAt: token.createdAt, deviceId: token.deviceId, deviceName: token.deviceName, expiresAt: token.expiresAt, scopes: token.scopes })) })
   })
   app.post('/api/devices/todo-tokens/:deviceId/revoke', async (context) => {
     const account = await browserAuth.current(context.req.raw)
@@ -482,8 +505,10 @@ export function createSyncServerApp(config: SyncServerConfig, services: SyncServ
     }
     if (!deviceTodo)
       return context.json({ code: 'device_todo_unavailable' }, 503)
-    const revoked = await Effect.runPromise(deviceTodo.revokeToken(account.accountId, context.req.param('deviceId')))
-    return revoked ? context.json({ revoked: true }) : context.json({ code: 'device_not_found' }, 404)
+    const result = await runDeviceTodo(deviceTodo.revokeToken(account.accountId, context.req.param('deviceId')))
+    if (!result.ok)
+      return context.json({ code: result.error.code }, deviceTodoErrorStatus(result.error))
+    return result.value ? context.json({ revoked: true }) : context.json({ code: 'device_not_found' }, 404)
   })
   app.get('/api/device/v1/todos', async (context) => {
     if (!deviceTodo)
@@ -491,12 +516,23 @@ export function createSyncServerApp(config: SyncServerConfig, services: SyncServ
     const token = context.req.header('authorization')?.startsWith('Bearer ')
       ? context.req.header('authorization')!.slice(7)
       : ''
+    const rateLimitKey = token === ''
+      ? context.get('remoteAddress') || 'unknown'
+      : createHash('sha256').update(token).digest('hex')
+    const decision = rateLimiter.check('device-todos', rateLimitKey, 60, rateLimitWindowMs)
+    context.header('ratelimit-limit', String(decision.limit))
+    context.header('ratelimit-remaining', String(decision.remaining))
+    context.header('ratelimit-reset', String(Math.ceil(decision.resetAt / 1000)))
+    if (!decision.allowed) {
+      context.header('retry-after', String(Math.max(1, Math.ceil((decision.resetAt - now()) / 1000))))
+      return context.json({ code: 'rate_limited' }, 429)
+    }
     const date = context.req.query('date') ?? new Date(now()).toISOString().slice(0, 10)
     const view = context.req.query('view') === 'all' ? 'all' : 'today'
     const limit = Number(context.req.query('limit') ?? 20)
     const result = await runDeviceTodo(deviceTodo.list({ date, limit, token, view }))
     if (!result.ok)
-      return context.json({ code: result.error.code }, result.error.code === 'unauthorized' ? 401 : result.error.code === 'forbidden' ? 403 : 400)
+      return context.json({ code: result.error.code }, deviceTodoErrorStatus(result.error))
     const tag = `"${result.value.revision}"`
     context.header('etag', tag)
     context.header('cache-control', 'private, max-age=0')

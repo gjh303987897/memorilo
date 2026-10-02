@@ -1,6 +1,6 @@
 import type { ConfigurationStore } from '@memorilo/config'
 import type { DesktopConfiguration } from '@memorilo/desktop-config'
-import type { LearningPracticeConfiguration } from '@memorilo/editor-storage'
+import type { LearningPracticeConfiguration, TodoTask } from '@memorilo/editor-storage'
 import type { P2pApplication } from '@memorilo/sync/node'
 import type { MessageBoxOptions } from 'electron'
 import type { TodoDevicePushTarget } from './todo/todo-device-push-service'
@@ -55,7 +55,7 @@ import {
 } from './storage/workspace-paths'
 import { createSyncServerStatusController } from './sync-server-status'
 import { createTodoDevicePushService } from './todo/todo-device-push-service'
-import { createTodoDeviceTargetStore } from './todo/todo-device-target-store'
+import { createTodoDeviceTargetStore, loadTodoDeviceTargetsForStartup } from './todo/todo-device-target-store'
 import { createTodoReminderScheduler } from './todo/todo-reminder-scheduler'
 import { WhiteboardLibraryApplication } from './whiteboard/whiteboard-library-application'
 import { createSettingsWindowController } from './windows/settings-window'
@@ -276,10 +276,24 @@ export async function createDesktopRuntime(options: DesktopRuntimeOptions): Prom
     const editorStorage = editor.resource
     const todoDevicePushClient = new DeviceLocalManagementClient(localManagementCredentialStore)
     const todoDeviceTargetStore = createTodoDeviceTargetStore(join(dataDirectory, 'devices', 'todo-targets.json'))
-    const persistedTodoDeviceTargets = await todoDeviceTargetStore.load()
+    const persistedTodoDeviceTargets = await loadTodoDeviceTargetsForStartup(todoDeviceTargetStore)
     const todoDevicePush = (await scope.acquire({
       acquire: () => createTodoDevicePushService({
-        listTasks: async () => (await editorStorage.tasks.list({ limit: 64 })).items,
+        listTasks: async () => {
+          const tasks: TodoTask[] = []
+          let cursor: number | undefined
+          while (tasks.length < 64) {
+            const page = await editorStorage.tasks.list({
+              ...(cursor === undefined ? {} : { cursor }),
+              limit: 500,
+            })
+            tasks.push(...page.items.filter(task => task.status !== 'done'))
+            if (page.nextCursor === null)
+              break
+            cursor = page.nextCursor
+          }
+          return tasks.slice(0, 64)
+        },
         push: input => Effect.runPromise(todoDevicePushClient.pushTodos(input)),
         targets: persistedTodoDeviceTargets.length > 0
           ? persistedTodoDeviceTargets
@@ -408,10 +422,9 @@ export async function createDesktopRuntime(options: DesktopRuntimeOptions): Prom
     })).resource
     const notes = (await scope.acquire({
       acquire: () => createNoteApplicationService(editorStorage, ({ noteId, update, updatedAt }) => {
-        if (applyingRemoteP2pChanges === 0) {
+        if (applyingRemoteP2pChanges === 0)
           queueLocalNoteUpdate(noteId, update)
-          todoDevicePush.notifyLocalMutation()
-        }
+        todoDevicePush.notifyLocalMutation()
         for (const window of BrowserWindow.getAllWindows())
           window.webContents.send('memorilo:note-update', { noteId, update, updatedAt })
       }, {

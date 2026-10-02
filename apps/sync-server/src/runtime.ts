@@ -8,13 +8,14 @@ import { join } from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 import { createResourceScope } from '@memorilo/effect-lifecycle'
+import { Effect } from 'effect'
 import { createPostgresSyncDatabase } from '../infrastructure/database/postgres'
 import { createSqliteSyncDatabase } from '../infrastructure/database/sqlite'
 import { createFilesystemObjectStore } from '../infrastructure/object-store/filesystem'
 import { createS3ObjectStore } from '../infrastructure/object-store/s3'
 import { createSyncServerPeer, rebuildAuthoritativeState } from '../infrastructure/p2p/server-peer'
 import { createSyncServerApp } from './app'
-import { createDeviceTodoModule, deviceTodoRevision } from './device-todo'
+import { createDeviceTodoModule } from './device-todo'
 import { createSyncServerMetrics } from './metrics'
 import { createOrphanWorker } from './orphan-worker'
 import { createResetWorker } from './reset-worker'
@@ -53,6 +54,9 @@ export async function createSyncServerRuntime(config: SyncServerConfig, options:
     for (const account of await database.repository.listAccountStates())
       await rebuildAuthoritativeState(database.repository, account)
     const metrics = createSyncServerMetrics()
+    const deviceTodo = createDeviceTodoModule({ repository: database.repository, store: database.deviceTodo })
+    const todoNotificationTimers = new Map<string, ReturnType<typeof setTimeout>>()
+    const pendingTodoNotifications = new Map<string, { readonly accountId: string, readonly generation: number, readonly changedAt: number }>()
     let todoNotificationPublisher: TodoNotificationPublisher | null = null
     if (config.mqttTodoBrokerUrl !== undefined) {
       todoNotificationPublisher = (await scope.acquire({
@@ -126,19 +130,29 @@ export async function createSyncServerRuntime(config: SyncServerConfig, options:
         statePath: join(config.dataDir, 'peer', 'identity.json'),
         metrics: metrics.peerRecorder,
         onAuthoritativeNotesChanged: (input) => {
+          deviceTodo.invalidateAccount(input.accountId)
           if (todoNotificationPublisher === null)
             return
-          void (async () => {
-            const snapshots = await database.repository.listNoteSnapshots(input.accountId, input.generation)
-            await todoNotificationPublisher?.publishChanged({
-              accountId: input.accountId,
-              changedAt: input.changedAt,
-              generation: input.generation,
-              revision: deviceTodoRevision(snapshots),
+          const key = input.accountId
+          pendingTodoNotifications.set(key, input)
+          const currentTimer = todoNotificationTimers.get(key)
+          if (currentTimer !== undefined)
+            clearTimeout(currentTimer)
+          todoNotificationTimers.set(key, setTimeout(() => {
+            todoNotificationTimers.delete(key)
+            const pending = pendingTodoNotifications.get(key)
+            pendingTodoNotifications.delete(key)
+            if (!pending || todoNotificationPublisher === null)
+              return
+            void Effect.runPromise(deviceTodo.revision(pending.accountId, pending.generation)).then(revision => todoNotificationPublisher?.publishChanged({
+              accountId: pending.accountId,
+              changedAt: pending.changedAt,
+              generation: pending.generation,
+              revision,
+            })).catch((error) => {
+              console.warn('Failed to publish TODO MQTT update hint', error)
             })
-          })().catch((error) => {
-            console.warn('Failed to publish TODO MQTT update hint', error)
-          })
+          }, 250))
         },
       }),
       close: current => current.close(),
@@ -157,7 +171,7 @@ export async function createSyncServerRuntime(config: SyncServerConfig, options:
       peerMetrics: () => metrics.snapshot(peer.metrics()),
       renderWeb: webRenderer.render,
       repository: database.repository,
-      deviceTodo: createDeviceTodoModule({ repository: database.repository, store: database.deviceTodo }),
+      deviceTodo,
       webRoot: fileURLToPath(webRootUrl),
     })
     scope.commit()
@@ -171,7 +185,13 @@ export async function createSyncServerRuntime(config: SyncServerConfig, options:
         await stopWorkers?.()
         await peer.drain()
       },
-      close: scope.close,
+      close: async () => {
+        for (const timer of todoNotificationTimers.values())
+          clearTimeout(timer)
+        todoNotificationTimers.clear()
+        pendingTodoNotifications.clear()
+        await scope.close()
+      },
       objectStore,
       peer,
       repository: database.repository,

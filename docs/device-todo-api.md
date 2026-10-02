@@ -11,10 +11,10 @@ POST /api/devices/todo-token
 X-CSRF-Token: <browser-csrf-token>
 Content-Type: application/json
 
-{"deviceName":"NOTE4","expiresAt":<unix-ms>,"scopes":["todos:read","todos:write"]}
+{"deviceName":"NOTE4","expiresAt":<unix-ms>,"scopes":["todos:read"]}
 ```
 
-The response contains the bearer credential exactly once. Store it in NOTE4's protected storage. Credentials can be listed with `GET /api/devices/todo-tokens` and revoked with `POST /api/devices/todo-tokens/:deviceId/revoke`.
+`expiresAt` must be in the future and no more than one year from issuance. The response contains the bearer credential exactly once. Store it in NOTE4's protected storage. Credentials can be listed with `GET /api/devices/todo-tokens` and revoked with `POST /api/devices/todo-tokens/:deviceId/revoke`.
 
 ## Read-only synchronization
 
@@ -23,9 +23,11 @@ GET /api/device/v1/todos?view=today&date=2026-09-01&limit=20
 Authorization: Bearer memorilo-todo-v1....
 ```
 
-`view=today` returns active tasks whose due date (or journal date) is the requested date. `view=all` returns all active tasks. Each item contains a stable opaque `id`, display text, status, date/time, and the nearest Todo parent. Each item also has a note `revision`; send that value as `baseRevision` when changing the item. The response has an account-wide revision in the top-level `revision`, suitable for cache validation.
+`view=today` returns active tasks whose due date (or journal date) is the requested date. `view=all` returns all active tasks. Each item contains a stable opaque `id`, display text, status, date/time, and the nearest Todo parent. The response has a revision in the top-level `revision`, suitable for cache validation.
 
 The server returns an `ETag` for the top-level revision and answers `304 Not Modified` when `If-None-Match` matches. NOTE4 should keep its last successful snapshot and avoid an EPD refresh for a 304 response.
+
+Malformed requests return `400`; expired or invalid credentials return `401`; missing scopes return `403`; an account without authoritative Note state returns `503`; and unexpected server failures return `500`. Device Todo reads are rate limited independently of the general API limit.
 
 ## Completion and reopening
 

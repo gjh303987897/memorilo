@@ -114,6 +114,15 @@ impl TodoSyncConfig {
         !self.https_base_url.is_empty() && self.has_device_token()
     }
 
+    /// HTTPS polling (including MQTT-triggered HTTPS) and local management
+    /// pushes are alternative sources. Keeping LAN/BLE/Serial disabled while
+    /// HTTPS is configured prevents two differently projected snapshots from
+    /// replacing one another on the device.
+    pub fn allows_snapshot_source(&self, source: SnapshotSource) -> bool {
+        !matches!(source, SnapshotSource::ClientLanPush)
+            || !(self.enabled && self.has_https_source())
+    }
+
     pub fn normalized_default() -> Self {
         Self {
             poll_interval_seconds: 15 * 60,
@@ -575,6 +584,21 @@ mod tests {
         config.set_device_token("secret".into());
         assert!(config.has_https_source());
         assert_eq!(config.validate(), Ok(()));
+    }
+
+    #[test]
+    fn configured_https_source_disables_local_snapshot_pushes() {
+        let mut config = TodoSyncConfig::normalized_default();
+        assert!(config.allows_snapshot_source(SnapshotSource::ClientLanPush));
+
+        config.https_base_url = "https://example.test".into();
+        config.set_device_token("secret".into());
+        assert!(config.allows_snapshot_source(SnapshotSource::ClientLanPush));
+
+        config.enabled = true;
+        assert!(!config.allows_snapshot_source(SnapshotSource::ClientLanPush));
+        assert!(config.allows_snapshot_source(SnapshotSource::PeriodicHttps));
+        assert!(config.allows_snapshot_source(SnapshotSource::MqttTriggeredHttps));
     }
 
     #[test]

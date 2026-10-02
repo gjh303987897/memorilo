@@ -36,7 +36,21 @@ describe('device Todo module', () => {
     const listed = await Effect.runPromise(module.list({ date: '2026-09-01', limit: 20, token: issued.token, view: 'today' }))
     expect(listed.items).toHaveLength(1)
     expect(listed.items[0]).toMatchObject({ status: 'todo', text: 'Buy milk' })
-    await expect(Effect.runPromise(module.issueToken({ accountId: 'account-1', deviceName: 'Writable', expiresAt: Date.parse('2027-01-01T00:00:00Z'), scopes: ['todos:write'] }))).rejects.toMatchObject({ code: 'invalid_request' })
+    await expect(Effect.runPromise(module.issueToken({ accountId: 'account-1', deviceName: 'Too long', expiresAt: Date.parse('2028-01-01T00:00:00Z'), scopes: ['todos:read'] }))).rejects.toMatchObject({ code: 'invalid_request' })
+
+    const dirtyModule = createDeviceTodoModule({
+      repository: {
+        ...database.repository,
+        listNoteSnapshots: async () => [
+          ...(await database.repository.listNoteSnapshots('account-1', 0)),
+          { accountId: 'account-1', generation: 0, noteId: 'broken', snapshot: 'not-a-note', frontier: {}, updatedAt: 3 },
+        ],
+      },
+      store: database.deviceTodo,
+      now: () => Date.parse('2026-09-01T08:00:00Z'),
+    })
+    const dirtyListed = await Effect.runPromise(dirtyModule.list({ date: '2026-09-01', limit: 20, token: issued.token, view: 'today' }))
+    expect(dirtyListed.items).toHaveLength(1)
     database.close()
   })
 })

@@ -116,18 +116,26 @@ export function createTodoDevicePushService(options: TodoDevicePushServiceOption
 }
 
 export async function buildSnapshot(tasks: readonly TodoTask[], now = new Date()): Promise<DesktopDeviceTodoSnapshot> {
-  const items = tasks.slice(0, maxTasks).map(task => ({
-    allDay: task.allDay,
-    dueDate: task.dueDate,
-    dueTime: task.dueTime,
-    id: task.blockId,
-    noteTitle: task.noteTitle,
-    parentId: task.todoParentId ?? task.parentId,
-    revision: taskRevision(task),
-    status: toDeviceStatus(task.status),
-    text: task.text,
-    topicTitle: task.topicTitle,
-  }))
+  const selectedTasks = tasks
+    .filter(task => task.status !== 'done')
+    .slice(0, maxTasks)
+  const selectedIds = new Set(selectedTasks.map(task => task.blockId))
+  const items = selectedTasks
+    .map(task => ({
+      allDay: task.allDay,
+      dueDate: task.dueDate,
+      dueTime: task.dueTime,
+      id: task.blockId,
+      noteTitle: task.noteTitle,
+      parentId: (() => {
+        const parentId = task.todoParentId ?? task.parentId
+        return parentId !== null && selectedIds.has(parentId) ? parentId : null
+      })(),
+      revision: taskRevision(task),
+      status: toDeviceStatus(task.status),
+      text: task.text,
+      topicTitle: task.topicTitle,
+    }))
   const canonical = JSON.stringify(items)
   return {
     generatedAt: now.toISOString(),
