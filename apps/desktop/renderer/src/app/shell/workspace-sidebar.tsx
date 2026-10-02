@@ -7,6 +7,7 @@ import * as stylex from '@stylexjs/stylex'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { useVirtualizer } from '@tanstack/react-virtual'
+import { Match } from 'effect'
 import {
   BookOpen,
   CalendarDays,
@@ -31,6 +32,7 @@ import {
   desktopEffect,
   desktopEffectQuery,
 } from '../../shared/effect-query'
+import { getPlatform } from '../../shared/platform'
 import { P2pSidebarStatus } from './p2p-sidebar-status'
 import { p2pSidebarStatusStyles } from './p2p-sidebar-status.stylex'
 import { workspaceSidebarStyles } from './workspace-sidebar.stylex'
@@ -42,9 +44,9 @@ const sidebarSpring = {
 } as const
 
 const sidebarToggleSpring = {
-  bounce: 0,
+  bounce: 0.12,
   type: 'spring',
-  visualDuration: 0.42,
+  visualDuration: 0.3,
 } as const
 
 const disclosureSpring = {
@@ -288,6 +290,7 @@ function SourceGroup({
 }
 
 export function WorkspaceSidebarMotion({
+  compactCollapsed,
   children,
   onToggle,
   visible,
@@ -301,6 +304,16 @@ export function WorkspaceSidebarMotion({
   const shouldReduceMotion = useReducedMotion()
   const transition = shouldReduceMotion ? { duration: 0 } : sidebarSpring
   const toggleTransition = shouldReduceMotion ? { duration: 0 } : sidebarToggleSpring
+  const toggleLeft = Match.value({
+    compactCollapsed,
+    platform: getPlatform(),
+    visible,
+  }).pipe(
+    Match.when(({ visible }) => visible, () => 217),
+    Match.when(({ compactCollapsed }) => compactCollapsed === true, () => 14),
+    Match.when(({ platform }) => platform === 'macos', () => 120),
+    Match.orElse(() => 14),
+  )
   const [sidebarMounted, setSidebarMounted] = useState(visible)
   useEffect(() => {
     if (visible && !sidebarMounted)
@@ -330,7 +343,9 @@ export function WorkspaceSidebarMotion({
         : null}
       <motion.button
         {...stylex.props(workspaceSidebarStyles.toggle)}
-        animate={{ left: visible ? 217 : 120 }}
+        animate={{
+          left: toggleLeft,
+        }}
         aria-label={visible ? t('hideSidebar') : t('showSidebar')}
         data-sidebar-toggle=""
         data-window-no-drag=""

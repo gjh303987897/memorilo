@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import type { EditorModeValue } from '../common/editor-mode'
+import type { EditorPlatform } from '../common/editor-platform'
 import type { EditorSession } from '../common/editor-session'
 import { EditorCanvas } from '../common/editor-canvas'
 import './document-content.stylex'
@@ -11,6 +12,7 @@ export function DocumentEditor({
   focusBlockId,
   mode,
   modePicker,
+  platform,
   readOnly,
   session,
   taskDate,
@@ -21,6 +23,7 @@ export function DocumentEditor({
   focusBlockId?: string
   mode: EditorModeValue
   modePicker?: (onActivate: () => void) => ReactNode
+  platform?: EditorPlatform
   readOnly: boolean
   session: EditorSession
   taskDate?: string
@@ -33,6 +36,7 @@ export function DocumentEditor({
       mode={mode}
       modeControls={children}
       modePicker={modePicker}
+      platform={platform}
       readOnly={readOnly}
       session={session}
       taskDate={taskDate}

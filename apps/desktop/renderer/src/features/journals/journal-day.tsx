@@ -12,6 +12,7 @@ import { useCallback, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useDesktopConfiguration } from '../../shared/configuration'
 import { desktopRequests } from '../../shared/desktop-requests'
+import { getPlatform } from '../../shared/platform'
 import {
   desktopEditorAdapters,
   useEditorNoteSession,
@@ -124,6 +125,7 @@ export function JournalDay({
           focus={focusBlockId === undefined ? undefined : { blockId: focusBlockId }}
           note={session.opened.note}
           outline={{ outdentBehavior: configuration.outdentBehavior }}
+          platform={getPlatform()}
           taskDate={summary.journalDate}
         />
       </>

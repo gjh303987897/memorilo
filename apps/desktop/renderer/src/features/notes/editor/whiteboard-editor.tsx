@@ -18,6 +18,7 @@ import * as stylex from '@stylexjs/stylex'
 import { NotebookPen } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { getPlatform } from '../../../shared/platform'
 import { whiteboardEditorStyles } from './whiteboard-editor.stylex'
 import { whiteboardLibraryPersistenceAdapter } from './whiteboard-library-storage'
 import './whiteboard-editor.global'
@@ -60,7 +61,7 @@ function EmbeddedWhiteboardEditor({ adapters, learningEnabled, shortcuts, topic 
 }) {
   return (
     <article {...stylex.props(whiteboardEditorStyles.editorEmbed)} data-memorilo-whiteboard-editor="">
-      <Editor adapters={adapters} layout="embedded" learningEnabled={learningEnabled} mode={EditorMode.Document} shortcuts={shortcuts} topic={topic} />
+      <Editor adapters={adapters} layout="embedded" learningEnabled={learningEnabled} mode={EditorMode.Document} platform={getPlatform()} shortcuts={shortcuts} topic={topic} />
     </article>
   )
 }

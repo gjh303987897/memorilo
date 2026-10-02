@@ -23,6 +23,7 @@ import { useDesktopConfiguration } from '../../../shared/configuration'
 import { errorMessage } from '../../../shared/error-message'
 import { matchesKeyboardShortcut } from '../../../shared/keyboard-shortcut'
 import { usePageTitlebar } from '../../../shared/page-titlebar'
+import { getPlatform } from '../../../shared/platform'
 import { projectVisibleNoteEntries, selectAdjacentVisibleId } from '../note-entry-tree'
 import { NoteInspector } from '../note-inspector'
 import { NoteInspectorActions } from '../note-inspector-actions'
@@ -459,6 +460,7 @@ export function NoteEditorView({
                       focus={focusBlockId === undefined ? undefined : { blockId: focusBlockId }}
                       imageOcclusion={regularTopicImageOcclusion}
                       learningEnabled={configuration.learning.enabled}
+                      platform={getPlatform()}
                       shortcuts={configuration.shortcuts}
                       onDocumentChange={reconcileCardTopics}
                       outline={{ outdentBehavior: configuration.outdentBehavior }}

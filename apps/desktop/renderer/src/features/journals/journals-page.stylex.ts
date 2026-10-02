@@ -27,7 +27,9 @@ export const journalsPageStyles = stylex.create({
     top: 0,
     right: 0,
     left: 0,
-    height: 60,
+    // Keep the scroll edge aligned with the global AppTitlebar boundary so
+    // its shadow does not create a second horizontal rule below the titlebar.
+    height: 56,
     pointerEvents: 'none',
     backgroundColor: {
       'default': 'var(--ui-surface-translucent, rgba(255, 255, 255, 0.94))',

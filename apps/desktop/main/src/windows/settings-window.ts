@@ -30,6 +30,7 @@ export function createSettingsWindowController(mainDirectory: string): SettingsW
         }
       : {}
     settingsWindow = new BrowserWindow({
+      autoHideMenuBar: process.platform !== 'darwin',
       backgroundColor: '#ffffff',
       fullscreenable: false,
       height: 560,

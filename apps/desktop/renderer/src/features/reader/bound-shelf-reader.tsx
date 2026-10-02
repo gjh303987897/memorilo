@@ -15,6 +15,7 @@ import { useTranslation } from 'react-i18next'
 import { useDesktopConfiguration } from '../../shared/configuration'
 
 import { desktopRequests } from '../../shared/desktop-requests'
+import { getPlatform } from '../../shared/platform'
 import { desktopEditorAdapters } from '../notes/editor/note-editor-session'
 import { useNoteFavorite } from '../notes/note-favorite'
 import { NoteInspectorContent } from '../notes/note-inspector'
@@ -249,6 +250,7 @@ export function BoundShelfReader({
             adapters={editorAdapters}
             layout="embedded"
             learningEnabled={configuration.learning.enabled}
+            platform={getPlatform()}
             shortcuts={configuration.shortcuts}
             outline={{ outdentBehavior: configuration.outdentBehavior }}
             readOnly={readOnly}
