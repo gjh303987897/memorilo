@@ -70,7 +70,7 @@ Weather is fetched only when it is enabled, Wi-Fi is online, trusted time has sy
 
 ## Framing and limits
 
-JSON payloads are UTF-8 and limited to 4096 bytes. They use binary GATT frames with an 18-byte little-endian header followed by at most 384 payload bytes:
+JSON payloads are UTF-8 and limited to 64 KiB. They use binary GATT frames with an 18-byte little-endian header followed by at most 384 payload bytes:
 
 | Offset | Size | Meaning |
 | --- | --- | --- |
@@ -79,7 +79,7 @@ JSON payloads are UTF-8 and limited to 4096 bytes. They use binary GATT frames w
 | 3 | 1 | bit 0 start, bit 1 end |
 | 4 | 4 | request token |
 | 8 | 2 | zero-based chunk index |
-| 10 | 2 | chunk count, maximum 32 |
+| 10 | 2 | chunk count, maximum 256 |
 | 12 | 2 | payload length |
 | 14 | 4 | IEEE CRC-32 of the complete JSON |
 

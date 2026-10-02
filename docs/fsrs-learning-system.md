@@ -83,7 +83,7 @@ Partial Card 只是单一 item Target 的复习展示，不是新的 Card Defini
 
 ## 5. 逻辑数据库模型
 
-所有学习数据与现有 Note 数据存放在同一个 SQLite 数据库，由 packages/editor-storage 管理。当前 schema 初始化使用幂等 `CREATE TABLE IF NOT EXISTS`；启动时会从现有 Review Events 重算 Card introduction，并有限回填当前学习日的 Sibling Bury 派生索引。main database schema generation 为 `1`。
+所有学习数据与现有 Note 数据存放在同一个 SQLite 数据库，由 packages/editor-storage 管理。主数据库通过 Drizzle migrations 初始化和升级；启动时会从现有 Review Events 重算 Card introduction，并有限回填当前学习日的 Sibling Bury 派生索引。学习表使用独立的 learning schema generation，目前为 `1`。
 
 ### 5.1 learning_optimizers
 
@@ -375,7 +375,7 @@ Anki 本地删除 revlog 的 Undo 无法同步；Memorilo 使用 append-only Und
 1. 删除 inactive Card、其 Target，以及 active List/Set 中单独 inactive 的 item Target；
 2. 删除这些 Target 的 Review Event、Learning State 和 queue exclusions；
 3. 删除 archived Optimizer 及不再被 current pointer 使用的 revision；
-4. 写入 scoped purge tombstone，为未来同步防止旧设备复活数据；不修改 main database schema generation；
+4. 写入 scoped purge tombstone，为未来同步防止旧设备复活数据；不修改主数据库的 migration generation；
 5. 检查外键和 sanity counts；
 6. 执行 VACUUM。
 
@@ -396,4 +396,4 @@ Active Card 的 Review Event 不能因为其历史 Optimizer 已归档而删除�
 5. 已完成本地同步 outbox、持久化 P2P journal、device version vector、membership epoch、入站 merge、tombstone 防复活和 Noise/Yamux/mDNS transport；full-sync recovery 与 prune-watermark 协调尚未实现。
 6. 已完成底层数据库维护、P2P IPC、Settings 配对入口和 package/integration tests；远端 prune-watermark 协调仍待实现。
 
-main database schema generation 保持为 `1`；CardTopic ownership 不改变这一 generation。数据库维护只处理当前 schema 的派生数据、索引和 tombstone。
+CardTopic ownership 不改变主数据库的 migration generation。数据库维护只处理当前 schema 的派生数据、索引和 tombstone；learning schema generation 仍为 `1`。

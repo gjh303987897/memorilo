@@ -406,7 +406,7 @@ Issue [#29](https://github.com/memorilo/memorilo/issues/29) 曾提议先通过 A
 
 - 从 CardTopic 文档投影 Card front/back、source Block、context、类型和 active state；无 `cardSource` 的 regular Topic 不再直接投影学习 Card。
 - 在 SQLite 保存可重建的 Card projection，并以 CardTopic `topicId` 返回 Note/Topic/Block 内容来源。
-- main database generation 保持 `1`；CardTopic ownership 与 List/Set 两层 Target 模型在该 generation 内运行。
+- CardTopic ownership 与 List/Set 两层 Target 模型随主数据库当前的 Drizzle migration generation 运行；learning schema generation 独立维护。
 
 ### 阶段 2A：原生复习闭环（已采用）
 
@@ -462,7 +462,7 @@ Review Card
 
 当前已经形成“regular Topic authoring -> child CardTopic -> 动态队列 -> 正式复习 -> FSRS 状态持久化”的闭环：Editor 支持 Basic/Reverse/Bidirectional、两条 Cloze 路径、List/Set、inline/block Highlight、稳定 Card identity、synced/detached 与嵌套；Desktop 支持 CardTopic Preview、全局/Note Review、四级评分、main/item 两层调度、Sibling Bury、每日新卡额度、Daily Goal、Optimizer assignment/optimization 和跨重启恢复。
 
-main database generation 保持 `1`；当前 CardTopic、learning schema 和 List/Set 两层 Target 模型都在该 generation 内运行。
+当前 CardTopic、learning schema 和 List/Set 两层 Target 模型运行在主数据库当前的 Drizzle migration baseline 上；learning schema generation 独立维护。
 
 仍未完成的主要边界是远端个人学习同步、完整的 source navigation 与 suspend 等 Review 操作、版本化导入导出，以及 SuperMemo 式渐进阅读；这些不影响当前原生 FSRS 闭环。
 

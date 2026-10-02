@@ -29,14 +29,9 @@ The server returns an `ETag` for the top-level revision and answers `304 Not Mod
 
 ## Completion and reopening
 
-```http
-POST /api/device/v1/todo-actions
-Authorization: Bearer memorilo-todo-v1....
-Content-Type: application/json
-
-{"operationId":"<uuid>","todoId":"<item-id>","action":"complete","baseRevision":"<item-revision>"}
-```
-
-`action` is `complete` or `reopen`. `operationId` is idempotent: retrying the same request returns the original result. A changed item produces `409 revision_conflict` with `currentRevision`; refresh the list before retrying. The server converts the action into a canonical Loro Note update and records it in the normal authoritative sync log, so desktop peers receive it through the existing sync protocol.
+The current device API is read-only. The server does not expose a
+`/api/device/v1/todo-actions` route yet, so NOTE4 cannot complete or reopen
+TODOs through this API. The firmware integration must continue to treat the
+snapshot returned by `GET /api/device/v1/todos` as authoritative.
 
 Use TLS, a device-specific credential, and the narrowest scope required. Do not embed a Memorilo account password in firmware.

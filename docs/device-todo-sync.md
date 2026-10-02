@@ -4,7 +4,7 @@ Memorilo keeps NOTE4C TODO data read-only. The server's HTTPS snapshot is author
 
 ## Paths
 
-- Server to device: `mqtts://` notification topic, followed by an HTTPS `GET` with bearer authentication and `ETag`.
+- Server to device: when `MEMORILO_SYNC_SERVER_MQTT_TODO_BROKER_URL` is configured, an `mqtts://` notification topic is published first, followed by an HTTPS `GET` with bearer authentication and `ETag`; without a broker, the device uses bounded periodic HTTPS polling.
 - Memorilo to device: desktop-initiated authenticated LAN `POST /v1/todos` after local TODO changes, or a direct TODO snapshot push over an authenticated BLE or USB Serial provisioning session.
 - Device to desktop: no callback and no inbound desktop listener. BLE and USB Serial are outbound provisioning transports; they carry the same bounded snapshot contract as LAN.
 

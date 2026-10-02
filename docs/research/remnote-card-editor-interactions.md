@@ -305,4 +305,4 @@ Card authoring 行为直接由 `packages/editor/src/card/*.test.*` 和 Document 
 2. Bidirectional 的 forward/backward CardIDs 在方向和 List/Set presentation 切换时保持不变；禁用后重新启用同一方向会恢复原 CardID 与既有学习历史。这是 Memorilo 已采用的合同，不声称来自 RemNote 公开规范。
 3. 每个 Basic/List/Set Definition、ClozeGroup、连续 inline Highlight 和 block Highlight 创建一个 child CardTopic；regular Topic 不进入队列且不提供 Preview。CardTopic 默认 synced，编辑或删除来源会 detached，toast Undo 可 resync；child 可继续生成嵌套 CardTopic。
 4. CardTopic Preview 使用 `CardPreview`，正式 Review 使用只读、focused CardSurface；二者都只读取当前 CardTopic 拥有的 Card projection。完整 ancestor context、自动防泄题、独立折叠状态和返回 Source Block 的导航仍是后续边界。
-5. main database schema generation 保持 `1`；CardTopic ownership 不改变这一 generation。
+5. CardTopic ownership 不改变主数据库的 migration generation；learning schema generation 独立维护。

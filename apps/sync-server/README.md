@@ -29,6 +29,8 @@ Set `MEMORILO_SYNC_SERVER_CONFIG_FILE` to a JSON file whose keys use the camel-c
   "host": "0.0.0.0",
   "maintenanceMode": "off",
   "metadataDatabase": "sqlite",
+  "mqttTodoBrokerUrl": "mqtts://mqtt.example:8883",
+  "mqttTodoTopicPrefix": "memorilo/todos",
   "objectStore": "filesystem",
   "port": 6000,
   "registration": "disabled",
@@ -47,6 +49,10 @@ Set `MEMORILO_SYNC_SERVER_CONFIG_FILE` to a JSON file whose keys use the camel-c
 | `MEMORILO_SYNC_SERVER_PORT` | Application HTTP/WebSocket front door. Default `6000`. |
 | `MEMORILO_SYNC_SERVER_ENABLED_MODES` | Comma-separated `relay`, `authoritative`, or both. Default `relay,authoritative`; this is the upper bound for every account policy. |
 | `MEMORILO_SYNC_SERVER_DEVICE_CREDENTIAL_TTL_MS` | Lifetime for newly issued scoped device credentials. Default 90 days; minimum one hour. |
+| `MEMORILO_SYNC_SERVER_MQTT_TODO_BROKER_URL` | Optional TLS MQTT broker for device TODO change notifications. Must use an `mqtts://` URL. When omitted, devices rely on HTTPS polling. |
+| `MEMORILO_SYNC_SERVER_MQTT_TODO_USERNAME` | Optional MQTT username. Must be provided together with `MEMORILO_SYNC_SERVER_MQTT_TODO_PASSWORD`. |
+| `MEMORILO_SYNC_SERVER_MQTT_TODO_PASSWORD` | Optional MQTT password. Must be provided together with `MEMORILO_SYNC_SERVER_MQTT_TODO_USERNAME`. |
+| `MEMORILO_SYNC_SERVER_MQTT_TODO_TOPIC_PREFIX` | MQTT topic prefix for device TODO notifications. Default `memorilo/todos`; maximum 128 characters. |
 | `MEMORILO_SYNC_SERVER_MAINTENANCE_MODE` | `off` or `read-only`. Default `off`; read-only rejects sync payload writes and management mutations. |
 | `MEMORILO_SYNC_SERVER_REGISTRATION` | `disabled`, `invite-only`, or `public`. Default `disabled`. An empty installation permits one initial account from any IP before this policy applies. |
 | `MEMORILO_SYNC_SERVER_METADATA_DATABASE` | Metadata provider: `sqlite` or `postgres`. Default `sqlite`. |
