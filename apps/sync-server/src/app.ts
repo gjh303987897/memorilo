@@ -3,20 +3,24 @@ import type { P2pApplication } from '@memorilo/sync/node'
 import type { Context, Next } from 'hono'
 import type { AuthenticatedBrowserAccount, BrowserAuthOptions } from '../infrastructure/auth/browser-auth'
 import type { SyncServerConfig } from './config'
+import type { DeviceTodoModule } from './device-todo'
 import type { SyncPeerMetrics, SyncServerMetrics } from './metrics'
 import type { RateLimiter } from './rate-limiter'
 import { Buffer } from 'node:buffer'
-import { randomUUID, timingSafeEqual } from 'node:crypto'
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { extname, join } from 'node:path'
 import { encodeSyncServerCredentialBundle } from '@memorilo/sync'
 import { decodePairingPayload, verifyPairingResponse } from '@memorilo/sync/node'
+import { Effect } from 'effect'
 import { Hono } from 'hono'
 import { createBrowserAuth } from '../infrastructure/auth/browser-auth'
 import { withDatabaseFailureMetrics } from '../infrastructure/metrics'
 import { hashDeviceCredential, hashPairingSharedSecret, newDeviceCredential } from '../infrastructure/p2p/server-peer'
+import { DeviceTodoError } from './device-todo'
 import { createSyncServerMetrics } from './metrics'
 import { createRateLimiter } from './rate-limiter'
+import { todoNotificationTopic } from './todo-notification-publisher'
 
 interface SyncServerVariables {
   readonly config: SyncServerConfig
@@ -39,6 +43,15 @@ interface SyncServerEnvironment {
 
 export type SyncServerApp = Hono<SyncServerEnvironment>
 
+async function runDeviceTodo<Result>(effect: Effect.Effect<Result, DeviceTodoError>): Promise<{ readonly ok: true, readonly value: Result } | { readonly ok: false, readonly error: DeviceTodoError }> {
+  try {
+    return { ok: true, value: await Effect.runPromise(effect) }
+  }
+  catch (error) {
+    return { ok: false, error: error instanceof DeviceTodoError ? error : new DeviceTodoError('internal_error', 'Device Todo operation failed', { cause: error }) }
+  }
+}
+
 export interface SyncServerAppServices extends BrowserAuthOptions {
   readonly audit: SyncAuditStore
   readonly metrics?: SyncServerMetrics
@@ -50,6 +63,7 @@ export interface SyncServerAppServices extends BrowserAuthOptions {
   readonly closeAccountSyncSessions?: (accountId: string) => Promise<void>
   readonly closeDeviceSyncSessions?: (accountId: string, deviceId: string) => Promise<void>
   readonly isReady?: () => boolean
+  readonly deviceTodo?: DeviceTodoModule
 }
 
 const rateLimitWindowMs = 60_000
@@ -77,6 +91,21 @@ function json(body: unknown, status = 200, headers = new Headers()): Response {
 
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback
+}
+
+function deviceTodoErrorStatus(error: DeviceTodoError): 400 | 401 | 403 | 500 | 503 {
+  switch (error.code) {
+    case 'unauthorized':
+      return 401
+    case 'forbidden':
+      return 403
+    case 'invalid_request':
+      return 400
+    case 'account_not_authoritative':
+      return 503
+    case 'internal_error':
+      return 500
+  }
 }
 
 export function createSyncServerApp(config: SyncServerConfig, services: SyncServerAppServices): SyncServerApp {
@@ -108,6 +137,7 @@ export function createSyncServerApp(config: SyncServerConfig, services: SyncServ
     return csrfError ?? account
   }
   const rateLimiter = services.rateLimiter ?? createRateLimiter(services.now)
+  const deviceTodo = services.deviceTodo
   const peerMetrics = (): SyncPeerMetrics => services.peerMetrics?.() ?? { activeObjectTransfers: 0, activeSyncSessions: 0 }
   const renderIndex = async (body: Uint8Array): Promise<Response> => {
     let html = Buffer.from(body).toString('utf8')
@@ -410,6 +440,105 @@ export function createSyncServerApp(config: SyncServerConfig, services: SyncServ
         peerId: device.peerId,
       }))
     return context.json({ devices })
+  })
+  app.post('/api/devices/todo-token', async (context) => {
+    const account = await browserAuth.current(context.req.raw)
+    if (!account)
+      return context.json({ code: 'unauthorized' }, 401)
+    try {
+      await browserAuth.requireCsrf(context.req.raw, account)
+    }
+    catch {
+      return context.json({ code: 'csrf_invalid' }, 403)
+    }
+    if (!deviceTodo)
+      return context.json({ code: 'device_todo_unavailable' }, 503)
+    let body: { deviceName?: unknown, expiresAt?: unknown, scopes?: unknown }
+    try {
+      body = await context.req.json<{ deviceName?: unknown, expiresAt?: unknown, scopes?: unknown }>()
+    }
+    catch {
+      return context.json({ code: 'invalid_request' }, 400)
+    }
+    const result = await runDeviceTodo(deviceTodo.issueToken({
+      accountId: account.accountId,
+      deviceName: typeof body.deviceName === 'string' ? body.deviceName : '',
+      expiresAt: typeof body.expiresAt === 'number' ? body.expiresAt : Number.NaN,
+      scopes: Array.isArray(body.scopes) ? body.scopes as never : [],
+    }))
+    if (!result.ok)
+      return context.json({ code: result.error.code }, deviceTodoErrorStatus(result.error))
+    await recordAudit({ accountId: account.accountId, action: 'device.todo-token.issue', actorId: account.accountId, actorType: 'browser', details: { deviceId: result.value.credential.deviceId }, outcome: 'success', remoteAddress: context.get('remoteAddress'), requestId: context.get('requestId') })
+    return context.json({
+      credential: result.value.token,
+      device: {
+        deviceId: result.value.credential.deviceId,
+        deviceName: result.value.credential.deviceName,
+        mqttTopic: config.mqttTodoBrokerUrl === undefined
+          ? null
+          : todoNotificationTopic(config.mqttTodoTopicPrefix, result.value.credential.deviceId),
+      },
+      expiresAt: result.value.credential.expiresAt,
+      scopes: result.value.credential.scopes,
+    }, 201)
+  })
+  app.get('/api/devices/todo-tokens', async (context) => {
+    const account = await browserAuth.current(context.req.raw)
+    if (!account)
+      return context.json({ code: 'unauthorized' }, 401)
+    if (!deviceTodo)
+      return context.json({ code: 'device_todo_unavailable' }, 503)
+    const result = await runDeviceTodo(deviceTodo.listTokens(account.accountId))
+    if (!result.ok)
+      return context.json({ code: result.error.code }, deviceTodoErrorStatus(result.error))
+    return context.json({ tokens: result.value.filter(token => token.revokedAt === null).map(token => ({ createdAt: token.createdAt, deviceId: token.deviceId, deviceName: token.deviceName, expiresAt: token.expiresAt, scopes: token.scopes })) })
+  })
+  app.post('/api/devices/todo-tokens/:deviceId/revoke', async (context) => {
+    const account = await browserAuth.current(context.req.raw)
+    if (!account)
+      return context.json({ code: 'unauthorized' }, 401)
+    try {
+      await browserAuth.requireCsrf(context.req.raw, account)
+    }
+    catch {
+      return context.json({ code: 'csrf_invalid' }, 403)
+    }
+    if (!deviceTodo)
+      return context.json({ code: 'device_todo_unavailable' }, 503)
+    const result = await runDeviceTodo(deviceTodo.revokeToken(account.accountId, context.req.param('deviceId')))
+    if (!result.ok)
+      return context.json({ code: result.error.code }, deviceTodoErrorStatus(result.error))
+    return result.value ? context.json({ revoked: true }) : context.json({ code: 'device_not_found' }, 404)
+  })
+  app.get('/api/device/v1/todos', async (context) => {
+    if (!deviceTodo)
+      return context.json({ code: 'device_todo_unavailable' }, 503)
+    const token = context.req.header('authorization')?.startsWith('Bearer ')
+      ? context.req.header('authorization')!.slice(7)
+      : ''
+    const rateLimitKey = token === ''
+      ? context.get('remoteAddress') || 'unknown'
+      : createHash('sha256').update(token).digest('hex')
+    const decision = rateLimiter.check('device-todos', rateLimitKey, 60, rateLimitWindowMs)
+    context.header('ratelimit-limit', String(decision.limit))
+    context.header('ratelimit-remaining', String(decision.remaining))
+    context.header('ratelimit-reset', String(Math.ceil(decision.resetAt / 1000)))
+    if (!decision.allowed) {
+      context.header('retry-after', String(Math.max(1, Math.ceil((decision.resetAt - now()) / 1000))))
+      return context.json({ code: 'rate_limited' }, 429)
+    }
+    const date = context.req.query('date') ?? new Date(now()).toISOString().slice(0, 10)
+    const view = context.req.query('view') === 'all' ? 'all' : 'today'
+    const limit = Number(context.req.query('limit') ?? 20)
+    const result = await runDeviceTodo(deviceTodo.list({ date, limit, token, view }))
+    if (!result.ok)
+      return context.json({ code: result.error.code }, deviceTodoErrorStatus(result.error))
+    const tag = `"${result.value.revision}"`
+    context.header('etag', tag)
+    context.header('cache-control', 'private, max-age=0')
+    if (context.req.header('if-none-match') === tag)
+      return new Response(null, { status: 304, headers: { etag: tag } })
+    return context.json(result.value)
   })
   app.post('/api/devices/pairing', async (context) => {
     const account = await requireAccountWithCsrf(context)

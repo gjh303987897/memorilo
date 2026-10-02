@@ -1,15 +1,16 @@
 import type { ConfigurationStore } from '@memorilo/config'
 import type { DesktopConfiguration } from '@memorilo/desktop-config'
-import type { LearningPracticeConfiguration } from '@memorilo/editor-storage'
+import type { LearningPracticeConfiguration, TodoTask } from '@memorilo/editor-storage'
 import type { P2pApplication } from '@memorilo/sync/node'
 import type { MessageBoxOptions } from 'electron'
+import type { TodoDevicePushTarget } from './todo/todo-device-push-service'
 import { Buffer } from 'node:buffer'
 import { createHash, randomBytes } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { hostname } from 'node:os'
 import { join, resolve } from 'node:path'
-import process from 'node:process'
 
+import process from 'node:process'
 import { createConfigurationStore } from '@memorilo/config'
 import { desktopSyncServerEventChannel } from '@memorilo/desktop-api'
 import { memoriloAppOrigin } from '@memorilo/desktop-api/transport'
@@ -25,13 +26,15 @@ import {
 import { createOperationSupervisor, createResourceScope } from '@memorilo/effect-lifecycle'
 import { ShelfReadingFileStore } from '@memorilo/shelf/node'
 import { decodeSyncServerCredentialBundle } from '@memorilo/sync'
-import { createP2pApplication, JsonSyncJournal, syncServerDialTarget } from '@memorilo/sync/node'
 
+import { createP2pApplication, JsonSyncJournal, syncServerDialTarget } from '@memorilo/sync/node'
+import { Effect } from 'effect'
 import { app, BrowserWindow, dialog } from 'electron'
 import { installApplicationMenu } from './application-menu'
 import { createDesktopAssetSync } from './assets/asset-p2p-sync'
 import { createDatabaseBackupApplication } from './backup/backup-application'
 import { createDesktopConfigurationAdapter } from './configuration/desktop-configuration-adapter'
+import { DeviceLocalManagementClient } from './device-local-management-client'
 import { createDesktopServices } from './ipc/services'
 import { installJournalRollover } from './lifecycle/journal-rollover'
 import { createMcpServerController } from './mcp/mcp-server-controller'
@@ -40,6 +43,7 @@ import { ensureNoteP2pBaselines } from './notes/note-p2p-baselines'
 import { createActiveReadingRegistry } from './reading/active-reading-registry'
 import { BetterSqliteDatabase } from './storage/better-sqlite-database'
 import { ElectronDeviceSigningKeyStore } from './storage/electron-device-signing-key-store'
+import { ElectronLocalManagementCredentialStore } from './storage/electron-local-management-credential-store'
 import { ElectronSyncServerCredentialStore } from './storage/electron-sync-server-credential-store'
 import { openCurrentMainDatabase } from './storage/main-database'
 import { TransformersEmbeddingModel } from './storage/transformers-embedding-model'
@@ -50,6 +54,8 @@ import {
   shelfLibraryDirectory,
 } from './storage/workspace-paths'
 import { createSyncServerStatusController } from './sync-server-status'
+import { createTodoDevicePushService } from './todo/todo-device-push-service'
+import { createTodoDeviceTargetStore, loadTodoDeviceTargetsForStartup } from './todo/todo-device-target-store'
 import { createTodoReminderScheduler } from './todo/todo-reminder-scheduler'
 import { WhiteboardLibraryApplication } from './whiteboard/whiteboard-library-application'
 import { createSettingsWindowController } from './windows/settings-window'
@@ -179,6 +185,29 @@ function learningNow(allowTestClock: boolean): () => number {
   return () => milliseconds
 }
 
+function configuredTodoDeviceTargets(): readonly TodoDevicePushTarget[] {
+  const raw = process.env.MEMORILO_NOTE4_TODO_DEVICES
+  if (raw === undefined || raw.trim().length === 0)
+    return []
+  try {
+    const value: unknown = JSON.parse(raw)
+    if (!Array.isArray(value))
+      throw new TypeError('TODO device target list must be an array')
+    return value.flatMap((entry): TodoDevicePushTarget[] => {
+      if (typeof entry !== 'object' || entry === null)
+        return []
+      const candidate = entry as { address?: unknown, deviceId?: unknown }
+      return typeof candidate.address === 'string' && typeof candidate.deviceId === 'string'
+        ? [{ address: candidate.address, deviceId: candidate.deviceId }]
+        : []
+    })
+  }
+  catch (error) {
+    console.warn('Ignoring invalid MEMORILO_NOTE4_TODO_DEVICES', error)
+    return []
+  }
+}
+
 export async function createDesktopRuntime(options: DesktopRuntimeOptions): Promise<DesktopRuntime> {
   // Every resource acquired after the shared database can depend on it during
   // a failed close retry. Do not release prerequisites past the first failure.
@@ -196,6 +225,9 @@ export async function createDesktopRuntime(options: DesktopRuntimeOptions): Prom
     })
     const configurationStore = configuration.resource
     const syncServerCredentialStore = new ElectronSyncServerCredentialStore(join(dataDirectory, 'sync-server', 'device-credential.enc'))
+    const localManagementCredentialStore = new ElectronLocalManagementCredentialStore(
+      join(dataDirectory, 'devices', 'local-management'),
+    )
     let storedSyncServerCredential = (await syncServerCredentialStore.load()) ?? ''
     const loadedSyncServerCredential = storedSyncServerCredential.length === 0
       ? null
@@ -242,6 +274,34 @@ export async function createDesktopRuntime(options: DesktopRuntimeOptions): Prom
       name: 'editor storage',
     })
     const editorStorage = editor.resource
+    const todoDevicePushClient = new DeviceLocalManagementClient(localManagementCredentialStore)
+    const todoDeviceTargetStore = createTodoDeviceTargetStore(join(dataDirectory, 'devices', 'todo-targets.json'))
+    const persistedTodoDeviceTargets = await loadTodoDeviceTargetsForStartup(todoDeviceTargetStore)
+    const todoDevicePush = (await scope.acquire({
+      acquire: () => createTodoDevicePushService({
+        listTasks: async () => {
+          const tasks: TodoTask[] = []
+          let cursor: number | undefined
+          while (tasks.length < 64) {
+            const page = await editorStorage.tasks.list({
+              ...(cursor === undefined ? {} : { cursor }),
+              limit: 500,
+            })
+            tasks.push(...page.items.filter(task => task.status !== 'done'))
+            if (page.nextCursor === null)
+              break
+            cursor = page.nextCursor
+          }
+          return tasks.slice(0, 64)
+        },
+        push: input => Effect.runPromise(todoDevicePushClient.pushTodos(input)),
+        targets: persistedTodoDeviceTargets.length > 0
+          ? persistedTodoDeviceTargets
+          : configuredTodoDeviceTargets(),
+      }),
+      close: service => service.close(),
+      name: 'TODO device LAN push',
+    })).resource
     await scope.acquire({
       acquire: () => createTodoReminderScheduler(editorStorage),
       close: scheduler => scheduler.close(),
@@ -364,6 +424,7 @@ export async function createDesktopRuntime(options: DesktopRuntimeOptions): Prom
       acquire: () => createNoteApplicationService(editorStorage, ({ noteId, update, updatedAt }) => {
         if (applyingRemoteP2pChanges === 0)
           queueLocalNoteUpdate(noteId, update)
+        todoDevicePush.notifyLocalMutation()
         for (const window of BrowserWindow.getAllWindows())
           window.webContents.send('memorilo:note-update', { noteId, update, updatedAt })
       }, {
@@ -667,7 +728,12 @@ export async function createDesktopRuntime(options: DesktopRuntimeOptions): Prom
     })
 
     const settingsWindow = (await scope.acquire({
-      acquire: () => createSettingsWindowController(options.mainDirectory),
+      acquire: () => createSettingsWindowController(
+        options.mainDirectory,
+        localManagementCredentialStore,
+        todoDeviceTargetStore,
+        todoDevicePush,
+      ),
       close: controller => controller.close(),
       name: 'settings window controller',
     })).resource

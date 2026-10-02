@@ -17,6 +17,10 @@ describe('settings renderer', () => {
     )
 
     expect(rendered.getByRole('heading', { name: 'General' })).toBeInTheDocument()
+    const contentScroll = rendered.container.querySelector('[data-settings-content-scroll]')
+    expect(contentScroll).not.toBeNull()
+    expect(getComputedStyle(contentScroll as HTMLElement).flexGrow).toBe('1')
+    expect(getComputedStyle(rendered.getByRole('main')).height).toBe(`${window.innerHeight}px`)
     fireEvent.click(rendered.getByRole('radio', { name: 'Monday' }))
     await waitFor(() => expect(store.getSnapshot().weekStart).toBe('monday'))
 

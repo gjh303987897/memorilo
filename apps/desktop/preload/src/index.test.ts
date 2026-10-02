@@ -1,4 +1,5 @@
-import type { DesktopApi, DesktopNoteExternalUpdate, DesktopSyncServerEvent } from './contract'
+import type { DesktopApi, DesktopNoteExternalUpdate, DesktopProvisioningDevice, DesktopProvisioningPairingRequest, DesktopSyncServerEvent } from './contract'
+import { desktopProvisioningChannels } from '@memorilo/desktop-api'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
@@ -35,6 +36,127 @@ beforeEach(() => {
 })
 
 describe('preload IPC bridge', () => {
+  it('exposes narrow Bluetooth selection and pairing contracts with removable listeners', async () => {
+    mocks.ipcInvoke.mockResolvedValue(undefined)
+    const api = exposedApi().deviceProvisioning
+
+    await api.selectDevice('device-1')
+    await api.respondToPairing({ confirmed: true, pin: '123456', requestId: 'pairing-1' })
+    await api.cancelSelection()
+    mocks.ipcInvoke.mockResolvedValueOnce('generated-token')
+    await expect(api.generateLocalManagementToken()).resolves.toBe('generated-token')
+    mocks.ipcInvoke.mockResolvedValueOnce(true)
+    await expect(api.hasLocalManagementToken('device-1')).resolves.toBe(true)
+    await api.saveLocalManagementToken('device-1', 'a'.repeat(32))
+    await api.clearLocalManagementToken('device-1')
+    const target = { address: '192.168.4.23', deviceId: 'device-1' }
+    await api.loadGallery(target)
+    await api.uploadGalleryAsset({
+      ...target,
+      bytes: new Uint8Array(30_000),
+      createdAtUnixSeconds: 1,
+      name: 'Image',
+    })
+    await api.deleteGalleryAsset(target, 1)
+    await api.reorderGallery(target, [1])
+    await api.setGallerySlideshow(target, 300)
+
+    expect(mocks.ipcInvoke).toHaveBeenCalledWith(desktopProvisioningChannels.selectDevice, 'device-1')
+    expect(mocks.ipcInvoke).toHaveBeenCalledWith(desktopProvisioningChannels.respondToPairing, {
+      confirmed: true,
+      pin: '123456',
+      requestId: 'pairing-1',
+    })
+    expect(mocks.ipcInvoke).toHaveBeenCalledWith(desktopProvisioningChannels.selectDevice, null)
+    expect(mocks.ipcInvoke).toHaveBeenCalledWith(desktopProvisioningChannels.generateLocalManagementToken)
+    expect(mocks.ipcInvoke).toHaveBeenCalledWith(desktopProvisioningChannels.hasLocalManagementToken, 'device-1')
+    expect(mocks.ipcInvoke).toHaveBeenCalledWith(desktopProvisioningChannels.saveLocalManagementToken, {
+      deviceId: 'device-1',
+      token: 'a'.repeat(32),
+    })
+    expect(mocks.ipcInvoke).toHaveBeenCalledWith(desktopProvisioningChannels.clearLocalManagementToken, 'device-1')
+    expect(mocks.ipcInvoke).toHaveBeenCalledWith(desktopProvisioningChannels.loadGallery, target)
+    expect(mocks.ipcInvoke).toHaveBeenCalledWith(desktopProvisioningChannels.uploadGalleryAsset, expect.objectContaining({
+      ...target,
+      requestId: expect.any(String),
+    }))
+    expect(mocks.ipcInvoke).toHaveBeenCalledWith(desktopProvisioningChannels.deleteGalleryAsset, { ...target, id: 1 })
+    expect(mocks.ipcInvoke).toHaveBeenCalledWith(desktopProvisioningChannels.reorderGallery, { ...target, order: [1] })
+    expect(mocks.ipcInvoke).toHaveBeenCalledWith(desktopProvisioningChannels.setGallerySlideshow, {
+      ...target,
+      intervalSeconds: 300,
+    })
+
+    const deviceListener = vi.fn()
+    const stopDevices = api.subscribeDevices(deviceListener)
+    const deviceRegistration = mocks.ipcOn.mock.calls.find(([channel]) => channel === desktopProvisioningChannels.devicesChanged)
+    const handleDevices = deviceRegistration?.[1] as ((event: unknown, payload: { devices: readonly DesktopProvisioningDevice[], transport: 'bluetooth' | 'serial' }) => void) | undefined
+    if (!handleDevices)
+      throw new Error('Preload did not register the Bluetooth device list channel')
+    const devices = [{ deviceId: 'device-1', deviceName: 'Desk display', transport: 'bluetooth' as const }]
+    handleDevices({}, { devices, transport: 'bluetooth' })
+    expect(deviceListener).toHaveBeenCalledWith(devices, 'bluetooth')
+    stopDevices()
+    expect(mocks.ipcRemoveListener).toHaveBeenCalledWith(desktopProvisioningChannels.devicesChanged, handleDevices)
+
+    const pairingListener = vi.fn()
+    const stopPairing = api.subscribePairing(pairingListener)
+    const pairingRegistration = mocks.ipcOn.mock.calls.find(([channel]) => channel === desktopProvisioningChannels.pairingRequested)
+    const handlePairing = pairingRegistration?.[1] as ((event: unknown, request: DesktopProvisioningPairingRequest) => void) | undefined
+    if (!handlePairing)
+      throw new Error('Preload did not register the Bluetooth pairing channel')
+    const request: DesktopProvisioningPairingRequest = {
+      deviceId: 'device-1',
+      pairingKind: 'confirmPin',
+      pin: '123456',
+      requestId: 'pairing-1',
+    }
+    handlePairing({}, request)
+    expect(pairingListener).toHaveBeenCalledWith(request)
+    stopPairing()
+    expect(mocks.ipcRemoveListener).toHaveBeenCalledWith(desktopProvisioningChannels.pairingRequested, handlePairing)
+  })
+
+  it('filters gallery upload progress by request and always removes its listener', async () => {
+    let rejectUpload!: (cause: unknown) => void
+    mocks.ipcInvoke.mockReturnValueOnce(new Promise((_resolve, reject) => {
+      rejectUpload = reject
+    }))
+    const progressListener = vi.fn()
+    const input = {
+      address: '192.168.4.23',
+      bytes: new Uint8Array(30_000),
+      createdAtUnixSeconds: 1,
+      deviceId: 'device-1',
+      name: 'Image',
+    }
+
+    const upload = exposedApi().deviceProvisioning.uploadGalleryAsset(input, progressListener)
+    const invocation = mocks.ipcInvoke.mock.calls.at(-1)?.[1] as { requestId?: string } | undefined
+    const registration = mocks.ipcOn.mock.calls
+      .filter(([channel]) => channel === desktopProvisioningChannels.galleryUploadProgress)
+      .at(-1)
+    const handleProgress = registration?.[1] as ((event: unknown, progress: {
+      requestId: string
+      sentBytes: number
+      totalBytes: number
+    }) => void) | undefined
+    if (!invocation?.requestId || !handleProgress)
+      throw new Error('Preload did not register the gallery upload progress channel')
+
+    handleProgress({}, { requestId: 'another-upload', sentBytes: 1_024, totalBytes: 30_000 })
+    handleProgress({}, { requestId: invocation.requestId, sentBytes: 1_024, totalBytes: 30_000 })
+    expect(progressListener).toHaveBeenCalledOnce()
+    expect(progressListener).toHaveBeenCalledWith({ sentBytes: 1_024, totalBytes: 30_000 })
+
+    rejectUpload(new Error('device disconnected'))
+    await expect(upload).rejects.toThrow('device disconnected')
+    expect(mocks.ipcRemoveListener).toHaveBeenCalledWith(
+      desktopProvisioningChannels.galleryUploadProgress,
+      handleProgress,
+    )
+  })
+
   it('invokes the stable application-owned Fetch channel with the original request', async () => {
     const request = {
       body: '{"args":[]}',

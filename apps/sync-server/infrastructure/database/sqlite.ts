@@ -1,4 +1,4 @@
-import type { SyncAssetManifestRecord, SyncAuditStore, SyncAuthStore, SyncChangeRecord, SyncDeviceCredential, SyncInvite, SyncLearningEntityRecord, SyncLearningTombstoneRecord, SyncMutationBatch, SyncNoteSnapshotRecord, SyncPairingSession, SyncRepository, SyncResetJob } from '@memorilo/sync'
+import type { SyncAssetManifestRecord, SyncAuditStore, SyncAuthStore, SyncChangeRecord, SyncDeviceCredential, SyncDeviceTodoStore, SyncDeviceTodoToken, SyncInvite, SyncLearningEntityRecord, SyncLearningTombstoneRecord, SyncMutationBatch, SyncNoteSnapshotRecord, SyncPairingSession, SyncRepository, SyncResetJob } from '@memorilo/sync'
 import type Database from 'better-sqlite3'
 import { fileURLToPath } from 'node:url'
 import { mergeAuthoritativeNoteSnapshot, validateAssetManifest, validatePolicyTransition } from '@memorilo/sync'
@@ -6,8 +6,8 @@ import BetterSqlite3 from 'better-sqlite3'
 import { and, asc, desc, eq, gt, isNull, lt, lte, or, sql } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/better-sqlite3'
 import { migrate as migrateDrizzle } from 'drizzle-orm/better-sqlite3/migrator'
-import { syncAccounts, syncAssetManifests, syncAuditEvents, syncChanges, syncDeviceCredentials, syncDeviceNonces, syncInvites, syncLearningEntities, syncLearningTombstones, syncNoteSnapshots, syncObjects, syncPairingSessions, syncResetJobs, syncSessions, syncUsers } from './schema'
-import { accountStateFromRow, compareLearningEntityOrder, frontierFromRows, objectMetadataFromRow, payloadHash, resetJobFromRow } from './shared'
+import { syncAccounts, syncAssetManifests, syncAuditEvents, syncChanges, syncDeviceCredentials, syncDeviceNonces, syncDeviceTodoTokens, syncInvites, syncLearningEntities, syncLearningTombstones, syncNoteSnapshots, syncObjects, syncPairingSessions, syncResetJobs, syncSessions, syncUsers } from './schema'
+import { accountStateFromRow, compareLearningEntityOrder, deviceTodoTokenFromRow, frontierFromRows, objectMetadataFromRow, payloadHash, resetJobFromRow } from './shared'
 
 export interface SqliteSyncDatabaseOptions {
   readonly filename: string
@@ -20,6 +20,7 @@ export interface SqliteSyncDatabase {
   readonly auth: SyncAuthStore
   readonly provisionAccount: SyncAuthStore['provisionAccount']
   readonly repository: SyncRepository
+  readonly deviceTodo: SyncDeviceTodoStore
   readonly migrate: () => void
   readonly close: () => void
 }
@@ -724,6 +725,23 @@ export function createSqliteSyncDatabase(options: SqliteSyncDatabaseOptions): Sq
     },
   }
 
+  const deviceTodo: SyncDeviceTodoStore = {
+    createToken: async (input) => {
+      const row: typeof syncDeviceTodoTokens.$inferInsert = { ...input, revokedAt: null }
+      db.insert(syncDeviceTodoTokens).values(row).run()
+      return deviceTodoTokenFromRow(row as SyncDeviceTodoToken)
+    },
+    findToken: async (tokenHash) => {
+      const row = db.select().from(syncDeviceTodoTokens).where(eq(syncDeviceTodoTokens.tokenHash, tokenHash)).get()
+      return row === undefined ? null : deviceTodoTokenFromRow(row as SyncDeviceTodoToken)
+    },
+    listTokens: async accountId => db.select().from(syncDeviceTodoTokens).where(eq(syncDeviceTodoTokens.accountId, accountId)).orderBy(asc(syncDeviceTodoTokens.createdAt), asc(syncDeviceTodoTokens.deviceId)).all().map(row => deviceTodoTokenFromRow(row as SyncDeviceTodoToken)),
+    revokeToken: async (accountId, deviceId, revokedAt) => {
+      const result = db.update(syncDeviceTodoTokens).set({ revokedAt }).where(and(eq(syncDeviceTodoTokens.accountId, accountId), eq(syncDeviceTodoTokens.deviceId, deviceId), isNull(syncDeviceTodoTokens.revokedAt))).run()
+      return result.changes === 1
+    },
+  }
+
   return {
     audit,
     close: () => database.close(),
@@ -732,5 +750,6 @@ export function createSqliteSyncDatabase(options: SqliteSyncDatabaseOptions): Sq
     database,
     migrate,
     repository,
+    deviceTodo,
   }
 }

@@ -1,6 +1,6 @@
-import type { DesktopApi, DesktopConfiguration, DesktopNoteExternalUpdate, DesktopSyncServerEvent } from './contract'
+import type { DesktopApi, DesktopConfiguration, DesktopDeviceGalleryUploadProgressEvent, DesktopNoteExternalUpdate, DesktopProvisioningDevicesChanged, DesktopProvisioningPairingRequest, DesktopSyncServerEvent } from './contract'
 import type { NoteSaveRequest } from './note-save-handshake'
-import { desktopSyncServerEventChannel } from '@memorilo/desktop-api'
+import { desktopProvisioningChannels, desktopSyncServerEventChannel } from '@memorilo/desktop-api'
 import { desktopConfigurationChangedChannel } from '@memorilo/desktop-config/contract'
 import { Match } from 'effect'
 import { contextBridge, ipcRenderer } from 'electron'
@@ -14,6 +14,78 @@ const p2pStatusChannel = 'memorilo:p2p-status'
 const learningUpdateChannel = 'memorilo:learning-update'
 
 const services = createDesktopIpcClient(ipcRenderer)
+
+const deviceProvisioning: DesktopApi['deviceProvisioning'] = {
+  cancelSelection: () => ipcRenderer.invoke(desktopProvisioningChannels.selectDevice, null),
+  clearLocalManagementToken: deviceId => ipcRenderer.invoke(desktopProvisioningChannels.clearLocalManagementToken, deviceId),
+  deleteGalleryAsset: (target, id) => ipcRenderer.invoke(
+    desktopProvisioningChannels.deleteGalleryAsset,
+    { ...target, id },
+  ),
+  generateLocalManagementToken: () => ipcRenderer.invoke(desktopProvisioningChannels.generateLocalManagementToken),
+  hasLocalManagementToken: deviceId => ipcRenderer.invoke(desktopProvisioningChannels.hasLocalManagementToken, deviceId),
+  loadGallery: target => ipcRenderer.invoke(desktopProvisioningChannels.loadGallery, target),
+  loadStatus: target => ipcRenderer.invoke(desktopProvisioningChannels.loadStatus, target),
+  loadTodos: target => ipcRenderer.invoke(desktopProvisioningChannels.loadTodos, target),
+  loadTodoSnapshot: () => ipcRenderer.invoke(desktopProvisioningChannels.loadTodoSnapshot),
+  loadTodoTarget: deviceId => ipcRenderer.invoke(desktopProvisioningChannels.loadTodoTarget, deviceId),
+  pushTodos: input => ipcRenderer.invoke(desktopProvisioningChannels.pushTodos, input),
+  refreshDevice: target => ipcRenderer.invoke(desktopProvisioningChannels.refreshDevice, target),
+  nextDevicePage: target => ipcRenderer.invoke(desktopProvisioningChannels.nextDevicePage, target),
+  sleepDevice: target => ipcRenderer.invoke(desktopProvisioningChannels.sleepDevice, target),
+  reorderGallery: (target, order) => ipcRenderer.invoke(
+    desktopProvisioningChannels.reorderGallery,
+    { ...target, order },
+  ),
+  respondToPairing: response => ipcRenderer.invoke(desktopProvisioningChannels.respondToPairing, response),
+  saveLocalManagementToken: (deviceId, token) => ipcRenderer.invoke(
+    desktopProvisioningChannels.saveLocalManagementToken,
+    { deviceId, token },
+  ),
+  saveTodoTarget: (deviceId, address) => ipcRenderer.invoke(
+    desktopProvisioningChannels.saveTodoTarget,
+    { address, deviceId },
+  ),
+  setGallerySlideshow: (target, intervalSeconds) => ipcRenderer.invoke(
+    desktopProvisioningChannels.setGallerySlideshow,
+    { ...target, intervalSeconds },
+  ),
+  selectDevice: (deviceId, transport) => transport === undefined
+    ? ipcRenderer.invoke(desktopProvisioningChannels.selectDevice, deviceId)
+    : ipcRenderer.invoke(desktopProvisioningChannels.selectDevice, deviceId, transport),
+  subscribeDevices: (listener) => {
+    const handle = (_event: Electron.IpcRendererEvent, payload: DesktopProvisioningDevicesChanged) => listener(payload.devices, payload.transport)
+    ipcRenderer.on(desktopProvisioningChannels.devicesChanged, handle)
+    return () => ipcRenderer.removeListener(desktopProvisioningChannels.devicesChanged, handle)
+  },
+  subscribePairing: (listener) => {
+    const handle = (_event: Electron.IpcRendererEvent, request: DesktopProvisioningPairingRequest) => listener(request)
+    ipcRenderer.on(desktopProvisioningChannels.pairingRequested, handle)
+    return () => ipcRenderer.removeListener(desktopProvisioningChannels.pairingRequested, handle)
+  },
+  uploadGalleryAsset: async (input, onProgress) => {
+    const requestId = globalThis.crypto.randomUUID()
+    const handleProgress = (
+      _event: Electron.IpcRendererEvent,
+      progress: DesktopDeviceGalleryUploadProgressEvent,
+    ): void => {
+      if (progress.requestId === requestId)
+        onProgress?.({ sentBytes: progress.sentBytes, totalBytes: progress.totalBytes })
+    }
+    if (onProgress)
+      ipcRenderer.on(desktopProvisioningChannels.galleryUploadProgress, handleProgress)
+    try {
+      await ipcRenderer.invoke(desktopProvisioningChannels.uploadGalleryAsset, {
+        ...input,
+        requestId,
+      })
+    }
+    finally {
+      if (onProgress)
+        ipcRenderer.removeListener(desktopProvisioningChannels.galleryUploadProgress, handleProgress)
+    }
+  },
+}
 
 function subscribeConfiguration(listener: (configuration: DesktopConfiguration) => void): () => void {
   const handleChange = (_event: Electron.IpcRendererEvent, configuration: DesktopConfiguration) => {
@@ -86,5 +158,6 @@ contextBridge.exposeInMainWorld(
     subscribeP2pStatus,
     subscribeLearningUpdates,
     subscribeSyncServerEvents,
+    deviceProvisioning,
   ),
 )

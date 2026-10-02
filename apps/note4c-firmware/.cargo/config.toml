@@ -1,0 +1,13 @@
+[build]
+target = "xtensa-esp32s3-espidf"
+
+[env]
+CARGO_WORKSPACE_DIR = { value = "", relative = true }
+
+[target.xtensa-esp32s3-espidf]
+linker = "ldproxy"
+# Real-device flashing uses tools/flash-firmware.ps1 so flashing and monitoring
+# never reopen the native USB serial port in one Cargo command.
+
+[unstable]
+build-std = ["std", "panic_abort"]

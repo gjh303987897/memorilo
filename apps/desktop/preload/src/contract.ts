@@ -1,11 +1,24 @@
 import type {
   DesktopConfiguration,
+  DesktopDeviceGalleryStatus,
+  DesktopDeviceGalleryTarget,
+  DesktopDeviceGalleryUpload,
+  DesktopDeviceGalleryUploadProgress,
+  DesktopDeviceStatus,
+  DesktopDeviceTodoPush,
+  DesktopDeviceTodoSnapshot,
+  DesktopDeviceTodoState,
+  DesktopDeviceTodoTargetState,
   DesktopNoteExternalUpdate,
   DesktopP2pDiscoveredPeer,
   DesktopP2pLocalDevice,
   DesktopP2pPairedDevice,
   DesktopP2pPairingRequest,
   DesktopP2pStatus,
+  DesktopProvisioningDevice,
+  DesktopProvisioningPairingRequest,
+  DesktopProvisioningPairingResponse,
+  DesktopProvisioningTransport,
   DesktopSyncServerEvent,
   DesktopSyncServerStatus,
   DesktopWhiteboardLibraryData,
@@ -21,6 +34,34 @@ export type DesktopPlatform = 'macos' | 'windows' | 'linux' | 'other'
 
 export interface DesktopApi {
   readonly platform: DesktopPlatform
+  deviceProvisioning: {
+    cancelSelection: () => Promise<void>
+    clearLocalManagementToken: (deviceId: string) => Promise<void>
+    deleteGalleryAsset: (target: DesktopDeviceGalleryTarget, id: number) => Promise<void>
+    generateLocalManagementToken: () => Promise<string>
+    hasLocalManagementToken: (deviceId: string) => Promise<boolean>
+    loadGallery: (target: DesktopDeviceGalleryTarget) => Promise<DesktopDeviceGalleryStatus>
+    loadStatus: (target: DesktopDeviceGalleryTarget) => Promise<DesktopDeviceStatus>
+    loadTodos: (target: DesktopDeviceGalleryTarget) => Promise<DesktopDeviceTodoState>
+    loadTodoSnapshot: () => Promise<DesktopDeviceTodoSnapshot>
+    loadTodoTarget: (deviceId: string) => Promise<DesktopDeviceTodoTargetState>
+    pushTodos: (input: DesktopDeviceTodoPush) => Promise<void>
+    refreshDevice: (target: DesktopDeviceGalleryTarget) => Promise<void>
+    nextDevicePage: (target: DesktopDeviceGalleryTarget) => Promise<void>
+    sleepDevice: (target: DesktopDeviceGalleryTarget) => Promise<void>
+    reorderGallery: (target: DesktopDeviceGalleryTarget, order: readonly number[]) => Promise<void>
+    respondToPairing: (response: DesktopProvisioningPairingResponse) => Promise<void>
+    saveLocalManagementToken: (deviceId: string, token: string) => Promise<void>
+    saveTodoTarget: (deviceId: string, address: string | null) => Promise<void>
+    setGallerySlideshow: (target: DesktopDeviceGalleryTarget, intervalSeconds: number | null) => Promise<void>
+    selectDevice: (deviceId: string, transport?: 'bluetooth' | 'serial') => Promise<void>
+    subscribeDevices: (listener: (devices: readonly DesktopProvisioningDevice[], transport?: DesktopProvisioningTransport) => void) => () => void
+    subscribePairing: (listener: (request: DesktopProvisioningPairingRequest) => void) => () => void
+    uploadGalleryAsset: (
+      input: DesktopDeviceGalleryUpload,
+      onProgress?: (progress: DesktopDeviceGalleryUploadProgress) => void,
+    ) => Promise<void>
+  }
   loadWhiteboardLibrary: () => Promise<DesktopWhiteboardLibraryData>
   request: (request: DesktopFetchRequest) => Promise<DesktopFetchResponse>
   saveWhiteboardLibrary: (data: DesktopWhiteboardLibraryData) => Promise<void>

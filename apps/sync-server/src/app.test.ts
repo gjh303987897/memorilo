@@ -21,6 +21,7 @@ const configs = {
   metadataDatabase: 'sqlite' as const,
   maxObjectTransfersPerAccount: 4,
   maxSyncSessionsPerAccount: 8,
+  mqttTodoTopicPrefix: 'memorilo/todos',
   objectStore: 'filesystem' as const,
   orphanGraceMs: 15 * 60 * 1000,
   orphanIntervalMs: 60_000,

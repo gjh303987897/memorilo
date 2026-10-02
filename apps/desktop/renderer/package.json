@@ -20,6 +20,7 @@
     "@memorilo/desktop-api": "workspace:*",
     "@memorilo/desktop-config": "workspace:*",
     "@memorilo/desktop-preload": "workspace:*",
+    "@memorilo/device-provisioning": "workspace:*",
     "@memorilo/editor": "workspace:*",
     "@memorilo/effect-lifecycle": "workspace:*",
     "@memorilo/reading-model": "workspace:*",

@@ -81,6 +81,24 @@
       ]
     },
     {
+      "exportName": "syncDeviceTodoTokens",
+      "name": "sync_device_todo_tokens",
+      "columns": [
+        { "property": "tokenHash", "name": "token_hash", "type": "text", "primaryKey": true },
+        { "property": "accountId", "name": "account_id", "type": "text", "notNull": true },
+        { "property": "deviceId", "name": "device_id", "type": "text", "notNull": true },
+        { "property": "deviceName", "name": "device_name", "type": "text", "notNull": true },
+        { "property": "scopes", "name": "scopes", "type": "json", "tsType": "readonly ('todos:read')[]", "notNull": true },
+        { "property": "createdAt", "name": "created_at", "type": "integer", "notNull": true },
+        { "property": "expiresAt", "name": "expires_at", "type": "integer", "notNull": true },
+        { "property": "revokedAt", "name": "revoked_at", "type": "integer" }
+      ],
+      "indexes": [
+        { "name": "sync_device_todo_tokens_account_device", "unique": true, "columns": ["accountId", "deviceId"] },
+        { "name": "sync_device_todo_tokens_account", "columns": ["accountId"] }
+      ]
+    },
+    {
       "exportName": "syncPairingSessions",
       "name": "sync_pairing_sessions",
       "columns": [

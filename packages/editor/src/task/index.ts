@@ -1,3 +1,5 @@
+export type { TaskStatus } from '../schema/task-schema'
+export { parseTaskDueDate, parseTaskTime, readTaskStatus, transitionTaskAttrs } from '../schema/task-schema'
 export type {
   TaskActionMutation,
   TaskActionPlan,

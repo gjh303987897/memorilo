@@ -1,0 +1,8 @@
+/build/
+/build-device/
+/build-real/
+/build-todo/
+/target/
+/backups/
+/sdkconfig
+/sdkconfig.old

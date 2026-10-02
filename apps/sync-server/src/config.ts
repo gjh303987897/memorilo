@@ -37,6 +37,10 @@ const serverConfigSchema = z.object({
   metricsToken: z.string().min(32).optional(),
   maxSyncSessionsPerAccount: z.coerce.number().int().min(1).max(1024).default(8),
   maxObjectTransfersPerAccount: z.coerce.number().int().min(1).max(1024).default(4),
+  mqttTodoBrokerUrl: z.url().refine(value => value.startsWith('mqtts://'), 'TODO MQTT broker must use mqtts://').optional(),
+  mqttTodoPassword: z.string().min(1).optional(),
+  mqttTodoTopicPrefix: z.string().min(1).max(128).default('memorilo/todos'),
+  mqttTodoUsername: z.string().min(1).optional(),
   orphanGraceMs: z.coerce.number().int().min(120_000).default(15 * 60 * 1000),
   orphanIntervalMs: z.coerce.number().int().min(10_000).default(60_000),
   trustProxy: stringBooleanSchema.default(false),
@@ -70,6 +74,10 @@ function environmentOverrides(env: NodeJS.ProcessEnv): Record<string, string> {
     ['metricsToken', env.MEMORILO_SYNC_SERVER_METRICS_TOKEN],
     ['maxSyncSessionsPerAccount', env.MEMORILO_SYNC_SERVER_MAX_SYNC_SESSIONS_PER_ACCOUNT],
     ['maxObjectTransfersPerAccount', env.MEMORILO_SYNC_SERVER_MAX_OBJECT_TRANSFERS_PER_ACCOUNT],
+    ['mqttTodoBrokerUrl', env.MEMORILO_SYNC_SERVER_MQTT_TODO_BROKER_URL],
+    ['mqttTodoPassword', env.MEMORILO_SYNC_SERVER_MQTT_TODO_PASSWORD],
+    ['mqttTodoTopicPrefix', env.MEMORILO_SYNC_SERVER_MQTT_TODO_TOPIC_PREFIX],
+    ['mqttTodoUsername', env.MEMORILO_SYNC_SERVER_MQTT_TODO_USERNAME],
     ['orphanGraceMs', env.MEMORILO_SYNC_SERVER_ORPHAN_GRACE_MS],
     ['orphanIntervalMs', env.MEMORILO_SYNC_SERVER_ORPHAN_INTERVAL_MS],
     ['trustProxy', env.MEMORILO_SYNC_SERVER_TRUST_PROXY],
@@ -95,6 +103,10 @@ export function parseSyncServerConfig(env: NodeJS.ProcessEnv = process.env, file
     throw new Error('S3 object provider requires MEMORILO_SYNC_SERVER_S3_BUCKET')
   if ((config.s3AccessKeyId === undefined) !== (config.s3SecretAccessKey === undefined))
     throw new Error('S3 access key id and secret access key must be configured together')
+  if (config.mqttTodoBrokerUrl === undefined && (config.mqttTodoUsername !== undefined || config.mqttTodoPassword !== undefined))
+    throw new Error('TODO MQTT credentials require a broker URL')
+  if ((config.mqttTodoUsername === undefined) !== (config.mqttTodoPassword === undefined))
+    throw new Error('TODO MQTT username and password must be configured together')
   if (config.sessionTotalTimeoutMs < config.sessionIdleTimeoutMs)
     throw new Error('Sync session total timeout must not be shorter than its idle timeout')
   return config

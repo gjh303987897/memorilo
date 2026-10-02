@@ -62,6 +62,20 @@ export const syncDeviceNonces = pgTable('sync_device_nonces', {
   deviceNoncesCredential: index('sync_device_nonces_credential').on(table.credentialHash),
 }))
 
+export const syncDeviceTodoTokens = pgTable('sync_device_todo_tokens', {
+  tokenHash: text('token_hash').primaryKey(),
+  accountId: text('account_id').notNull(),
+  deviceId: text('device_id').notNull(),
+  deviceName: text('device_name').notNull(),
+  scopes: jsonb('scopes').$type<readonly 'todos:read'[]>().notNull(),
+  createdAt: bigint('created_at', { mode: 'number' }).notNull(),
+  expiresAt: bigint('expires_at', { mode: 'number' }).notNull(),
+  revokedAt: bigint('revoked_at', { mode: 'number' }),
+}, table => ({
+  deviceTodoTokensAccountDevice: uniqueIndex('sync_device_todo_tokens_account_device').on(table.accountId, table.deviceId),
+  deviceTodoTokensAccount: index('sync_device_todo_tokens_account').on(table.accountId),
+}))
+
 export const syncPairingSessions = pgTable('sync_pairing_sessions', {
   pairingId: text('pairing_id').primaryKey(),
   accountId: text('account_id').notNull(),

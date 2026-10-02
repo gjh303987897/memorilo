@@ -42,4 +42,11 @@ describe('better-sqlite editor storage database', () => {
     await expect(database.batch([])).rejects.toThrow('The SQLite database is closed')
     expect(() => database.migrate()).toThrow('The SQLite database is closed')
   })
+
+  it('only applies migrations once per database instance', () => {
+    const database = createDatabase()
+
+    expect(() => database.migrate()).not.toThrow()
+    expect(() => database.migrate()).not.toThrow()
+  })
 })

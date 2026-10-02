@@ -287,7 +287,7 @@ This preserves one canonical navigation experience and prevents a second route f
 
 ## Resolved decisions
 
-1. **Database generation**: main database schema generation remains `1`; Journal and CardTopic projections use the current schema baseline.
+1. **Database generation**: the main database generation follows the applied Drizzle migrations; Journal and CardTopic projections use the current schema baseline.
 2. **Deletion timing**: use the safe collection points above; a just-cleared past row can remain physically stored while being hidden immediately.
 3. **Generic consumers**: keep Journal Notes in Pages, Search, Recent, Favorites, and structured Note reads, with navigation redirected to `/journals?date=...`.
 4. **Empty structure**: meaningful non-text nodes count as user content; extra Topics, named Topics, and Folders violate the one-Topic Journal invariant and are rejected.

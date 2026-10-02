@@ -1,0 +1,4 @@
+interface:
+  display_name: "ESP-IDF Flashing"
+  short_description: "Build, flash, recover, and monitor ESP32 firmware"
+  default_prompt: "Use $esp-idf-flashing to flash the ESP32 firmware through the validated ESP-IDF workflow."

@@ -27,6 +27,7 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1121.0",
     "@hono/node-server": "^1.19.0",
+    "@memorilo/editor": "workspace:*",
     "@memorilo/effect-lifecycle": "workspace:*",
     "@memorilo/sync": "workspace:*",
     "@memorilo/ui": "workspace:*",
@@ -38,6 +39,7 @@
     "hono": "4.13.2",
     "loro-crdt": "1.13.8",
     "lucide-react": "^0.468.0",
+    "mqtt": "^5.15.2",
     "postgres": "^3.4.9",
     "react": "19.2.8",
     "react-dom": "19.2.8",

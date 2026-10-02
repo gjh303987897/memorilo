@@ -45,6 +45,26 @@ export interface SyncNoteSnapshotRecord {
   readonly updatedAt: number
 }
 
+export type SyncDeviceTodoScope = 'todos:read'
+
+export interface SyncDeviceTodoToken {
+  readonly tokenHash: string
+  readonly accountId: string
+  readonly deviceId: string
+  readonly deviceName: string
+  readonly scopes: readonly SyncDeviceTodoScope[]
+  readonly createdAt: number
+  readonly expiresAt: number
+  readonly revokedAt: number | null
+}
+
+export interface SyncDeviceTodoStore {
+  readonly createToken: (input: Omit<SyncDeviceTodoToken, 'revokedAt'>) => Promise<SyncDeviceTodoToken>
+  readonly findToken: (tokenHash: string) => Promise<SyncDeviceTodoToken | null>
+  readonly listTokens: (accountId: string) => Promise<readonly SyncDeviceTodoToken[]>
+  readonly revokeToken: (accountId: string, deviceId: string, revokedAt: number) => Promise<boolean>
+}
+
 export type SyncLearningEntityKind = 'assignment' | 'card' | 'optimizer' | 'review-event' | 'tombstone'
 export type SyncLearningMutationOperation = 'upsert' | 'delete'
 

@@ -58,7 +58,9 @@ MEMORILO_E2E_HIDE_WINDOW=1 pnpm test:e2e  # Run Electron end-to-end tests
 ## Database Schema
 
 The main process owns the SQLite database through `packages/editor-storage` and the native
-Better SQLite adapter. The current main database schema generation is `1`. See
+Better SQLite adapter. The main database schema generation is derived from the
+applied Drizzle migrations. The learning schema has its own generation value.
+See
 [`docs/adr/0006-card-topics-own-learning-cards.md`](docs/adr/0006-card-topics-own-learning-cards.md)
 and [`docs/fsrs-learning-system.md`](docs/fsrs-learning-system.md) for the ownership and
 maintenance contract.

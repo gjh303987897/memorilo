@@ -85,6 +85,13 @@
       "when": 1788098307833,
       "tag": "0011_broken_mandroid",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1788110000000,
+      "tag": "0012_device_todo",
+      "breakpoints": true
     }
   ]
 }

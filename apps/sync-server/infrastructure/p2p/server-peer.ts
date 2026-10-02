@@ -25,6 +25,11 @@ export interface SyncServerPeerOptions {
   readonly sessionIdleTimeoutMs?: number
   readonly sessionTotalTimeoutMs?: number
   readonly metrics?: SyncPeerMetricsRecorder
+  readonly onAuthoritativeNotesChanged?: (input: {
+    readonly accountId: string
+    readonly generation: number
+    readonly changedAt: number
+  }) => Promise<void> | void
 }
 
 interface RelayBroker {
@@ -511,6 +516,11 @@ function accountProvider(
   readOnly: boolean,
   now: () => number,
   withAccountLock: <Result>(accountId: string, operation: () => Promise<Result>) => Promise<Result>,
+  onAuthoritativeNotesChanged?: (input: {
+    readonly accountId: string
+    readonly generation: number
+    readonly changedAt: number
+  }) => Promise<void> | void,
   metrics?: SyncPeerMetricsRecorder,
 ): SyncStateProvider {
   const empty = (): Record<string, number> => ({})
@@ -550,6 +560,8 @@ function accountProvider(
             validateAuthoritativePayload(namespace, change)
           await repository.appendChanges({ accountId: credential.accountId, changes, generation: current.generation, namespace })
           await materializeAuthoritativeChanges(repository, credential.accountId, current.generation, changes, now)
+          if (namespace === 'notes' && changes.length > 0)
+            await onAuthoritativeNotesChanged?.({ accountId: credential.accountId, generation: current.generation, changedAt: now() })
         })
         metrics?.authoritativeCommit(now() - startedAt)
       }
@@ -989,6 +1001,7 @@ export async function createSyncServerPeer(options: SyncServerPeerOptions): Prom
           options.readOnly ?? false,
           now,
           withAccountLock,
+          options.onAuthoritativeNotesChanged,
           options.metrics,
         ),
       }

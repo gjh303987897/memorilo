@@ -1,12 +1,12 @@
-import type { SyncAssetManifestRecord, SyncAuditStore, SyncAuthStore, SyncChangeRecord, SyncDeviceCredential, SyncInvite, SyncLearningEntityRecord, SyncLearningTombstoneRecord, SyncMutationBatch, SyncNoteSnapshotRecord, SyncPairingSession, SyncRepository, SyncResetJob } from '@memorilo/sync'
+import type { SyncAssetManifestRecord, SyncAuditStore, SyncAuthStore, SyncChangeRecord, SyncDeviceCredential, SyncDeviceTodoStore, SyncDeviceTodoToken, SyncInvite, SyncLearningEntityRecord, SyncLearningTombstoneRecord, SyncMutationBatch, SyncNoteSnapshotRecord, SyncPairingSession, SyncRepository, SyncResetJob } from '@memorilo/sync'
 import { fileURLToPath } from 'node:url'
 import { mergeAuthoritativeNoteSnapshot, validateAssetManifest, validatePolicyTransition } from '@memorilo/sync'
 import { and, asc, desc, eq, gt, isNull, lt, lte, or } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/postgres-js'
 import { migrate as migrateDrizzle } from 'drizzle-orm/postgres-js/migrator'
 import postgres from 'postgres'
-import { syncAccounts, syncAssetManifests, syncAuditEvents, syncChanges, syncDeviceCredentials, syncDeviceNonces, syncInvites, syncLearningEntities, syncLearningTombstones, syncNoteSnapshots, syncObjects, syncPairingSessions, syncResetJobs, syncSessions, syncUsers } from './schema.postgres'
-import { accountStateFromRow, compareLearningEntityOrder, frontierFromRows, objectMetadataFromRow, payloadHash, resetJobFromRow } from './shared'
+import { syncAccounts, syncAssetManifests, syncAuditEvents, syncChanges, syncDeviceCredentials, syncDeviceNonces, syncDeviceTodoTokens, syncInvites, syncLearningEntities, syncLearningTombstones, syncNoteSnapshots, syncObjects, syncPairingSessions, syncResetJobs, syncSessions, syncUsers } from './schema.postgres'
+import { accountStateFromRow, compareLearningEntityOrder, deviceTodoTokenFromRow, frontierFromRows, objectMetadataFromRow, payloadHash, resetJobFromRow } from './shared'
 
 export interface PostgresSyncDatabaseOptions {
   readonly url: string
@@ -19,6 +19,7 @@ export interface PostgresSyncDatabase {
   readonly audit: SyncAuditStore
   readonly auth: SyncAuthStore
   readonly repository: SyncRepository
+  readonly deviceTodo: SyncDeviceTodoStore
   readonly migrate: () => Promise<void>
   readonly close: () => Promise<void>
 }
@@ -562,11 +563,31 @@ export function createPostgresSyncDatabase(options: PostgresSyncDatabaseOptions)
     }),
   }
 
+  const deviceTodo: SyncDeviceTodoStore = {
+    createToken: async (input) => {
+      const [row] = await db.insert(syncDeviceTodoTokens).values({ ...input, revokedAt: null }).returning()
+      if (!row)
+        throw new Error('Failed to create device todo token')
+      return deviceTodoTokenFromRow(row as SyncDeviceTodoToken)
+    },
+    findToken: async (tokenHash) => {
+      const [row] = await db.select().from(syncDeviceTodoTokens).where(eq(syncDeviceTodoTokens.tokenHash, tokenHash)).limit(1)
+      return row === undefined ? null : deviceTodoTokenFromRow(row as SyncDeviceTodoToken)
+    },
+    listTokens: async accountId => (await db.select().from(syncDeviceTodoTokens).where(eq(syncDeviceTodoTokens.accountId, accountId)).orderBy(asc(syncDeviceTodoTokens.createdAt), asc(syncDeviceTodoTokens.deviceId)))
+      .map(row => deviceTodoTokenFromRow(row as SyncDeviceTodoToken)),
+    revokeToken: async (accountId, deviceId, revokedAt) => {
+      const rows = await db.update(syncDeviceTodoTokens).set({ revokedAt }).where(and(eq(syncDeviceTodoTokens.accountId, accountId), eq(syncDeviceTodoTokens.deviceId, deviceId), isNull(syncDeviceTodoTokens.revokedAt))).returning({ deviceId: syncDeviceTodoTokens.deviceId })
+      return rows.length === 1
+    },
+  }
+
   return {
     audit,
     auth,
     close: () => client.end(),
     migrate: () => migrateDrizzle(db, { migrationsFolder: fileURLToPath(new URL('./migrations-postgres', import.meta.url)) }),
     repository,
+    deviceTodo,
   }
 }

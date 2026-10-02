@@ -172,13 +172,9 @@ stylex(stylexOptions)
 
 设置窗口是独立的、非模态、单实例 `BrowserWindow`，由 App 菜单的 `Settings…` 和 `CmdOrCtrl+,` 打开。设置页面入口是 `apps/desktop/renderer/settings.html`，没有 Electron 时会使用内存适配器，因此可以在浏览器中进行视觉调试和交互测试。
 
-当前桌面设置分组包括：
+当前设置页面按 General、Calendar、Editor、Shortcuts、Reading、Learning、Media、MCP、Device 和 Sync 分类组织。配置原型还包含 Todo、Backup、Flashcards、Goals、图片、Reader 和快捷键等 section；这些 section 由页面按类别组合显示，不能再用少量旧分组概括完整设置面。
 
-- General：语言和减少动态效果。
-- Flashcards：每日新卡数、新卡收集顺序、跨日学习顺序、复习顺序、learn-ahead、学习日边界，以及 Anki 分类的三个 Sibling Bury 开关。
-- Goals & Streaks：Spread over the week、Review all due cards each day、Set a daily limit 三种 Daily Goal 模式及固定目标值。
-- Editor：Outline 的 Outdent behavior。
-- MCP：本地服务开关、端口和敏感 access token。
+General 包含语言、星期起始日、减少动态效果和面板 tab 顺序；Todo 包含工作区开关、父任务自动完成、时间线和重复任务行为；Learning、Flashcards、Goals、Backup、Editor、Reader、图片、MCP 和 Sync Server 各自对应当前原型中的字段。主题选择单独由设置页面渲染。
 
 Flashcards 与 Goals 设置不会生成持久化队列 snapshot。当前已展示的复习 Card 保持稳定，下一次选卡和下一次进度查询读取最新配置；MCP 与 Outline 设置则通过配置订阅更新对应运行时。
 

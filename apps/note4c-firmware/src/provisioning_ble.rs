@@ -1,0 +1,330 @@
+use std::sync::Arc;
+use std::sync::mpsc::{Receiver, TryRecvError, channel};
+use std::time::Duration;
+
+use anyhow::{Context, Result};
+use esp32_nimble::enums::{AuthReq, SecurityIOCap};
+use esp32_nimble::utilities::{BleUuid, mutex::Mutex};
+use esp32_nimble::{BLEAdvertisementData, BLECharacteristic, BLEDevice, NimbleProperties, uuid128};
+use serde::Serialize;
+
+use crate::provisioning::ProvisioningEvent;
+use crate::provisioning_protocol::{
+    ApplyStatusEnvelope, DeviceInfoEnvelope, PublicConfigEnvelope, WifiNetwork, decode_frame,
+    encode_frames,
+};
+
+const CHARACTERISTIC_CHUNK_BYTES: usize = 180;
+
+pub struct BleProvisioningTransport {
+    events: Receiver<ProvisioningEvent>,
+    status: Arc<Mutex<BLECharacteristic>>,
+    wifi_scan: Arc<Mutex<BLECharacteristic>>,
+    gallery: Arc<Mutex<BLECharacteristic>>,
+    stopped: bool,
+}
+
+impl BleProvisioningTransport {
+    pub fn open(
+        passkey: u32,
+        info: &DeviceInfoEnvelope,
+        config: &PublicConfigEnvelope,
+    ) -> Result<Self> {
+        let suffix: String = info
+            .device_id
+            .chars()
+            .rev()
+            .take(4)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
+        let device_name = format!("Memorilo-{suffix}");
+        BLEDevice::init();
+        let device = BLEDevice::take();
+        device
+            .set_preferred_mtu(517)
+            .context("setting provisioning ATT MTU failed")?;
+        BLEDevice::set_device_name(&device_name).context("setting BLE device name failed")?;
+        device
+            .security()
+            .set_auth(AuthReq::Bond | AuthReq::Mitm | AuthReq::Sc)
+            .set_passkey(passkey)
+            .set_io_cap(SecurityIOCap::DisplayOnly)
+            .resolve_rpa();
+
+        let (event_tx, events) = channel();
+        let server = device.get_server();
+        server.advertise_on_disconnect(false);
+
+        let connected_tx = event_tx.clone();
+        server.on_connect(move |_server, desc| {
+            // Let the central keep the parameters negotiated during connection setup. Requesting
+            // another update from this callback can assert the ESP32-S3 controller before GATT is ready.
+            log::info!(
+                "provisioning BLE connected conn_handle={}",
+                desc.conn_handle()
+            );
+            let _ = connected_tx.send(ProvisioningEvent::Connected);
+        });
+        let disconnected_tx = event_tx.clone();
+        server.on_disconnect(move |desc, reason| {
+            log::warn!(
+                "provisioning BLE disconnected conn_handle={} reason={:?}",
+                desc.conn_handle(),
+                reason
+            );
+            let _ = disconnected_tx.send(ProvisioningEvent::Disconnected);
+        });
+        let authenticated_tx = event_tx.clone();
+        server.on_authentication_complete(move |server, desc, result| {
+            // NimBLE may report the link as encrypted/authenticated before its bond
+            // record is committed.  Requiring `bonded()` here disconnects a first-time
+            // macOS pairing even though the protected GATT operations are already safe.
+            let authenticated = result.is_ok() && desc.encrypted() && desc.authenticated();
+            log::info!(
+                "provisioning BLE authentication complete conn_handle={} result_ok={} encrypted={} authenticated={} bonded={}",
+                desc.conn_handle(),
+                result.is_ok(),
+                desc.encrypted(),
+                desc.authenticated(),
+                desc.bonded()
+            );
+            let event = if authenticated {
+                ProvisioningEvent::Authenticated
+            } else {
+                ProvisioningEvent::AuthenticationFailed
+            };
+            let _ = authenticated_tx.send(event);
+            if !authenticated {
+                let _ = server.disconnect(desc.conn_handle());
+            }
+        });
+
+        let service = server.create_service(uuid128!("7b7a1010-6c6f-4d65-8a8b-6d656d6f7269"));
+        let read_security =
+            NimbleProperties::READ | NimbleProperties::READ_ENC | NimbleProperties::READ_AUTHEN;
+        let info_characteristic = service.lock().create_characteristic(
+            uuid128!("7b7a1001-6c6f-4d65-8a8b-6d656d6f7269"),
+            read_security,
+        );
+        info_characteristic
+            .lock()
+            .set_value(&encode_envelope(1, info)?);
+
+        let config_characteristic = service.lock().create_characteristic(
+            uuid128!("7b7a1002-6c6f-4d65-8a8b-6d656d6f7269"),
+            read_security,
+        );
+        let config_continuation_characteristic = service.lock().create_characteristic(
+            uuid128!("7b7a1005-6c6f-4d65-8a8b-6d656d6f7269"),
+            read_security,
+        );
+        let config_parts = encode_envelope_parts(2, config)?;
+        config_characteristic
+            .lock()
+            .set_value(config_parts.first().map_or(&[], Vec::as_slice));
+        config_continuation_characteristic
+            .lock()
+            .set_value(config_parts.get(1).map_or(&[], Vec::as_slice));
+
+        let apply_characteristic = service.lock().create_characteristic(
+            uuid128!("7b7a1003-6c6f-4d65-8a8b-6d656d6f7269"),
+            NimbleProperties::WRITE | NimbleProperties::WRITE_ENC | NimbleProperties::WRITE_AUTHEN,
+        );
+        let apply_event_tx = event_tx.clone();
+        apply_characteristic.lock().on_write(move |args| {
+            if !args.desc().encrypted()
+                || !args.desc().authenticated()
+                || decode_frame(args.recv_data()).is_err()
+            {
+                args.reject();
+                return;
+            }
+            if apply_event_tx
+                .send(ProvisioningEvent::Frame(args.recv_data().to_vec()))
+                .is_err()
+            {
+                args.reject();
+            }
+        });
+
+        let notify_security = NimbleProperties::from_bits_retain(
+            esp_idf_sys::BLE_GATT_CHR_F_NOTIFY_INDICATE_AUTHEN as _,
+        );
+        let status = service.lock().create_characteristic(
+            uuid128!("7b7a1004-6c6f-4d65-8a8b-6d656d6f7269"),
+            read_security | NimbleProperties::NOTIFY | NimbleProperties::INDICATE | notify_security,
+        );
+        let wifi_scan = service.lock().create_characteristic(
+            uuid128!("7b7a1006-6c6f-4d65-8a8b-6d656d6f7269"),
+            NimbleProperties::WRITE
+                | NimbleProperties::WRITE_ENC
+                | NimbleProperties::WRITE_AUTHEN
+                | NimbleProperties::NOTIFY
+                | NimbleProperties::INDICATE
+                | notify_security,
+        );
+        let wifi_scan_event_tx = event_tx.clone();
+        wifi_scan.lock().on_write(move |args| {
+            if !args.desc().encrypted() || !args.desc().authenticated() {
+                args.reject();
+                return;
+            }
+            if wifi_scan_event_tx
+                .send(ProvisioningEvent::WifiScan(args.recv_data().to_vec()))
+                .is_err()
+            {
+                args.reject();
+            }
+        });
+        let gallery = service.lock().create_characteristic(
+            uuid128!("7b7a1007-6c6f-4d65-8a8b-6d656d6f7269"),
+            NimbleProperties::WRITE
+                | NimbleProperties::WRITE_ENC
+                | NimbleProperties::WRITE_AUTHEN
+                | NimbleProperties::NOTIFY
+                | NimbleProperties::INDICATE
+                | notify_security,
+        );
+        let gallery_event_tx = event_tx.clone();
+        gallery.lock().on_write(move |args| {
+            if !args.desc().encrypted() || !args.desc().authenticated() {
+                args.reject();
+                return;
+            }
+            if gallery_event_tx
+                .send(ProvisioningEvent::GalleryFrame(args.recv_data().to_vec()))
+                .is_err()
+            {
+                args.reject();
+            }
+        });
+
+        let mut advertisement = BLEAdvertisementData::new();
+        advertisement
+            .name(&device_name)
+            .add_service_uuid(BleUuid::from_uuid128_string(
+                "7b7a1010-6c6f-4d65-8a8b-6d656d6f7269",
+            )?);
+        device
+            .get_advertising()
+            .lock()
+            .set_data(&mut advertisement)
+            .context("setting provisioning advertisement failed")?;
+
+        Ok(Self {
+            events,
+            status,
+            wifi_scan,
+            gallery,
+            stopped: false,
+        })
+    }
+
+    pub fn start_advertising(&self, remaining: Duration) -> Result<()> {
+        let duration_ms = remaining.as_millis().min(i32::MAX as u128) as i32;
+        BLEDevice::take()
+            .get_advertising()
+            .lock()
+            .start_with_duration(duration_ms)
+            .context("starting provisioning advertisement failed")
+    }
+
+    pub fn try_recv(&self) -> Result<Option<ProvisioningEvent>> {
+        match self.events.try_recv() {
+            Ok(event) => Ok(Some(event)),
+            Err(TryRecvError::Empty) => Ok(None),
+            Err(TryRecvError::Disconnected) => {
+                anyhow::bail!("provisioning event channel disconnected")
+            }
+        }
+    }
+
+    pub fn notify_status(&self, status: &ApplyStatusEnvelope) -> Result<()> {
+        let value = encode_envelope(3, status)?;
+        let mut characteristic = self.status.lock();
+        characteristic.set_value(&value).notify();
+        Ok(())
+    }
+
+    pub fn notify_wifi_scan(&self, request_id: &str, networks: &[WifiNetwork]) -> Result<()> {
+        let value = serde_json::to_vec(&serde_json::json!({
+            "operation": "scanWifi",
+            "protocolVersion": 1,
+            "requestId": request_id,
+            "networks": networks,
+        }))?;
+        anyhow::ensure!(value.len() <= 480, "Wi-Fi scan response is too large");
+        self.wifi_scan.lock().set_value(&value).notify();
+        Ok(())
+    }
+
+    pub fn notify_gallery(&self, value: &[u8]) -> Result<()> {
+        anyhow::ensure!(value.len() <= 480, "gallery response frame is too large");
+        self.gallery.lock().set_value(value).notify();
+        Ok(())
+    }
+
+    pub fn stop(&mut self) -> Result<()> {
+        if self.stopped {
+            return Ok(());
+        }
+        let device = BLEDevice::take();
+        let advertising = device.get_advertising();
+        if advertising.lock().is_advertising() {
+            advertising
+                .lock()
+                .stop()
+                .context("stopping provisioning advertisement failed")?;
+        }
+        let handles: Vec<_> = device
+            .get_server()
+            .connections()
+            .map(|connection| connection.conn_handle())
+            .collect();
+        for handle in handles {
+            let _ = device.get_server().disconnect(handle);
+        }
+        BLEDevice::deinit_full().context("deinitializing provisioning BLE failed")?;
+        self.stopped = true;
+        Ok(())
+    }
+}
+
+impl Drop for BleProvisioningTransport {
+    fn drop(&mut self) {
+        if let Err(error) = self.stop() {
+            log::error!("provisioning BLE cleanup failed: {error:#}");
+        }
+    }
+}
+
+fn encode_envelope(request_token: u32, envelope: &impl Serialize) -> Result<Vec<u8>> {
+    Ok(encode_envelope_parts(request_token, envelope)?
+        .into_iter()
+        .flatten()
+        .collect())
+}
+
+fn encode_envelope_parts(request_token: u32, envelope: &impl Serialize) -> Result<Vec<Vec<u8>>> {
+    let json = serde_json::to_vec(envelope).context("serializing provisioning envelope failed")?;
+    let frames = encode_frames(request_token, &json, CHARACTERISTIC_CHUNK_BYTES)
+        .map_err(|error| anyhow::anyhow!("framing provisioning envelope failed: {error:?}"))?;
+    let mut parts = Vec::new();
+    let mut current = Vec::new();
+    for frame in frames {
+        if !current.is_empty() && current.len() + frame.len() > 500 {
+            parts.push(current);
+            current = Vec::new();
+        }
+        current.extend_from_slice(&frame);
+    }
+    if !current.is_empty() {
+        parts.push(current);
+    }
+    if parts.len() > 2 {
+        anyhow::bail!("provisioning envelope exceeds two BLE characteristics");
+    }
+    Ok(parts)
+}
