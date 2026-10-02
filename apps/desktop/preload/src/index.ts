@@ -2,6 +2,7 @@ import type { DesktopApi, DesktopConfiguration, DesktopNoteExternalUpdate, Deskt
 import type { NoteSaveRequest } from './note-save-handshake'
 import { desktopSyncServerEventChannel } from '@memorilo/desktop-api'
 import { desktopConfigurationChangedChannel } from '@memorilo/desktop-config/contract'
+import { Match } from 'effect'
 import { contextBridge, ipcRenderer } from 'electron'
 
 import { createDesktopApi } from './desktop-api'
@@ -23,6 +24,15 @@ function subscribeConfiguration(listener: (configuration: DesktopConfiguration) 
 }
 
 const noteSaveCoordinator = createNoteSaveCoordinator(result => ipcRenderer.send(noteSaveResultChannel, result))
+// Sandboxed preloads expose process.platform but cannot require node:process.
+// eslint-disable-next-line node/prefer-global/process
+const nativePlatform = process.platform
+const platform = Match.value(nativePlatform).pipe(
+  Match.when('darwin', () => 'macos' as const),
+  Match.when('win32', () => 'windows' as const),
+  Match.when('linux', () => 'linux' as const),
+  Match.orElse(() => 'other' as const),
+)
 ipcRenderer.on(noteSaveRequestChannel, async (_event, request: NoteSaveRequest) => {
   await noteSaveCoordinator.handle(request.requestId)
 })
@@ -68,6 +78,7 @@ function subscribeSyncServerEvents(listener: Parameters<DesktopApi['subscribeSyn
 contextBridge.exposeInMainWorld(
   'desktop',
   createDesktopApi(
+    platform,
     services,
     subscribeConfiguration,
     subscribeNoteSaveRequests,

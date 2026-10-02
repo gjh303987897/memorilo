@@ -8,6 +8,7 @@ import { lazy, Suspense, useCallback, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { desktopRequests } from '../../../shared/desktop-requests'
 import { errorMessage } from '../../../shared/error-message'
+import { getPlatform } from '../../../shared/platform'
 
 import { useEditorNoteSession } from '../../notes/editor/note-editor-session'
 import { projectVisibleNoteEntries } from '../../notes/note-entry-tree'
@@ -146,7 +147,7 @@ function EditorLearningReviewSource({
                 topic={source.opened.topic}
               />
             )
-          : <Editor adapters={demoEditorAdapters} mode={EditorMode.Outline} topic={source.opened.topic} />}
+          : <Editor adapters={demoEditorAdapters} mode={EditorMode.Outline} platform={getPlatform()} topic={source.opened.topic} />}
       </div>
       <aside {...stylex.props(styles.structure)} aria-label={t('noteStructure')}>
         <div {...stylex.props(styles.structureHeader)}>{t('noteStructure')}</div>

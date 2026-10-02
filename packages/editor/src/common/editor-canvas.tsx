@@ -1,6 +1,7 @@
 import type { ReactNode, RefObject } from 'react'
 import type { CursorSpringAxis } from './cursor-motion'
 import type { EditorModeValue } from './editor-mode'
+import type { EditorPlatform } from './editor-platform'
 import type { EditorSession } from './editor-session'
 import * as stylex from '@stylexjs/stylex'
 import { Match } from 'effect'
@@ -375,6 +376,7 @@ export function EditorCanvas({
   mode,
   modeControls,
   modePicker,
+  platform,
   readOnly,
   session,
   taskDate,
@@ -385,6 +387,7 @@ export function EditorCanvas({
   mode: EditorModeValue
   modeControls?: ReactNode
   modePicker?: (onActivate: () => void) => ReactNode
+  platform?: EditorPlatform
   readOnly: boolean
   session: EditorSession
   taskDate?: string
@@ -455,7 +458,7 @@ export function EditorCanvas({
               ? null
               : (
                   <>
-                    <ContextMenu outlineRuntime={session.outlineRuntime} uploader={configured.uploader} />
+                    <ContextMenu outlineRuntime={session.outlineRuntime} platform={platform} uploader={configured.uploader} />
                     <EditorTaskMenu adapters={session.adapters} taskDate={taskDate} />
                     <InlineMenu learningEnabled={session.learningEnabled} />
                     {session.learningEnabled

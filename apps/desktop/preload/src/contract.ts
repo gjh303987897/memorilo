@@ -17,7 +17,10 @@ import type {
 
 export type * from '@memorilo/desktop-api'
 
+export type DesktopPlatform = 'macos' | 'windows' | 'linux' | 'other'
+
 export interface DesktopApi {
+  readonly platform: DesktopPlatform
   loadWhiteboardLibrary: () => Promise<DesktopWhiteboardLibraryData>
   request: (request: DesktopFetchRequest) => Promise<DesktopFetchResponse>
   saveWhiteboardLibrary: (data: DesktopWhiteboardLibraryData) => Promise<void>

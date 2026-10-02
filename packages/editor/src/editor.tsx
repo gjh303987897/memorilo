@@ -3,6 +3,7 @@ import type { EditorAdapters } from './adapters/editor-adapters'
 import type { CardReviewOptions } from './card/card-review-runtime'
 import type { EditorCardIntegration } from './card/card-sync'
 import type { EditorModeValue } from './common/editor-mode'
+import type { EditorPlatform } from './common/editor-platform'
 import type { EditorShortcutConfiguration } from './common/formatting-shortcuts'
 import type { OutlineOptions } from './common/outline-runtime'
 import type { EditorImageOcclusionIntegration } from './image-occlusion/image-occlusion-model'
@@ -45,6 +46,7 @@ interface EditorBaseProps {
   onDocumentChange?: (document: NodeJSON) => void
   onSemanticAction?: (action: 'cloze' | 'extract') => void
   outline?: OutlineOptions
+  platform?: EditorPlatform
   readOnly?: boolean
   /** Planning date used by tasks without an explicit due date, such as Journal tasks. */
   taskDate?: string
@@ -223,6 +225,7 @@ export function Editor(props: EditorProps) {
                 />
               )
               : undefined}
+            platform={props.platform}
             readOnly={props.readOnly === true}
             session={session}
             taskDate={props.taskDate}

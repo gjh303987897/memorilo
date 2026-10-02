@@ -36,6 +36,7 @@ describe('desktop preload API', () => {
     vi.mocked(services.whiteboardLibrary.load).mockResolvedValue(library)
     vi.mocked(services.whiteboardLibrary.save).mockResolvedValue()
     const api = createDesktopApi(
+      'windows',
       services,
       vi.fn(() => vi.fn()),
       vi.fn(() => vi.fn()),
@@ -56,6 +57,7 @@ describe('desktop preload API', () => {
       return stopNoteUpdates
     })
     const api = createDesktopApi(
+      'macos',
       services,
       vi.fn(() => vi.fn()),
       vi.fn(() => vi.fn()),

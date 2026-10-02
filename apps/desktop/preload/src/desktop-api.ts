@@ -1,7 +1,8 @@
-import type { DesktopApi } from './contract'
+import type { DesktopApi, DesktopPlatform } from './contract'
 import type { DesktopIpcClient } from './ipc-contract'
 
 export function createDesktopApi(
+  platform: DesktopPlatform,
   services: DesktopIpcClient,
   subscribeConfiguration: DesktopApi['subscribeConfiguration'],
   subscribeNoteSaveRequests: DesktopApi['subscribeNoteSaveRequests'],
@@ -30,6 +31,7 @@ export function createDesktopApi(
   }
   return {
     loadWhiteboardLibrary: () => services.whiteboardLibrary.load(),
+    platform,
     request: request => services.transport.fetch(request),
     saveWhiteboardLibrary: data => services.whiteboardLibrary.save(data),
     p2p,

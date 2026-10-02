@@ -10,6 +10,7 @@ import { toast } from 'react-toastify/unstyled'
 import { useDesktopConfiguration } from '../../shared/configuration'
 import { desktopRequests } from '../../shared/desktop-requests'
 import { errorMessage } from '../../shared/error-message'
+import { getPlatform } from '../../shared/platform'
 import {
   desktopEditorAdapters,
   useEditorNoteSession,
@@ -91,6 +92,7 @@ function TodoDetailEditorLoaded({
         layout="embedded"
         learningEnabled={configuration.learning.enabled}
         mode={EditorMode.Outline}
+        platform={getPlatform()}
         shortcuts={configuration.shortcuts}
         onDocumentChange={reconcileCardTopics}
         outline={outline}

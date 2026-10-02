@@ -9,6 +9,7 @@ import { useTranslation } from 'react-i18next'
 import { useDesktopConfiguration } from '../../../shared/configuration'
 import { desktopRequests } from '../../../shared/desktop-requests'
 import { errorMessage } from '../../../shared/error-message'
+import { getPlatform } from '../../../shared/platform'
 import { desktopEditorAdapters, useEditorNoteSession } from '../../notes/editor/note-editor-session'
 import { projectVisibleNoteEntries } from '../../notes/note-entry-tree'
 import { useFlushNotePersistence } from '../../notes/persistence/note-persistence-hooks'
@@ -130,6 +131,7 @@ export function LearningReadingWorkspace({ item, onNext }: {
           <Editor
             adapters={editorAdapters}
             mode={EditorMode.Outline}
+            platform={getPlatform()}
             outline={{ defaultFocus: { blockId: item.sourceBlockId }, focus: { blockId: item.sourceBlockId } }}
             onSemanticAction={action => void processReadingAction(action)}
             topic={source.opened.topic}
