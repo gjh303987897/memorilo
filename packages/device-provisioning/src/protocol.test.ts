@@ -129,6 +129,48 @@ describe('provisioning protocol', () => {
     })))).toThrow()
   })
 
+  it('validates TODO schedule shapes and calendar values at the protocol boundary', () => {
+    const request = (schedule: unknown) => new TextEncoder().encode(JSON.stringify({
+      operation: 'todo.sync',
+      protocolVersion: 1,
+      requestId: 'todo-schedule-1',
+      snapshot: {
+        generatedAt: '2026-09-30T00:00:00.000Z',
+        items: [{
+          id: 'todo-1',
+          noteTitle: 'Note',
+          parentId: null,
+          revision: 'item-1',
+          schedule,
+          status: 'todo',
+          text: 'Task',
+          topicTitle: 'Topic',
+        }],
+        revision: 'snapshot-1',
+      },
+    }))
+
+    expect(parseTodoSyncRequest(request({ kind: 'none' })).snapshot.items[0]?.schedule).toEqual({ kind: 'none' })
+    expect(parseTodoSyncRequest(request({ kind: 'deadline', date: '2026-02-28', time: '09:30' }))).toBeDefined()
+    expect(parseTodoSyncRequest(request({
+      kind: 'span',
+      start: '2026-09-30T09:00',
+      end: '2026-09-30T10:00',
+      allDay: false,
+    }))).toBeDefined()
+
+    for (const schedule of [
+      { kind: 'none', date: '2026-09-30' },
+      { kind: 'deadline', date: '2026-02-30', time: null },
+      { kind: 'deadline', date: '2026-09-30', time: '25:00' },
+      { kind: 'span', start: '2026-09-30T09:00', end: '2026-09-30T08:00', allDay: false },
+      { kind: 'span', start: '2026-09-30T09:00', end: '2026-09-30T09:00', allDay: false },
+      { kind: 'span', start: '2026-02-30T09:00', end: '2026-09-30T10:00', allDay: false },
+    ]) {
+      expect(() => parseTodoSyncRequest(request(schedule))).toThrow()
+    }
+  })
+
   it('models public configuration without readable password material', () => {
     const publicConfig: PublicConfigEnvelope = {
       protocolVersion: 1,

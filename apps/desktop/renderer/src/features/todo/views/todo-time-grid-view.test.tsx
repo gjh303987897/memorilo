@@ -6,12 +6,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { TodoTimeGridView } from './todo-time-grid-view'
 
 const taskFixture: DesktopTodoTask = {
-  allDay: false,
+  schedule: { allDay: false, end: '2026-08-20T10:00', kind: 'span', start: '2026-08-20T09:00' },
   blockId: 'task-a',
-  dueDate: '2026-08-20',
-  dueTime: '09:00',
   elapsedMs: 0,
-  endAt: '2026-08-20T10:00',
   journalDate: '2026-08-20',
   noteFavorite: false,
   noteId: 'note-a',
@@ -20,7 +17,6 @@ const taskFixture: DesktopTodoTask = {
   reminderMinutes: null,
   reminders: null,
   repeatRule: null,
-  startAt: '2026-08-20T09:00',
   startedAt: null,
   status: 'todo',
   text: 'Plan the day',
@@ -170,11 +166,7 @@ describe('todoTimeGridView', () => {
     fireEvent.click(rendered.getByTestId('calendar-select'))
 
     await waitFor(() => expect(onCreateTask).toHaveBeenCalledWith({
-      allDay: false,
-      dueDate: '2026-08-20',
-      dueTime: '13:15',
-      endAt: '2026-08-20T13:45',
-      startAt: '2026-08-20T13:15',
+      schedule: { allDay: false, end: '2026-08-20T13:45', kind: 'span', start: '2026-08-20T13:15' },
       text: '',
     }))
   })
@@ -189,13 +181,9 @@ describe('todoTimeGridView', () => {
 
     fireEvent.click(rendered.getByTestId('calendar-event-drag'))
     await waitFor(() => expect(onUpdateTask).toHaveBeenCalledWith({
-      allDay: false,
       blockId: taskFixture.blockId,
-      dueDate: '2026-08-20',
-      dueTime: '11:00',
-      endAt: '2026-08-20T12:30',
       noteId: taskFixture.noteId,
-      startAt: '2026-08-20T11:00',
+      schedule: { allDay: false, end: '2026-08-20T12:30', kind: 'span', start: '2026-08-20T11:00' },
       text: taskFixture.text,
       topicId: taskFixture.topicId,
     }))
@@ -207,13 +195,9 @@ describe('todoTimeGridView', () => {
 
     fireEvent.click(rendered.getByTestId('calendar-event-resize'))
     await waitFor(() => expect(onUpdateTask).toHaveBeenCalledWith({
-      allDay: false,
       blockId: taskFixture.blockId,
-      dueDate: '2026-08-20',
-      dueTime: '09:00',
-      endAt: '2026-08-20T13:00',
       noteId: taskFixture.noteId,
-      startAt: '2026-08-20T09:00',
+      schedule: { allDay: false, end: '2026-08-20T13:00', kind: 'span', start: '2026-08-20T09:00' },
       text: taskFixture.text,
       topicId: taskFixture.topicId,
     }))

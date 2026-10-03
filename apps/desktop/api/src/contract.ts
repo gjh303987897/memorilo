@@ -8,6 +8,7 @@ import type {
   TodoCalendarSubscription,
   TodoReminder,
   TodoRepeatRule,
+  TodoSchedule,
   TodoTask,
   TodoTaskPage,
   TodoTaskStatus,
@@ -131,6 +132,7 @@ export type DesktopTodoTask = TodoTask
 export type DesktopTodoTaskPage = TodoTaskPage
 export type DesktopTodoReminder = TodoReminder
 export type DesktopTodoRepeatRule = TodoRepeatRule
+export type DesktopTodoSchedule = TodoSchedule
 export type DesktopTodoCalendarEvent = TodoCalendarEvent
 export interface DesktopTodoCalendarSubscription extends TodoCalendarSubscription {
   builtIn: boolean
@@ -138,11 +140,8 @@ export interface DesktopTodoCalendarSubscription extends TodoCalendarSubscriptio
 export type ListDesktopTodoTasksInput = ListTodoTasksInput
 
 export interface UpdateDesktopTodoTaskInput {
-  allDay?: boolean
+  schedule?: DesktopTodoSchedule
   blockId: string
-  dueDate?: string | null
-  dueTime?: string | null
-  endAt?: string | null
   nextDueDate?: string | null
   noteId: string
   onlyThis?: boolean
@@ -150,17 +149,12 @@ export interface UpdateDesktopTodoTaskInput {
   reminders?: readonly DesktopTodoReminder[] | null
   repeatRule?: DesktopTodoRepeatRule | null
   status?: DesktopTodoTaskStatus
-  startAt?: string | null
   text?: string
   topicId: string
 }
 
 export interface CreateDesktopTodoTaskInput {
-  allDay?: boolean
-  dueDate: string
-  dueTime?: string | null
-  endAt?: string | null
-  startAt?: string | null
+  schedule?: DesktopTodoSchedule
   text: string
 }
 

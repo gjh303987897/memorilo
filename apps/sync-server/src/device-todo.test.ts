@@ -26,7 +26,7 @@ describe('device Todo module', () => {
     if (!topic || topic.kind !== 'topic')
       throw new Error('Missing topic')
     note.applyTopicBlockEdits({
-      edits: [{ attributes: { dueDate: '2026-09-01', status: 'todo', allDay: true }, content: [{ content: [{ text: 'Buy milk', type: 'text' }], type: 'paragraph' }], kind: 'task', operation: 'insert-block' }],
+      edits: [{ attributes: { schedule: { date: '2026-09-01', kind: 'deadline', time: null }, status: 'todo' }, content: [{ content: [{ text: 'Buy milk', type: 'text' }], type: 'paragraph' }], kind: 'task', operation: 'insert-block' }],
       topicId: topic.id,
     })
     const snapshot = Buffer.from(note.exportSnapshot()).toString('base64url')

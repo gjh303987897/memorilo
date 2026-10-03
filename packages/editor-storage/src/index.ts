@@ -76,6 +76,7 @@ export type {
   TodoCalendarSubscription,
   TodoReminder,
   TodoRepeatRule,
+  TodoSchedule,
   TodoTask,
   TodoTaskPage,
   TodoTaskStatus,

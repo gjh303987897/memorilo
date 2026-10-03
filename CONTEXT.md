@@ -96,6 +96,30 @@ _Avoid_: Task Block, checkbox Block
 A Todo that has another Todo anywhere in its Block ancestor chain. Its parent in the Todo-only hierarchy is the nearest Todo ancestor.
 _Avoid_: Child Todo, nested Todo
 
+**Todo Calendar Feed**:
+A read-only calendar subscription that projects eligible Todos into iCalendar events for an external calendar client.
+_Avoid_: Todo export file, calendar sync
+
+**Todo Calendar Feed Credential**:
+A revocable read-only authorization grant for one account's Todo Calendar Feed, separate from a paired device's synchronization credential.
+_Avoid_: Device Token, browser session
+
+**Todo Schedule**:
+The explicit scheduling shape of a Todo: no schedule, a deadline, or a time span.
+_Avoid_: Due fields, task timing flags
+
+**Todo Occurrence**:
+One materialized scheduled instance of a Todo, including an instance generated from a repeat rule.
+_Avoid_: Repeat rule, prediction marker
+
+**Todo Calendar Feed Window**:
+The bounded rolling date interval used to materialize Todo occurrences for one calendar feed request.
+_Avoid_: Fixed calendar export range, subscription snapshot
+
+**Undated Todo Policy**:
+The feed rule that either places a Todo without an explicit schedule on the request date or omits it from the feed.
+_Avoid_: Journal-date fallback, missing-date behavior
+
 **CardTopic**:
 A RegularTopic created from one explicit Card authoring source and placed directly below its source Topic. It owns the learnable Card projection and may either remain linked to its source or become independently editable; a Highlight/Extract alone does not create a CardTopic.
 _Avoid_: Card, hidden Card, Card Definition
