@@ -60,6 +60,7 @@ describe('sync server management API', () => {
     peer?: P2pApplication,
     now?: () => number,
     deviceTodo?: DeviceTodoModule,
+    isReady?: () => boolean,
   ) {
     const directory = await mkdtemp(join(tmpdir(), 'memorilo-sync-server-test-'))
     directories.push(directory)
@@ -69,6 +70,7 @@ describe('sync server management API', () => {
       audit: database.audit,
       auth: database.auth,
       ...(now === undefined ? {} : { now }),
+      ...(isReady === undefined ? {} : { isReady }),
       peer,
       repository: database.repository,
       deviceTodo,
@@ -580,6 +582,32 @@ describe('sync server management API', () => {
     expect(response.status).toBe(201)
     await expect(response.json()).resolves.toMatchObject({ credential: 'memorilo-calendar-v1.secret', scopes: ['todos:calendar:read'] })
     expect(issueCalendarToken).toHaveBeenCalledWith({ accountId: 'feed-account', deviceId: 'desktop-1', deviceName: 'Desktop' })
+    await database.auth.createDeviceCredential({
+      accountId: 'feed-account',
+      createdAt: 1,
+      credentialHash: hashDeviceCredential('sync-device-secret'),
+      deviceId: 'desktop-1',
+      deviceName: 'Desktop',
+      expiresAt: Date.parse('2027-01-01T00:00:00Z'),
+      membershipEpoch: 1,
+      pairingId: 'pairing-feed',
+      peerId: 'desktop-peer',
+      scopes: ['sync', 'object'],
+      sharedSecretHash: 'shared-secret',
+      signingPublicKey: 'public-key',
+    })
+    response = await localRequest(app, '/api/device/v1/todo-calendar-token', {
+      body: JSON.stringify({ deviceName: 'Desktop client' }),
+      headers: { 'authorization': 'Bearer sync-device-secret', 'content-type': 'application/json' },
+      method: 'POST',
+    })
+    expect(response.status).toBe(201)
+    expect(issueCalendarToken).toHaveBeenLastCalledWith({ accountId: 'feed-account', deviceId: 'desktop-1', deviceName: 'Desktop client' })
+    response = await localRequest(app, '/api/device/v1/todo-calendar-token', {
+      headers: { authorization: 'Bearer revoked-or-invalid' },
+      method: 'POST',
+    })
+    expect(response.status).toBe(401)
     const path = '/calendar/memorilo-calendar-v1.secret.ics?tz=Asia%2FShanghai&beforeDays=7&afterDays=14&completed=show&undated=hide'
     response = await localRequest(app, path)
     expect(response.status).toBe(200)
@@ -614,6 +642,25 @@ describe('sync server management API', () => {
     response = await localRequest(app, '/api/devices/todo-calendar-tokens/desktop-1/revoke', { headers: managementHeaders, method: 'POST' })
     expect(response.status).toBe(200)
     expect(revokeCalendarToken).toHaveBeenCalledWith({ accountId: 'feed-account', deviceId: 'desktop-1' })
+    response = await localRequest(app, '/api/device/v1/todo-calendar-token/revoke', {
+      headers: { authorization: 'Bearer sync-device-secret' },
+      method: 'POST',
+    })
+    expect(response.status).toBe(200)
+    database.close()
+  })
+
+  it('drains the public Todo ICS URL while the server is not ready', async () => {
+    const calendar = vi.fn(() => Effect.succeed({ body: 'BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n', revision: 'revision' }))
+    const deviceTodo = {
+      calendar,
+    } as unknown as DeviceTodoModule
+    const { app, database } = await fixture('disabled', {}, undefined, undefined, deviceTodo, () => false)
+
+    const response = await localRequest(app, '/calendar/memorilo-calendar-v1.secret.ics')
+    expect(response.status).toBe(503)
+    await expect(response.json()).resolves.toEqual({ code: 'server_draining' })
+    expect(calendar).not.toHaveBeenCalled()
     database.close()
   })
 })

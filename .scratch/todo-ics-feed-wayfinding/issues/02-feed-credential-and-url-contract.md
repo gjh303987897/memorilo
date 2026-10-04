@@ -17,7 +17,7 @@ Decide whether the existing `todos:read` device token can safely serve calendar 
 - The feed credential is long-lived and remains valid until explicit rotation or revocation. The issue and revoke operations are user-initiated; startup must not silently create credentials.
 - The credential is placed in the URL path because calendar clients need a normal subscribable URL and usually cannot send a custom `Authorization` header. Presentation settings remain ordinary query parameters:
 
-  `https://server.example.com/api/calendar/todos/<feed-secret>.ics?undated=today&completed=hide&tz=Asia%2FShanghai`
+  `https://server.example.com/calendar/<feed-secret>.ics?undated=today&completed=hide&tz=Asia%2FShanghai`
 
 - Changing a client-local setting changes the generated subscription URL. Existing calendar subscriptions keep their previous behavior until the user updates their subscription URL; changing settings does not silently mutate a server-side feed resource.
 - The server must treat the path secret as sensitive, redact it from application logs and audit details, and make rotation invalidate the previous secret immediately.

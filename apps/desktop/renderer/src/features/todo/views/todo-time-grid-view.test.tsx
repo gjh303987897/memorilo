@@ -27,6 +27,11 @@ const taskFixture: DesktopTodoTask = {
 const settings: DesktopTodoConfiguration = {
   autoCompleteParentTasks: true,
   blankTaskDurationMinutes: 30,
+  calendarFeedAfterDays: 365,
+  calendarFeedBeforeDays: 30,
+  calendarFeedCompleted: 'hide',
+  calendarFeedTimeZone: 'UTC',
+  calendarFeedUndated: 'today',
   enabled: true,
   keepDetailOpenWhenTaskLeavesView: true,
   recurringTaskCompletionAction: 'archive-completed-to-today',

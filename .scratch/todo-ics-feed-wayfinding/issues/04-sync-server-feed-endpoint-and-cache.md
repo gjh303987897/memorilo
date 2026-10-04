@@ -12,7 +12,7 @@ Decide the public route, authentication and authorization flow, projection owner
 
 ## Answer
 
-- Add a dedicated `GET /api/calendar/todos/<feed-secret>.ics` route handled by a `TodoCalendarFeed` service. It shares account authorization, token storage, normalized Todo projection, and recurrence expansion with the existing device Todo path, but does not reuse the device API's bounded JSON pagination contract.
+- Add a dedicated `GET /calendar/<feed-secret>.ics` route handled by a `TodoCalendarFeed` service. It shares token authorization, normalized Todo projection, and recurrence expansion with the existing device Todo path, but does not reuse the device API's bounded JSON pagination contract.
 - The feed renders a rolling window relative to the request day in the URL's configured timezone. Defaults are 30 days before the request day through 365 days after it. Client-local settings may override this with bounded relative parameters such as `beforeDays` and `afterDays`; absolute dates are not the default because they would make a copied subscription silently stale.
 - The service queries the authoritative account projection, normalizes each Todo's `none`/`deadline`/`span` schedule, and uses the shared recurrence projection to materialize events within the window. It applies the previously decided `completed` and `undated` filters before expansion.
 - Responses use `Content-Type: text/calendar; charset=utf-8`, a private cache policy, and validators. `ETag` includes the account Todo revision, all URL presentation options, timezone, effective request day, rolling window, and relevant subscribed-calendar snapshot versions. An unchanged conditional request returns `304 Not Modified` with no calendar body.

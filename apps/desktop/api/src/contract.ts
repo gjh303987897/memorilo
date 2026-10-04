@@ -163,6 +163,11 @@ export interface SubscribeDesktopTodoCalendarInput {
   url: string
 }
 
+export interface DesktopTodoCalendarFeed {
+  expiresAt: number | null
+  url: string | null
+}
+
 export interface RestoreDesktopReviewItemInput {
   cardId: string
   noteId: string

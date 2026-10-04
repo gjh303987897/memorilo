@@ -21,6 +21,7 @@ import type {
   DesktopProvisioningTransport,
   DesktopSyncServerEvent,
   DesktopSyncServerStatus,
+  DesktopTodoCalendarFeed,
   DesktopWhiteboardLibraryData,
 } from '@memorilo/desktop-api'
 import type {
@@ -82,6 +83,11 @@ export interface DesktopApi {
     requestPairing: (peerId: string) => Promise<DesktopP2pPairingRequest>
     removeDevice: (deviceId: string) => Promise<void>
     updateDeviceName: (deviceName: string) => Promise<void>
+  }
+  todoCalendarFeed: {
+    get: () => Promise<DesktopTodoCalendarFeed>
+    issue: () => Promise<DesktopTodoCalendarFeed>
+    revoke: () => Promise<void>
   }
   subscribeConfiguration: (listener: (configuration: DesktopConfiguration) => void) => () => void
   subscribeLearningUpdates: (listener: () => void) => () => void

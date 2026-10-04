@@ -27,7 +27,7 @@ The implementation is accepted as one breaking migration with no dual-read or du
    - Test the serializer independently of Electron, Hono, and SQLite.
 3. **Sync Server credential and GET feed**
    - Add the account/device-bound ICS feed credential type and issue/rotate/revoke operations.
-   - Add `GET /api/calendar/todos/<feed-secret>.ics`, the rolling window defaults and relative overrides, the shared authoritative projection, ETag/304 handling, bounds, rate limiting, and secret redaction.
+   - Add `GET /calendar/<feed-secret>.ics`, the rolling window defaults and relative overrides, the shared authoritative projection, ETag/304 handling, bounds, rate limiting, and secret redaction.
 4. **Desktop secure storage and settings**
    - Add an encrypted main-process feed-secret store and typed IPC/client service for issue, rotate, revoke, and current URL retrieval.
    - Add Todo settings for `undated`, `completed`, `timeZone`, `beforeDays`, and `afterDays`, with the agreed defaults and localized copy/rotate/revoke workflow.

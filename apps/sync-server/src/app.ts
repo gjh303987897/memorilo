@@ -172,6 +172,25 @@ export function createSyncServerApp(config: SyncServerConfig, services: SyncServ
     const csrfError = await requireCsrf(context, account)
     return csrfError ?? account
   }
+  const authenticateSyncDevice = async (context: Context<SyncServerEnvironment>) => {
+    const token = context.req.header('authorization')?.startsWith('Bearer ')
+      ? context.req.header('authorization')!.slice(7)
+      : ''
+    if (token.length === 0)
+      return null
+    const credential = await auth.findDeviceCredential(hashDeviceCredential(token))
+    const timestamp = now()
+    if (credential === null
+      || credential.revokedAt !== null
+      || credential.expiresAt <= timestamp
+      || !credential.scopes.includes('sync')) {
+      return null
+    }
+    const state = await repository.getAccountState(credential.accountId)
+    if (state === null || state.membershipEpoch !== credential.membershipEpoch)
+      return null
+    return credential
+  }
   const rateLimiter = services.rateLimiter ?? createRateLimiter(services.now)
   const deviceTodo = services.deviceTodo
   const peerMetrics = (): SyncPeerMetrics => services.peerMetrics?.() ?? { activeObjectTransfers: 0, activeSyncSessions: 0 }
@@ -256,6 +275,11 @@ export function createSyncServerApp(config: SyncServerConfig, services: SyncServ
       context.header('retry-after', String(Math.max(1, Math.ceil((decision.resetAt - now()) / 1000))))
       return context.json({ code: 'rate_limited' }, 429)
     }
+    await next()
+  })
+  app.use('/calendar/*', async (context, next) => {
+    if (services.isReady?.() === false)
+      return context.json({ code: 'server_draining' }, 503)
     await next()
   })
   const limitAuthentication = async (context: Context<SyncServerEnvironment>, next: Next): Promise<Response | void> => {
@@ -583,6 +607,46 @@ export function createSyncServerApp(config: SyncServerConfig, services: SyncServ
     const result = await runDeviceTodo(deviceTodo.revokeCalendarToken({ accountId: account.accountId, deviceId: context.req.param('deviceId') }))
     if (!result.ok)
       return context.json({ code: result.error.code }, deviceTodoErrorStatus(result.error))
+    return result.value ? context.json({ revoked: true }) : context.json({ code: 'device_not_found' }, 404)
+  })
+  app.post('/api/device/v1/todo-calendar-token', async (context) => {
+    const credential = await authenticateSyncDevice(context)
+    if (credential === null)
+      return context.json({ code: 'unauthorized' }, 401)
+    if (!deviceTodo)
+      return context.json({ code: 'device_todo_unavailable' }, 503)
+    let body: { deviceName?: unknown }
+    try {
+      body = await context.req.json<{ deviceName?: unknown }>()
+    }
+    catch {
+      return context.json({ code: 'invalid_request' }, 400)
+    }
+    const result = await runDeviceTodo(deviceTodo.issueCalendarToken({
+      accountId: credential.accountId,
+      deviceId: credential.deviceId,
+      deviceName: typeof body.deviceName === 'string' ? body.deviceName : credential.deviceName,
+    }))
+    if (!result.ok)
+      return context.json({ code: result.error.code }, deviceTodoErrorStatus(result.error))
+    await recordAudit({ accountId: credential.accountId, action: 'device.todo-calendar-token.issue', actorId: credential.deviceId, actorType: 'device', details: { deviceId: credential.deviceId }, outcome: 'success', remoteAddress: context.get('remoteAddress'), requestId: context.get('requestId') })
+    return context.json({
+      credential: result.value.token,
+      device: { deviceId: result.value.credential.deviceId, deviceName: result.value.credential.deviceName },
+      expiresAt: result.value.credential.expiresAt,
+      scopes: result.value.credential.scopes,
+    }, 201)
+  })
+  app.post('/api/device/v1/todo-calendar-token/revoke', async (context) => {
+    const credential = await authenticateSyncDevice(context)
+    if (credential === null)
+      return context.json({ code: 'unauthorized' }, 401)
+    if (!deviceTodo)
+      return context.json({ code: 'device_todo_unavailable' }, 503)
+    const result = await runDeviceTodo(deviceTodo.revokeCalendarToken({ accountId: credential.accountId, deviceId: credential.deviceId }))
+    if (!result.ok)
+      return context.json({ code: result.error.code }, deviceTodoErrorStatus(result.error))
+    await recordAudit({ accountId: credential.accountId, action: 'device.todo-calendar-token.revoke', actorId: credential.deviceId, actorType: 'device', details: { deviceId: credential.deviceId }, outcome: 'success', remoteAddress: context.get('remoteAddress'), requestId: context.get('requestId') })
     return result.value ? context.json({ revoked: true }) : context.json({ code: 'device_not_found' }, 404)
   })
   app.get('/api/device/v1/todos', async (context) => {

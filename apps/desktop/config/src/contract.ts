@@ -89,6 +89,11 @@ export interface DesktopSyncServerConfiguration {
 export interface DesktopTodoConfiguration {
   autoCompleteParentTasks: boolean
   blankTaskDurationMinutes: number
+  calendarFeedAfterDays: number
+  calendarFeedBeforeDays: number
+  calendarFeedCompleted: 'hide' | 'show'
+  calendarFeedTimeZone: string
+  calendarFeedUndated: 'hide' | 'today'
   enabled: boolean
   keepDetailOpenWhenTaskLeavesView: boolean
   recurringTaskCompletionAction: DesktopRecurringTaskCompletionAction

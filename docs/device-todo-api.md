@@ -59,3 +59,19 @@ Content-Type: application/json
 Rotate by issuing again for the same device, or revoke with
 `POST /api/devices/todo-calendar-tokens/:deviceId/revoke`. Rotation immediately
 invalidates the previous subscription URL.
+
+A paired desktop client uses its existing Sync Server device credential to manage
+the feed without browser cookies or CSRF:
+
+```http
+POST /api/device/v1/todo-calendar-token
+Authorization: Bearer <sync-device-credential>
+Content-Type: application/json
+
+{"deviceName":"Desktop"}
+```
+
+The client can revoke its own feed with
+`POST /api/device/v1/todo-calendar-token/revoke`. The desktop application keeps
+the returned calendar secret in the operating system credential store and only
+exposes the complete `/calendar/<secret>.ics` URL when the user requests it.
