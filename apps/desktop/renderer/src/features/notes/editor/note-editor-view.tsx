@@ -13,8 +13,9 @@ import type { PaletteCommand } from '../../../shared/command-palette'
 import type { EditorNoteSessionOpened, TopicValidationError } from './note-editor-session'
 import { Editor, EditorMode, projectCardTopicCards, useEditorTopicMode } from '@memorilo/editor'
 import { readerAnnotationLabel } from '@memorilo/editor/reader'
+import { Button, DropdownMenu } from '@memorilo/ui'
 import * as stylex from '@stylexjs/stylex'
-import { AlignLeft, Copy, ListTree } from 'lucide-react'
+import { AlignLeft, Copy, Download, ListTree, X } from 'lucide-react'
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'react-toastify/unstyled'
@@ -57,6 +58,7 @@ function isImageOcclusionTopic(
 export interface NoteEditorViewProps {
   applyExternal: (external: DesktopNoteExternalUpdate) => boolean
   collapsedEntryIds: ReadonlySet<string>
+  exporting: boolean
   favoritePending: boolean
   focusBlockId?: string
   onAddBook: (parentId: string | null) => void
@@ -69,6 +71,8 @@ export interface NoteEditorViewProps {
   onOpenTopic: (topicId: string) => Promise<void>
   onRebindBook: (topicId: string) => void
   onDeleteEntry: (entryId: string) => void
+  onExport: (format: 'html' | 'memo' | 'pdf') => Promise<void>
+  onCancelExport: () => void
   onRenameNote: (note: EditorNote, title: string) => Promise<{ error?: string } | void>
   onToggleEntry: (entryId: string) => void
   onToggleFavorite: () => void
@@ -80,6 +84,7 @@ export interface NoteEditorViewProps {
 export function NoteEditorView({
   applyExternal,
   collapsedEntryIds,
+  exporting,
   favoritePending,
   focusBlockId,
   onAddBook,
@@ -92,6 +97,8 @@ export function NoteEditorView({
   onOpenTopic,
   onRebindBook,
   onDeleteEntry,
+  onExport,
+  onCancelExport,
   onRenameNote,
   onToggleEntry,
   onToggleFavorite,
@@ -350,18 +357,45 @@ export function NoteEditorView({
         onToggleInspector={toggleInspector}
       />
     ),
+    trailing: (
+      <DropdownMenu.Root>
+        <DropdownMenu.Trigger asChild>
+          <Button aria-busy={exporting} aria-label={t('exportNote')} data-window-no-drag="" disabled={exporting} title={t('exportNote')} variant="titlebar">
+            <Download aria-hidden="true" size={17} strokeWidth={1.9} />
+          </Button>
+        </DropdownMenu.Trigger>
+        <DropdownMenu.Portal>
+          <DropdownMenu.Content aria-label={t('exportNote')}>
+            <DropdownMenu.Item disabled={exporting} onSelect={() => void onExport('html')}>{t('exportHtml')}</DropdownMenu.Item>
+            <DropdownMenu.Item disabled={exporting} onSelect={() => void onExport('pdf')}>{t('exportPdf')}</DropdownMenu.Item>
+          </DropdownMenu.Content>
+        </DropdownMenu.Portal>
+        {exporting
+          ? (
+              <Button aria-label={tCommon('cancel')} data-window-no-drag="" title={tCommon('cancel')} variant="titlebar" onClick={onCancelExport}>
+                <X aria-hidden="true" size={16} strokeWidth={1.9} />
+              </Button>
+            )
+          : null}
+      </DropdownMenu.Root>
+    ),
     title: opened.stored.title,
     titleVisibility: whiteboardTopic === null && spreadsheetTopic === null ? 'always' as const : 'hidden' as const,
   }), [
     favoritePending,
+    exporting,
     inspectorVisible,
     onToggleFavorite,
+    onExport,
+    onCancelExport,
     opened.stored.favorite,
     opened.stored.title,
     renameNote,
     spreadsheetTopic,
     toggleInspector,
     whiteboardTopic,
+    t,
+    tCommon,
   ])
   usePageTitlebar(titlebar)
 

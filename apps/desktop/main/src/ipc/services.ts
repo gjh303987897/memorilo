@@ -10,6 +10,7 @@ import type { DesktopAssetSync } from '../assets/asset-p2p-sync'
 import type { DatabaseBackupApplication } from '../backup/backup-application'
 import type { DesktopRequestContext } from '../desktop-request-handlers'
 import type { NoteApplicationService } from '../notes/note-application-service'
+import type { NoteTransferApplication } from '../notes/note-transfer-application'
 import type { ActiveReadingRegistry } from '../reading/active-reading-registry'
 import type { WhiteboardLibraryApplication } from '../whiteboard/whiteboard-library-application'
 import type { IpcHandlerHost } from './ipc-handler-registry'
@@ -41,6 +42,7 @@ const maximumConcurrentShelfAssetRequests = 3
 
 export async function createDesktopServices(
   notes: NoteApplicationService,
+  transfer: NoteTransferApplication,
   storage: EditorStorage,
   backup: DatabaseBackupApplication,
   shelfStorage: ShelfStorage,
@@ -97,7 +99,7 @@ export async function createDesktopServices(
           void p2p.notifyChangesAvailable().catch(error => console.warn('Failed to synchronize local Learning changes', error))
         },
       ),
-      notes: createNoteHandlers(notes, createTodoCalendarService(storage, () => configuration.getSnapshot().language)),
+      notes: createNoteHandlers(notes, createTodoCalendarService(storage, () => configuration.getSnapshot().language), transfer),
       shelf: createShelfHandlers(
         shelfStorage,
         shelfImageCache,

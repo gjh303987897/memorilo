@@ -26,6 +26,7 @@
     "@memorilo/spreadsheet": "workspace:*",
     "@memorilo/sync": "workspace:*",
     "@modelcontextprotocol/sdk": "1.30.0",
+    "@myriaddreamin/typst-ts-node-compiler": "0.7.0",
     "better-sqlite3": "13.0.1",
     "drizzle-orm": "^0.45.2",
     "effect": "4.0.0-beta.23",

@@ -94,6 +94,117 @@ export interface DesktopExportDatabaseResult {
   path: string
 }
 
+export type DesktopNoteExportFormat = 'html' | 'memo' | 'pdf'
+
+export type DesktopNoteTransferPhase
+  = | 'preparing'
+    | 'markdown'
+    | 'saved'
+    | 'imported'
+    | 'cancelled'
+    | 'failed'
+
+export interface DesktopNoteTransferError {
+  code: string
+  message: string
+}
+
+export type DesktopNoteTransferState
+  = | {
+    format: DesktopNoteExportFormat
+    kind: 'export'
+    operationId: string
+    phase: 'preparing'
+  }
+  | {
+    format: DesktopNoteExportFormat
+    kind: 'export'
+    operationId: string
+    phase: 'saved'
+    result: Extract<DesktopNoteExportResult, { status: 'saved' }>
+  }
+  | {
+    error: DesktopNoteTransferError
+    format: DesktopNoteExportFormat
+    kind: 'export'
+    operationId: string
+    phase: 'failed'
+  }
+  | {
+    format: DesktopNoteExportFormat
+    kind: 'export'
+    operationId: string
+    phase: 'cancelled'
+  }
+  | {
+    kind: 'import'
+    operationId: string
+    phase: 'preparing'
+  }
+  | {
+    fileName: string
+    kind: 'import'
+    operationId: string
+    phase: 'markdown'
+    source: string
+  }
+  | {
+    kind: 'import'
+    operationId: string
+    phase: 'imported'
+    result: Extract<DesktopNoteImportResult, { status: 'imported' }>
+  }
+  | {
+    error: DesktopNoteTransferError
+    kind: 'import'
+    operationId: string
+    phase: 'failed'
+  }
+  | {
+    kind: 'import'
+    operationId: string
+    phase: 'cancelled'
+  }
+
+export interface DesktopNoteTransferStart {
+  operationId: string
+}
+
+export type DesktopNoteTransferDecision = { kind: 'cancel' } | { kind: 'acknowledge' }
+
+export interface DesktopExportDiagnostic {
+  code: string
+  fallback?: string
+  kind?: string
+  message: string
+  path?: string
+  reason?: string
+  severity: 'error' | 'warning'
+}
+
+export type DesktopNoteExportResult
+  = | {
+    diagnostics: readonly DesktopExportDiagnostic[]
+    path: string
+    status: 'saved'
+  }
+  | { status: 'cancelled' }
+
+export type DesktopNoteImportResult
+  = | {
+    journalDate?: JournalDate
+    kind: 'journal' | 'regular'
+    noteId: string
+    title: string
+    status: 'imported'
+  }
+  | {
+    fileName: string
+    source: string
+    status: 'markdown'
+  }
+  | { status: 'cancelled' }
+
 export type DesktopRestoreDatabaseResult
   = | { status: 'cancelled' }
     | { status: 'restarting' }
@@ -532,6 +643,14 @@ export interface DesktopApi {
   getDeleteNoteImpact: (input: GetDesktopNoteInput) => Promise<DeleteDesktopNoteImpact>
   deleteShelfReading: (readingId: string) => Promise<boolean>
   exportDatabase: () => Promise<DesktopExportDatabaseResult | { status: 'cancelled' }>
+  exportNoteHtml: (input: GetDesktopNoteInput) => Promise<DesktopNoteExportResult>
+  exportNoteMemo: (input: GetDesktopNoteInput) => Promise<DesktopNoteExportResult>
+  exportNotePdf: (input: GetDesktopNoteInput) => Promise<DesktopNoteExportResult>
+  startNoteExport: (input: { format: DesktopNoteExportFormat, noteId: string }) => Promise<DesktopNoteTransferStart>
+  prepareNoteImport: () => Promise<DesktopNoteTransferStart>
+  getNoteTransfer: (operationId: string) => Promise<DesktopNoteTransferState>
+  continueNoteTransfer: (input: { decision: DesktopNoteTransferDecision, operationId: string }) => Promise<DesktopNoteTransferState>
+  cancelNoteTransfer: (operationId: string) => Promise<DesktopNoteTransferState>
   getCachedShelfView: (input: BrowseShelfInput) => Promise<ShelfBrowseResult>
   getConfiguration: () => Promise<DesktopConfiguration>
   getNote: (input: GetDesktopNoteInput) => Promise<DesktopNote>
@@ -541,6 +660,7 @@ export interface DesktopApi {
   getShelfPublicationDetails: (input: ShelfPublicationDetailsInput) => Promise<ShelfPublicationDetails>
   getTopicBlock: (input: { blockId: string, noteId: string, topicId: string }) => Promise<DesktopStoredTopicBlock | null>
   importNetworkImage: (input: ImportDesktopNetworkImageInput) => Promise<SaveDesktopImageResult>
+  importNote: () => Promise<DesktopNoteImportResult>
   isBookReadingAvailable: (readingId: string) => Promise<boolean>
   listBookContexts: (readingId: string) => Promise<readonly DesktopBookTopicContextSummary[]>
   listFavoriteNotes: (input?: { limit?: number }) => Promise<readonly DesktopFavoriteNoteItem[]>

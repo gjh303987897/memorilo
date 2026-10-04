@@ -5,7 +5,8 @@ import type {
   ReadingPosition,
 } from '@memorilo/reading-model'
 import type { LoroDoc, LoroMap } from 'loro-crdt'
-import type { ImageOcclusionSourceReference } from '../image-occlusion/image-occlusion-model'
+import type { NodeJSON } from 'prosekit/core'
+import type { ImageOcclusionSourceReference, ImageOcclusionState } from '../image-occlusion/image-occlusion-model'
 import type {
   ApplyTopicBlockEditsInput,
   EditorBookTopicDocument,
@@ -26,7 +27,9 @@ import {
 import { sameBookFile } from '@memorilo/reading-model'
 import { Effect as EffectRuntime } from 'effect'
 import { EditorState } from 'prosekit/pm/state'
+import { projectEditorCards, projectEditorReadingItems } from '../card/card-model'
 import { assertEditorMode } from '../common/editor-mode'
+import { projectImageOcclusionCards } from '../image-occlusion/image-occlusion-model'
 import { topicProseMirrorSchema } from '../schema/topic-prosemirror-schema'
 import { validateLoroTopic } from '../schema/topic-schema'
 import { applyTopicBlockEdits } from './editor-note-block-edits'
@@ -39,11 +42,15 @@ import {
   findNoteEntry,
   noteTree,
   readBookBinding,
+  readCardTopicSource,
   readString,
+  readTopicReaderReference,
   readTopicTitle,
   readTopicType,
   TOPIC_BLOCK_TREE_KEY,
+  TOPIC_CARD_SOURCE_KEY,
   TOPIC_EDITOR_MODE_KEY,
+  TOPIC_READER_REFERENCE_KEY,
   TOPIC_TYPE_KEY,
   validateBookBindingValue,
 } from './editor-note-crdt'
@@ -344,6 +351,138 @@ export class EditorNoteTopics {
     })
   }
 
+  rewriteResourceReferences(rewrite: (source: string, key?: string) => string): void {
+    if (typeof rewrite !== 'function')
+      throw new TypeError('Resource reference rewrite must be a function')
+
+    for (const node of noteTree(this.#runtime.doc).getNodes()) {
+      if (node.data.get(ENTRY_KIND_KEY) !== 'topic')
+        continue
+      const topicId = readString(node.data, ENTRY_ID_KEY, 'Topic id')
+      const validation = readTopicValidationInput(this.#runtime, topicId)
+      if ('document' in validation) {
+        const document = rewriteResourceValues(validation.document, rewrite) as NodeJSON
+        if (!sameJson(document, validation.document))
+          replaceEditableDocument(this.#runtime, topicId, document, validation)
+        if ('annotations' in validation) {
+          const annotations = rewriteResourceValues(validation.annotations, rewrite)
+          if (!sameJson(annotations, validation.annotations)) {
+            const book = createBookTopicDocument(this.#runtime, topicId)
+            book.setAnnotations(Object.values(annotations as Record<string, ReadingAnnotation>))
+          }
+        }
+        rewriteReaderReference(node, rewrite, this.#runtime)
+        continue
+      }
+      if ('embeddedEditors' in validation) {
+        for (const [editorId, editor] of Object.entries(validation.embeddedEditors)) {
+          const document = rewriteResourceValues(editor.document, rewrite) as NodeJSON
+          if (sameJson(document, editor.document))
+            continue
+          const embeddedEditors = {
+            ...validation.embeddedEditors,
+            [editorId]: { ...editor, document },
+          }
+          const validated = validateTopicInput({ ...validation, embeddedEditors })
+          if (!('embeddedEditors' in validated))
+            throw new TypeError(`WhiteboardTopic ${topicId} validation lost its embedded editors`)
+          const tree = whiteboardEmbeddedEditorTree(this.#runtime, topicId, editorId)
+          const state = EditorState.create({
+            doc: topicProseMirrorSchema.nodeFromJSON(validated.embeddedEditors[editorId]!.document),
+            schema: topicProseMirrorSchema,
+          })
+          updateLoroTreeFromPmState(this.#runtime.doc, tree, new Map(), state)
+        }
+        const scene = rewriteResourceValues(validation.scene, rewrite)
+        if (!sameJson(scene, validation.scene))
+          setWhiteboardScene(this.#runtime, topicId, scene as Record<string, unknown>)
+        continue
+      }
+      if ('state' in validation) {
+        const state = rewriteResourceValues(validation.state, rewrite)
+        if (!sameJson(state, validation.state))
+          setImageOcclusionState(this.#runtime, topicId, state as never)
+      }
+    }
+  }
+
+  remapLearningIdentities(): void {
+    const identityKeys = new Set([
+      'backwardCardId',
+      'blockHighlightId',
+      'cardId',
+      'cardItemDefinitionId',
+      'definitionId',
+      'forwardCardId',
+      'groupId',
+      'highlightId',
+      'id',
+      'targetGroupId',
+    ])
+    const remappableIds = new Set<string>()
+    const collectDocumentIdentities = (document: NodeJSON): void => {
+      for (const card of projectEditorCards(document)) {
+        remappableIds.add(card.id)
+        if ('definitionId' in card)
+          remappableIds.add(card.definitionId)
+        if (card.kind === 'cloze')
+          remappableIds.add(card.clozeGroupId)
+      }
+      for (const item of projectEditorReadingItems(document))
+        remappableIds.add(item.highlightId)
+      const visit = (node: NodeJSON): void => {
+        const blockHighlightId = node.attrs?.blockHighlightId
+        if (typeof blockHighlightId === 'string')
+          remappableIds.add(blockHighlightId)
+        for (const mark of node.marks ?? []) {
+          if (mark.type === 'inlineHighlight' && typeof mark.attrs?.id === 'string')
+            remappableIds.add(mark.attrs.id)
+        }
+        node.content?.forEach(visit)
+      }
+      visit(document)
+    }
+    for (const entry of noteTree(this.#runtime.doc).getNodes()) {
+      if (entry.data.get(ENTRY_KIND_KEY) !== 'topic')
+        continue
+      const topicId = readString(entry.data, ENTRY_ID_KEY, 'Topic id')
+      const validation = readTopicValidationInput(this.#runtime, topicId)
+      if ('document' in validation) {
+        collectDocumentIdentities(validation.document)
+      }
+      else if ('embeddedEditors' in validation) {
+        Object.values(validation.embeddedEditors).forEach(editor => collectDocumentIdentities(editor.document))
+      }
+      else if ('state' in validation) {
+        for (const card of projectImageOcclusionCards(validation.state as ImageOcclusionState)) {
+          remappableIds.add(card.id)
+          remappableIds.add(card.definitionId)
+          remappableIds.add(card.targetGroupId)
+        }
+      }
+    }
+    const identities = new Map<string, string>()
+    const remap = (source: string): string => {
+      const mapped = identities.get(source) ?? crypto.randomUUID()
+      identities.set(source, mapped)
+      return mapped
+    }
+    this.rewriteResourceReferences((source, key) => {
+      if (key === undefined || !identityKeys.has(key) || !remappableIds.has(source))
+        return source
+      return remap(source)
+    })
+    for (const entry of noteTree(this.#runtime.doc).getNodes()) {
+      if (entry.data.get(ENTRY_KIND_KEY) !== 'topic')
+        continue
+      const source = readCardTopicSource(entry.data, `Topic ${readString(entry.data, ENTRY_ID_KEY, 'Topic id')} card source`)
+      if (source === null || !remappableIds.has(source.sourceId))
+        continue
+      entry.data.set(TOPIC_CARD_SOURCE_KEY, { ...source, sourceId: remap(source.sourceId) })
+    }
+    this.#runtime.doc.commit({ origin: 'sys:remap-learning-identities' })
+  }
+
   content(topicId: string): TopicContentProjection {
     const normalizedTopicId = normalizeNonEmptyString(topicId, 'Topic id')
     const node = findNoteEntry(this.#runtime.doc, normalizedTopicId)
@@ -428,6 +567,58 @@ export class EditorNoteTopics {
       validateLoroTopic,
     )
   }
+}
+
+function rewriteReaderReference(
+  node: NoteEntryNode,
+  rewrite: (source: string) => string,
+  runtime: EditorNoteRuntime,
+): void {
+  if (readTopicType(node.data, 'Topic type') !== 'regular')
+    return
+  const reference = readTopicReaderReference(node.data)
+  if (reference?.source.kind !== 'region')
+    return
+  const imageSrc = rewrite(reference.source.imageSrc)
+  if (imageSrc === reference.source.imageSrc)
+    return
+  node.data.set(TOPIC_READER_REFERENCE_KEY, {
+    ...reference,
+    source: { ...reference.source, imageSrc },
+  })
+  runtime.doc.commit({ origin: 'note:rewrite-resource-reference' })
+}
+
+function rewriteResourceValues(value: unknown, rewrite: (source: string, key?: string) => string, key?: string): unknown {
+  if (typeof value === 'string')
+    return rewrite(value, key)
+  if (Array.isArray(value))
+    return value.map(item => rewriteResourceValues(item, rewrite))
+  if (value !== null && typeof value === 'object')
+    return Object.fromEntries(Object.entries(value).map(([childKey, child]) => [childKey, rewriteResourceValues(child, rewrite, childKey)]))
+  return value
+}
+
+function sameJson(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right)
+}
+
+function replaceEditableDocument(
+  runtime: EditorNoteDocument,
+  topicId: string,
+  document: NodeJSON,
+  validation: TopicValidationInput,
+): void {
+  const topic = validateTopicInput({ ...validation, document })
+  if (!('document' in topic))
+    throw new TypeError(`Topic ${topicId} does not have a single editable document`)
+  const node = findTopicNode(runtime, topicId)
+  const blockTree = topicBlockTree(runtime, node)
+  const state = EditorState.create({
+    doc: topicProseMirrorSchema.nodeFromJSON(topic.document),
+    schema: topicProseMirrorSchema,
+  })
+  updateLoroTreeFromPmState(runtime.doc, blockTree, new Map(), state)
 }
 
 export function resolveEditorTopicBinding(document: EditorTopicDocument): EditorTopicBinding {

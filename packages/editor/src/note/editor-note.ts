@@ -394,6 +394,10 @@ export interface EditorNote {
   resyncCardTopic: (topicId: string) => void
   /** Replaces the non-empty Note title. */
   renameNote: (title: string) => void
+  /** Gives copied learning identities fresh values while preserving Note-local identities. */
+  remapLearningIdentities: () => void
+  /** Rewrites resource-bearing values in the Note's authoritative documents. */
+  rewriteResourceReferences: (rewrite: (source: string, key?: string) => string) => void
   /** Enables or disables learning for this Note. */
   setLearningEnabled: (enabled: boolean) => void
   /** Subscribes to locally generated Loro updates that callers should persist or transmit. */
@@ -441,6 +445,11 @@ export interface EditorTopicBinding {
 export function createEditorNote(options: CreateEditorNoteOptions): EditorNote {
   const runtime = EditorNoteRuntime.open(options)
   return createEditorNoteFromRuntime(runtime)
+}
+
+/** Creates an independent import copy while retaining the current semantic state. */
+export function cloneEditorNote(options: CreateEditorNoteOptions, newId: string): EditorNote {
+  return createEditorNoteFromRuntime(EditorNoteRuntime.clone(options, newId))
 }
 
 export function createJournalNote(journalDate: string, learningEnabled = true): EditorNote {
@@ -504,6 +513,8 @@ function createEditorNoteFromRuntime(runtime: EditorNoteRuntime): EditorNote {
     moveEntry: entryRepository.moveEntry,
     renameEntry: entryRepository.renameEntry,
     renameNote: title => runtime.rename(title),
+    remapLearningIdentities: () => topics.remapLearningIdentities(),
+    rewriteResourceReferences: rewrite => topics.rewriteResourceReferences(rewrite),
     setLearningEnabled: enabled => runtime.setLearningEnabled(enabled),
     setTopicReaderReference: entryRepository.setTopicReaderReference,
     reconcileCardTopics: input => cardTopics.reconcile(input),

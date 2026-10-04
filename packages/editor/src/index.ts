@@ -150,7 +150,7 @@ export type {
   WhiteboardTopicSnapshot,
   WhiteboardTopicValidationInput,
 } from './note/editor-note'
-export { createEditorNote } from './note/editor-note'
+export { cloneEditorNote, createEditorNote } from './note/editor-note'
 export { whiteboardSceneSignature } from './note/editor-note-whiteboard'
 export type { ResolveJournalTopicOptions } from './note/journal-note'
 export { resolveJournalTopic } from './note/journal-note'

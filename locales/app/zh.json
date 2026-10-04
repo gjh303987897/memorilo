@@ -71,6 +71,14 @@
     "表格",
     "笔记"
   ],
+  "importAction": "导入",
+  "importNoteDescription": "导入 Memo 或 Markdown 文件",
+  "importNoteKeywords": [
+    "导入",
+    "memo",
+    "markdown",
+    "笔记"
+  ],
   "goBack": "后退",
   "goBackDescription": "返回上一页",
   "goBackKeywords": [

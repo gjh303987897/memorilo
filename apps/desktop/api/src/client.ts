@@ -131,6 +131,14 @@ export function createDesktopApiClient(options: CreateDesktopApiClientOptions): 
     deleteNote: input => rpc('notes', 'deleteNote', input),
     deleteShelfReading: readingId => rpc('shelf', 'deleteReading', readingId),
     exportDatabase: () => rpc('backup', 'exportDatabase'),
+    exportNoteHtml: input => rpc('notes', 'exportNoteHtml', input),
+    exportNoteMemo: input => rpc('notes', 'exportNoteMemo', input),
+    exportNotePdf: input => rpc('notes', 'exportNotePdf', input),
+    startNoteExport: input => rpc('notes', 'startNoteExport', input),
+    prepareNoteImport: () => rpc('notes', 'prepareNoteImport'),
+    getNoteTransfer: operationId => rpc('notes', 'getNoteTransfer', operationId),
+    continueNoteTransfer: input => rpc('notes', 'continueNoteTransfer', input),
+    cancelNoteTransfer: operationId => rpc('notes', 'cancelNoteTransfer', operationId),
     getCachedShelfView: input => rpc('shelf', 'getCachedView', input),
     getConfiguration: async () => decodeDesktopHonoResponse(
       'configuration.get',
@@ -149,6 +157,7 @@ export function createDesktopApiClient(options: CreateDesktopApiClientOptions): 
     getShelfPublicationDetails: input => rpc('shelf', 'getPublicationDetails', input),
     getTopicBlock: input => rpc('notes', 'getTopicBlock', input),
     importNetworkImage: input => rpc('assets', 'importNetworkImage', input),
+    importNote: () => rpc('notes', 'importNote'),
     isBookReadingAvailable: readingId => rpc('books', 'isReadingAvailable', readingId),
     listBookContexts: readingId => rpc('books', 'listContexts', readingId),
     listFavoriteNotes: input => input === undefined

@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Note 导入导出 · 流程原型</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#fafafa;color:#262626;font:15px/1.6 system-ui,sans-serif;letter-spacing:0}main{max-width:980px;margin:auto;padding:28px 20px}h1{font-size:24px}h2{font-size:18px}section{padding:20px 0;border-top:1px solid #ddd}.bar,.actions,.tabs{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.bar{justify-content:space-between}button,select,input{font:inherit;padding:7px 12px;border:1px solid #bbb;border-radius:5px;background:white;color:inherit}button{cursor:pointer}button:disabled{opacity:.45;cursor:default}button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid #17745a;outline-offset:3px}button[aria-selected=true]{background:#17745a;color:white;border-color:#17745a}.state{display:grid;grid-template-columns:140px 1fr;gap:6px 16px;margin:16px 0}.state dt{color:#666}.state dd{margin:0;overflow-wrap:anywhere}.notice{padding:12px;border-left:3px solid #b56c14;background:#fff4dc;min-height:48px}.muted{color:#666}input{max-width:100%;width:270px}.steps{display:flex;flex-wrap:wrap;gap:8px}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.5 ui-monospace,monospace}.intro{max-width:760px}@media(max-width:560px){.state{grid-template-columns:100px 1fr}main{padding:18px 14px}}
+</style>
+<main>
+<p class="muted">流程原型 · 仅内存模拟</p>
+<h1>Note 导入与导出</h1>
+<p class="intro">确认保存、取消、资源警告和身份冲突时的流程是否符合预期。文件选择与后台处理由下方按钮模拟，不读写真实 Note 或文件。</p>
+<section>
+<div class="bar"><strong>细胞生物学</strong><div class="actions"><label>导出格式 <select id="format"><option value="html">HTML</option><option value="pdf" selected>Memo PDF</option></select></label><button data-action="export">导出…</button><button data-action="import">导入…</button></div></div>
+<dl class="state" id="state"></dl>
+<p class="notice" id="notice" role="status" aria-live="polite"></p>
+<label id="title-label" hidden>副本标题 <input id="title" value="细胞生物学（副本）"></label>
+<div class="actions" id="current-actions"></div>
+</section>
+<section><h2>场景</h2><div class="tabs" role="tablist" aria-label="导入导出场景" id="tabs"></div><p id="scenario-note"></p><div class="steps" id="steps"></div></section>
+<section><h2>手动触发后台结果</h2><div class="actions" id="events"></div></section>
+<section><h2>当前操作记录</h2><pre id="history"></pre></section>
+</main>
+<script>
+const initial = () => ({phase:'idle',kind:null,format:'pdf',noteId:'note-original',newId:null,title:'细胞生物学',route:'/note/note-original/topic-1',writes:0,file:false,warnings:0,message:'就绪',history:[]});
+const labels={idle:'就绪',flush:'保存当前修改',prepare:'生成导出内容',warnings:'确认资源警告',save:'选择保存位置',commit:'正在完成',saved:'导出完成',choose:'选择导入文件',inspect:'识别并预检',confirm:'确认导入',conflict:'处理 Regular Note 冲突',failed:'操作失败',cancelled:'已取消',imported:'导入完成'};
+const terminal = ['idle','saved','failed','cancelled','imported'];
+function reduce(state, action) {
+  const s={...state,history:[...state.history]};
+  const event=action.type;
+  if(event==='reset')return initial();
+  if(event==='export'&&terminal.includes(s.phase)){s.phase='flush';s.kind='export';s.format=action.format;s.file=false;s.warnings=0;s.message='正在保存当前 Note 的修改';}
+  else if(event==='import'&&terminal.includes(s.phase)){s.phase='choose';s.kind=null;s.newId=null;s.message='选择 .memo、.md 或 .markdown 文件；程序将自动识别导入方式';}
+  else if(event==='flushed'&&s.phase==='flush'){s.phase='prepare';s.message=s.format==='pdf'?'正在排版 PDF':'正在生成导出内容';}
+  else if(event==='prepared'&&s.phase==='prepare'){s.phase='save';s.message='选择文件名和保存位置';}
+  else if(event==='warning'&&s.phase==='prepare'){s.phase='warnings';s.warnings=1;s.message='1 张图片不可用，导出将保留缺图提示。继续保存？';}
+  else if(event==='continue'&&s.phase==='warnings'){s.phase='save';s.message='选择文件名和保存位置';}
+  else if(event==='path'&&s.phase==='save'){s.phase='commit';s.message='正在保存文件';}
+  else if(['markdown','regular','collision','journal','journalCollision','invalid'].includes(event)&&s.phase==='choose'){s.phase='inspect';s.kind=event;s.message=event==='markdown'?'已识别为 Markdown，正在解析':'已识别为 Memo，正在严格校验；失败不会回退为 Markdown';}
+  else if(event==='validated'&&s.phase==='inspect'){
+    if(s.kind==='invalid'||s.kind==='journalCollision'){s.phase='failed';s.message=s.kind==='invalid'?'文件无效，未导入任何内容':'该日期的 Journal 已存在，无法导入';}
+    else{s.phase=s.kind==='collision'?'conflict':'confirm';s.message=s.kind==='journal'?'导入 2026-09-01 的 Journal，保留日期与身份':s.kind==='markdown'?'导入为新的 Regular Note，并确认标题与首个 Topic 标题':s.kind==='collision'?'原 Note ID 已存在。可重新分配身份，导入为独立副本':'按已记录的副本策略导入 Regular Note；不带入复习历史';}
+  }
+  else if(event==='confirm'&&['confirm','conflict'].includes(s.phase)){
+    const title=action.title.trim();
+    if(s.kind!=='journal'&&(!title||title.toLocaleLowerCase()==='细胞生物学')){s.message='请输入与已有 Note 不重复的标题';return s;}
+    s.title=s.kind==='journal'?'2026-09-01':title;s.phase='commit';s.message='正在完成导入';
+  }
+  else if(event==='complete'&&s.phase==='commit'){
+    if(s.kind==='export'){s.phase='saved';s.file=true;s.message='已导出'+(s.warnings?'，含 1 项资源警告':'');}
+    else{s.phase='imported';s.writes+=1;s.newId=s.kind==='journal'?'journal:2026-09-01':s.kind==='markdown'?'note-markdown-1':'note-copy-1';s.route=s.kind==='journal'?'/journals?date=2026-09-01':s.kind==='markdown'?'/note/note-markdown-1/topic-1':'/note/note-copy-1/topic-1';s.message='已导入并打开 Note';}
+  }
+  else if(event==='cancel'&&!terminal.includes(s.phase)&&s.phase!=='commit'){s.phase='cancelled';s.message='已取消，未写入目标文件或导入 Note';}
+  else if(event==='fail'&&!terminal.includes(s.phase)){s.phase='failed';s.message='操作失败，未写入目标文件或导入 Note';}
+  else return state;
+  s.history.push(event+' → '+labels[s.phase]);return s;
+}
+const scenarios=[
+ {name:'PDF 成功',note:'保存最新修改后生成 PDF，选择位置，再完成文件保存。',events:['export','flushed','prepared','path','complete']},
+ {name:'缺失图片',note:'资源缺失需明确确认；取消时不产生导出文件。',events:['export','flushed','warning','cancel']},
+ {name:'Markdown',note:'同一个导入按钮选择 Markdown 后，由程序识别并沿用 Markdown 导入流程。',events:['import','markdown','validated','confirm','complete']},
+ {name:'ID 冲突',note:'Regular Note 可改标题并重新分配 NoteID，完成前不写入。',events:['import','collision','validated','confirm','complete']},
+ {name:'Journal 冲突',note:'日期或身份冲突时直接拒绝，不能转成普通 Note。',events:['import','journalCollision','validated']},
+ {name:'无效文件',note:'预检失败保持数据库不变。',events:['import','invalid','validated']},
+ {name:'提交竞态',note:'最后提交开始后，取消不能再承诺撤回。',events:['import','regular','validated','confirm','cancel','complete']}
+];
+const names={export:'导出',import:'导入',flushed:'修改已保存',prepared:'内容已生成',warning:'发现缺失图片',continue:'继续保存',path:'确认保存位置',markdown:'选择 Markdown',regular:'选择 Regular Memo',collision:'选择 ID 冲突文件',journal:'选择 Journal Memo',journalCollision:'选择冲突 Journal',invalid:'选择无效文件',validated:'预检完成',confirm:'确认导入',complete:'提交成功',cancel:'取消',fail:'发生错误',reset:'重置'};
+let state=initial(),scenario=0,step=0;
+const el=id=>document.getElementById(id);
+function dispatch(type){state=reduce(state,{type,format:el('format').value,title:el('title').value});render();}
+function button(type,handler){const b=document.createElement('button');b.textContent=names[type];b.onclick=handler||(()=>dispatch(type));return b;}
+function render(){
+  el('state').replaceChildren();
+  const fields=[['阶段',labels[state.phase]],['格式',state.format.toUpperCase()],['导入识别',state.kind==='markdown'?'Markdown':state.kind&&state.kind!=='export'?'Memo':'—'],['源 Note ID',state.noteId],['导入后 ID',state.newId||'未分配'],['标题',state.title],['数据库写入',String(state.writes)],['导出文件',state.file?'已保存':'未创建'],['资源警告',String(state.warnings)],['当前页面',state.route]];
+  for(const [label,value] of fields){const dt=document.createElement('dt'),dd=document.createElement('dd');dt.textContent=label;dd.textContent=value;el('state').append(dt,dd);}
+  el('notice').textContent=state.message;el('history').textContent=state.history.join('\n')||'尚无操作';
+  document.querySelectorAll('[data-action]').forEach(b=>b.disabled=!terminal.includes(state.phase));
+  el('format').disabled=!terminal.includes(state.phase);
+  el('title-label').hidden=!['confirm','conflict'].includes(state.phase)||state.kind==='journal';
+  el('current-actions').replaceChildren();
+  if(state.phase==='warnings')el('current-actions').append(button('continue'));
+  if(['confirm','conflict'].includes(state.phase))el('current-actions').append(button('confirm'));
+  if(!terminal.includes(state.phase)){const cancel=button('cancel');cancel.disabled=state.phase==='commit';el('current-actions').append(cancel);}
+  el('current-actions').append(button('reset'));
+  el('steps').replaceChildren();scenarios[scenario].events.forEach((event,i)=>{const b=button(event,()=>{dispatch(event);step=i+1;render();});b.disabled=i!==step;el('steps').append(b);});
+  el('scenario-note').textContent=scenarios[scenario].note;
+  el('tabs').querySelectorAll('button').forEach((b,i)=>{b.setAttribute('aria-selected',String(i===scenario));b.tabIndex=i===scenario?0:-1;});
+}
+scenarios.forEach((s,i)=>{const b=document.createElement('button');b.textContent=s.name;b.setAttribute('role','tab');b.onclick=()=>{scenario=i;step=0;state=initial();render();};b.onkeydown=e=>{if(['ArrowRight','ArrowLeft','Home','End'].includes(e.key)){e.preventDefault();const index=e.key==='Home'?0:e.key==='End'?scenarios.length-1:(i+(e.key==='ArrowRight'?1:-1)+scenarios.length)%scenarios.length;const target=el('tabs').children[index];target.click();target.focus();}};el('tabs').append(b);});
+for(const event of ['flushed','prepared','warning','path','markdown','regular','collision','journal','journalCollision','invalid','validated','complete','fail'])el('events').append(button(event));
+document.querySelectorAll('[data-action]').forEach(b=>b.onclick=()=>dispatch(b.dataset.action));render();
+</script>
+</html>

@@ -16,6 +16,8 @@ extraResources:
     to: embedding-models
   - from: ../../packages/editor-storage/drizzle
     to: editor-storage-migrations
+  - from: ../../packages/excalidraw/excalidraw/fonts/Xiaolai
+    to: typst-fonts/Xiaolai
 
 asar: true
 asarUnpack:
@@ -27,6 +29,8 @@ asarUnpack:
   - node_modules/onnxruntime-node/**
   - node_modules/sharp/**
   - node_modules/sqlite-vec*/**
+  - node_modules/@myriaddreamin/typst-ts-node-compiler/**
+  - node_modules/@myriaddreamin/typst-ts-node-compiler-*/**
 
 npmRebuild: false
 nativeRebuilder: sequential

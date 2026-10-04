@@ -6,6 +6,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./card": "./src/card/index.ts",
+    "./import": "./src/import/index.ts",
+    "./math": "./src/math.ts",
     "./note": "./src/note/index.ts",
     "./reader": "./src/reader/index.ts",
     "./schema": "./src/schema/index.ts",

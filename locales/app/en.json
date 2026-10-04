@@ -71,6 +71,14 @@
     "table",
     "notes"
   ],
+  "importAction": "Import",
+  "importNoteDescription": "Import a Memo or Markdown file",
+  "importNoteKeywords": [
+    "import",
+    "memo",
+    "markdown",
+    "note"
+  ],
   "goBack": "Go Back",
   "goBackDescription": "Return to the previous page",
   "goBackKeywords": [
