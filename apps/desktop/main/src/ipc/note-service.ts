@@ -68,9 +68,6 @@ export function createNoteHandlers(
     deleteNote(input: Parameters<NoteApplicationService['deleteNote']>[0]) {
       return application.deleteNote(input)
     },
-    exportNoteHtml: withDesktopRequestContext((context, input) => (
-      transfer.exportHtml(input.noteId, BrowserWindow.fromWebContents(context.sender))
-    )),
     exportNoteMemo: withDesktopRequestContext((context, input) => (
       transfer.exportMemo(input.noteId, BrowserWindow.fromWebContents(context.sender))
     )),

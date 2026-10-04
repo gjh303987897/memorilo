@@ -68,7 +68,7 @@ export function NoteEditor({
   const handleExternalUpdate = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: noteQueryKeys.lists })
   }, [queryClient])
-  const handleExport = useCallback(async (format: 'html' | 'memo' | 'pdf') => {
+  const handleExport = useCallback(async (format: 'memo' | 'pdf') => {
     if (exporting) {
       return
     }

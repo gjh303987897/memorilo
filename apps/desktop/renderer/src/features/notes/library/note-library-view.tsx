@@ -58,7 +58,7 @@ export interface NoteLibraryCommands {
   getDeleteImpact: (input: { noteId: string }) => Promise<DeleteDesktopNoteImpact>
   delete: (input: { noteId: string }) => Promise<DeleteDesktopNoteImpact>
   importNote: () => Promise<void>
-  exportNote: (format: 'html' | 'memo' | 'pdf', noteId: string) => Promise<void>
+  exportNote: (format: 'memo' | 'pdf', noteId: string) => Promise<void>
 }
 
 function estimateRowSize() {
@@ -442,10 +442,6 @@ export function NoteLibraryView({ commands, onCancelTransfer, transferBusy }: { 
                   <ContextMenu.Item xstyle={pagesRouteStyles.contextMenuItem} onSelect={() => void commands.open(context.note.id)}>
                     <FileText {...stylex.props(pagesRouteStyles.contextMenuIcon)} aria-hidden="true" />
                     {t('openNote')}
-                  </ContextMenu.Item>
-                  <ContextMenu.Item disabled={transferBusy} xstyle={pagesRouteStyles.contextMenuItem} onSelect={() => void commands.exportNote('html', context.note.id)}>
-                    <Download {...stylex.props(pagesRouteStyles.contextMenuIcon)} aria-hidden="true" />
-                    {t('exportHtml')}
                   </ContextMenu.Item>
                   <ContextMenu.Item disabled={transferBusy} xstyle={pagesRouteStyles.contextMenuItem} onSelect={() => void commands.exportNote('pdf', context.note.id)}>
                     <Download {...stylex.props(pagesRouteStyles.contextMenuIcon)} aria-hidden="true" />

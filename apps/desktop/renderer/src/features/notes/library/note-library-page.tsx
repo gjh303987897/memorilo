@@ -158,7 +158,7 @@ export function NoteLibraryPage({
     section: t('navigationSection', { ns: 'app' }) as PaletteCommand['section'],
   }], [importNote, t])
   useCommandPaletteCommands(importCommands)
-  const exportNote = useCallback(async (format: 'html' | 'memo' | 'pdf', noteId: string) => {
+  const exportNote = useCallback(async (format: 'memo' | 'pdf', noteId: string) => {
     if (transferBusy) {
       return
     }

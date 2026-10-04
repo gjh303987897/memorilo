@@ -98,8 +98,6 @@
   "closeEntryDialog": "Close",
   "create": "Create",
   "importMarkdown": "Import Markdown",
-  "exportNote": "Export Note",
-  "exportHtml": "Export HTML",
   "exportPdf": "Export Memo PDF",
   "renameEntry": "Rename",
   "deleteEntry": "Delete",

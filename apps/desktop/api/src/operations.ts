@@ -205,13 +205,13 @@ const NoteTransferErrorSchema = Schema.Struct({
 })
 const NoteTransferStateSchema: EffectSchema.Codec<DesktopNoteTransferState> = Schema.Union([
   Schema.Struct({
-    format: Schema.Literals(['html', 'memo', 'pdf']),
+    format: Schema.Literals(['memo', 'pdf']),
     kind: Schema.Literal('export'),
     operationId: Schema.NonEmptyString,
     phase: Schema.Literal('preparing'),
   }),
   Schema.Struct({
-    format: Schema.Literals(['html', 'memo', 'pdf']),
+    format: Schema.Literals(['memo', 'pdf']),
     kind: Schema.Literal('export'),
     operationId: Schema.NonEmptyString,
     phase: Schema.Literal('saved'),
@@ -223,13 +223,13 @@ const NoteTransferStateSchema: EffectSchema.Codec<DesktopNoteTransferState> = Sc
   }),
   Schema.Struct({
     error: NoteTransferErrorSchema,
-    format: Schema.Literals(['html', 'memo', 'pdf']),
+    format: Schema.Literals(['memo', 'pdf']),
     kind: Schema.Literal('export'),
     operationId: Schema.NonEmptyString,
     phase: Schema.Literal('failed'),
   }),
   Schema.Struct({
-    format: Schema.Literals(['html', 'memo', 'pdf']),
+    format: Schema.Literals(['memo', 'pdf']),
     kind: Schema.Literal('export'),
     operationId: Schema.NonEmptyString,
     phase: Schema.Literal('cancelled'),
@@ -523,10 +523,6 @@ export const desktopOperationSchemas = {
       noteId: Schema.NonEmptyString,
     })]), DesktopNoteFavoriteStateSchema),
     deleteNote: operation(Schema.Tuple([Schema.Struct({ noteId: Schema.NonEmptyString })]), DeleteDesktopNoteImpactSchema),
-    exportNoteHtml: contextualOperation(
-      Schema.Tuple([Schema.Struct({ noteId: Schema.NonEmptyString })]),
-      NoteExportResultSchema,
-    ),
     exportNoteMemo: contextualOperation(
       Schema.Tuple([Schema.Struct({ noteId: Schema.NonEmptyString })]),
       NoteExportResultSchema,
@@ -538,7 +534,7 @@ export const desktopOperationSchemas = {
     importNote: contextualOperation(EmptyArgumentsSchema, NoteImportResultSchema),
     startNoteExport: contextualOperation(
       Schema.Tuple([Schema.Struct({
-        format: Schema.Literals(['html', 'memo', 'pdf']),
+        format: Schema.Literals(['memo', 'pdf']),
         noteId: Schema.NonEmptyString,
       })]),
       NoteTransferStartSchema,

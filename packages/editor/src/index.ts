@@ -60,6 +60,14 @@ export type { OutlineFocusTarget, OutlineOptions } from './common/outline-runtim
 export { Editor } from './editor'
 export type { EditorFocusTarget, EditorLayout, EditorProps } from './editor'
 export type {
+  EditorContentRenderer,
+  EditorExportMark,
+  EditorExportNode,
+  EditorTaskStatus,
+  TypstContentRendererOptions,
+} from './export'
+export { editorTaskStatus, renderEditorContent, renderTypstContent, renderTypstTask, typstTaskPrelude } from './export'
+export type {
   EditorImageOcclusionIntegration,
   ImageOcclusionCardProjection,
   ImageOcclusionMode,
@@ -99,6 +107,18 @@ export type {
 export { parseMarkdownImport } from './import/markdown-import'
 export { JournalEditor } from './journal-editor'
 export type { JournalEditorProps } from './journal-editor'
+export {
+  convertLatexAstToTypstAst,
+  convertLatexToTypst,
+  parseLatexMath,
+  renderTypstMathAst,
+} from './math/latex-to-typst'
+export type {
+  LatexMathNode,
+  LatexToTypstDiagnostic,
+  LatexToTypstResult,
+  TypstMathAst,
+} from './math/latex-to-typst'
 export { cardTopicTitle, projectCardTopicCards, projectCardTopicDefinitions } from './note/card-topic-projection'
 export type {
   BookTopicSnapshot,

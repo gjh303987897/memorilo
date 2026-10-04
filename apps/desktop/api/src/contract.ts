@@ -94,7 +94,7 @@ export interface DesktopExportDatabaseResult {
   path: string
 }
 
-export type DesktopNoteExportFormat = 'html' | 'memo' | 'pdf'
+export type DesktopNoteExportFormat = 'memo' | 'pdf'
 
 export type DesktopNoteTransferPhase
   = | 'preparing'
@@ -643,7 +643,6 @@ export interface DesktopApi {
   getDeleteNoteImpact: (input: GetDesktopNoteInput) => Promise<DeleteDesktopNoteImpact>
   deleteShelfReading: (readingId: string) => Promise<boolean>
   exportDatabase: () => Promise<DesktopExportDatabaseResult | { status: 'cancelled' }>
-  exportNoteHtml: (input: GetDesktopNoteInput) => Promise<DesktopNoteExportResult>
   exportNoteMemo: (input: GetDesktopNoteInput) => Promise<DesktopNoteExportResult>
   exportNotePdf: (input: GetDesktopNoteInput) => Promise<DesktopNoteExportResult>
   startNoteExport: (input: { format: DesktopNoteExportFormat, noteId: string }) => Promise<DesktopNoteTransferStart>

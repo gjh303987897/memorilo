@@ -37,7 +37,7 @@ import { basename, dirname, isAbsolute, join, posix, relative, sep } from 'node:
 import process from 'node:process'
 import { pipeline } from 'node:stream/promises'
 import { createZstdCompress, createZstdDecompress } from 'node:zlib'
-import { renderKaTeXMathToString } from '@memorilo/editor/math'
+import { renderTypstContent, typstTaskPrelude } from '@memorilo/editor/export'
 import { cloneEditorNote, createEditorNote, NOTE_SCHEMA_VERSION } from '@memorilo/editor/note'
 import { createOperationSupervisor } from '@memorilo/effect-lifecycle'
 import { assertReadingFormat } from '@memorilo/reading-model'
@@ -117,14 +117,6 @@ interface MemoManifest {
   sourceAppVersion: string
 }
 
-interface JsonNode {
-  attrs?: Readonly<Record<string, unknown>>
-  content?: readonly JsonNode[]
-  marks?: readonly { attrs?: Readonly<Record<string, unknown>>, type: string }[]
-  text?: string
-  type: string
-}
-
 type ImageOcclusionExportState = ReturnType<ReturnType<typeof createEditorNote>['getImageOcclusionTopic']>['getState'] extends () => infer State ? State : never
 type SpreadsheetExportWorkbook = ReturnType<ReturnType<typeof createEditorNote>['getSpreadsheetTopic']>['getWorkbook'] extends () => infer Workbook ? Workbook : never
 
@@ -191,7 +183,7 @@ function digest(bytes: Uint8Array): string {
 
 interface ExportResources {
   diagnostics: DesktopExportDiagnostic[]
-  html: ReadonlyMap<string, string>
+  inline: ReadonlyMap<string, string>
   pdf: ReadonlyMap<string, { bytes: Uint8Array, path: string }>
 }
 
@@ -201,11 +193,7 @@ interface ExportImageSource {
   source: string
 }
 
-/**
- * The format-neutral export boundary keeps HTML and Typst aligned on the same
- * validated Note tree. A serializer may choose its syntax, but neither may
- * reinterpret live editor state independently.
- */
+/** The export boundary keeps Typst aligned with the validated Note tree. */
 interface ExportDocument {
   entries: readonly ExportDocumentEntry[]
   title: string
@@ -357,7 +345,7 @@ function localJournalDateNow(): string {
   return `${String(now.getFullYear()).padStart(4, '0')}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
 }
 
-function escapeHtml(value: string): string {
+function escapeXml(value: string): string {
   return value
     .replaceAll('&', '&amp;')
     .replaceAll('<', '&lt;')
@@ -380,51 +368,6 @@ function escapeTypstString(value: string): string {
     .replaceAll('"', '\\"')
     .replaceAll('\r', '')
     .replaceAll('\n', '\\n')
-}
-
-function mathSource(node: JsonNode): string {
-  return String(node.attrs?.source ?? node.text ?? (node.content ?? []).map(child => child.text ?? '').join(''))
-}
-
-function typstMathSource(source: string): string | null {
-  const commands: Readonly<Record<string, string>> = {
-    '\\cdot': 'dot',
-    '\\div': 'div',
-    '\\ge': 'gt.eq',
-    '\\infty': 'infinity',
-    '\\le': 'lt.eq',
-    '\\neq': '!=',
-    '\\pi': 'pi',
-    '\\pm': '+-',
-    '\\sqrt': 'sqrt',
-    '\\times': 'times',
-  }
-  let converted = source
-    .replaceAll('\\left', '')
-    .replaceAll('\\right', '')
-    .replaceAll('\\,', ' ')
-  const fractions = /\\frac\{([^{}]*)\}\{([^{}]*)\}/gu
-  converted = converted.replaceAll(fractions, (_, numerator: string, denominator: string) => `frac(${numerator}, ${denominator})`)
-  const roots = /\\sqrt\{([^{}]*)\}/gu
-  converted = converted.replaceAll(roots, (_, value: string) => `sqrt(${value})`)
-  converted = converted.replaceAll(/\\[A-Za-z]+/gu, command => commands[command] ?? command)
-  if (/\\[A-Za-z]+/u.test(converted))
-    return null
-  return converted
-}
-
-function safeExportHref(value: unknown): string | null {
-  if (typeof value !== 'string' || value.length === 0)
-    return null
-  try {
-    const url = new URL(value, 'https://memorilo-export.invalid')
-    if (url.protocol !== 'http:' && url.protocol !== 'https:' && url.protocol !== 'mailto:' && url.protocol !== 'tel:')
-      return null
-    return value
-  }
-  catch {
-    return null
-  }
 }
 
 function assertArchivePath(value: string): string[] {
@@ -644,181 +587,6 @@ async function existingTypstFontDirectories(extra: readonly string[] = []): Prom
   return directories
 }
 
-function renderNode(
-  node: JsonNode,
-  inlineAsset: (src: string) => string,
-  diagnostics?: DesktopExportDiagnostic[],
-  path = 'export.node',
-): string {
-  const content = (node.content ?? []).map((child, index) => renderNode(child, inlineAsset, diagnostics, `${path}.content[${index}]`)).join('')
-  const text = node.text === undefined ? content : escapeHtml(node.text)
-  const marks = (node.marks ?? []).reduce((value, mark) => {
-    if (mark.type === 'bold')
-      return `<strong>${value}</strong>`
-    if (mark.type === 'italic')
-      return `<em>${value}</em>`
-    if (mark.type === 'underline')
-      return `<u>${value}</u>`
-    if (mark.type === 'inlineHighlight')
-      return `<mark>${value}</mark>`
-    if (mark.type === 'strike')
-      return `<del>${value}</del>`
-    if (mark.type === 'code')
-      return `<code>${value}</code>`
-    if (mark.type === 'link') {
-      const href = safeExportHref(mark.attrs?.href)
-      return href === null ? value : `<a href="${escapeHtml(href)}" rel="noreferrer">${value}</a>`
-    }
-    return value
-  }, text)
-  switch (node.type) {
-    case 'doc': return content
-    case 'paragraph': return `<p>${marks}</p>`
-    case 'heading': return `<h${Math.min(6, Math.max(1, Number(node.attrs?.level ?? 1)))}>${marks}</h${Math.min(6, Math.max(1, Number(node.attrs?.level ?? 1)))}>`
-    case 'blockquote': return `<blockquote>${content}</blockquote>`
-    case 'codeBlock': return `<pre><code>${marks}</code></pre>`
-    case 'horizontalRule': return '<hr>'
-    case 'bulletList':
-    case 'orderedList': return `<${node.type === 'bulletList' ? 'ul' : 'ol'}>${content}</${node.type === 'bulletList' ? 'ul' : 'ol'}>`
-    case 'listItem': return `<li>${content}</li>`
-    case 'list': {
-      const kind = typeof node.attrs?.kind === 'string' ? node.attrs.kind : 'outline'
-      const checked = node.attrs?.checked === true
-      const status = node.attrs?.status === 'doing' || node.attrs?.status === 'done' || node.attrs?.status === 'todo'
-        ? node.attrs.status
-        : checked ? 'done' : 'todo'
-      if (kind === 'task') {
-        const marker = `<span aria-hidden="true" class="task-marker" data-task-status="${status}">${status === 'done' ? '✓' : status === 'doing' ? '•' : ''}</span>`
-        return `<div class="outline-item task-item" data-list-kind="task" data-task-status="${status}">${marker}<div class="task-content">${content}</div></div>`
-      }
-      const marker = '<span aria-hidden="true" class="list-marker">•</span>'
-      return `<div class="outline-item" data-list-kind="${escapeHtml(kind)}">${marker}<div>${content}</div></div>`
-    }
-    case 'hardBreak': return '<br>'
-    case 'mathInline': {
-      const source = mathSource(node)
-      try {
-        return `<span class="math-inline" data-math-source="${escapeHtml(source)}">${renderKaTeXMathToString(source, false)}</span>`
-      }
-      catch {
-        diagnostics?.push({
-          code: 'math-render-fallback',
-          fallback: 'source-text',
-          kind: 'math-inline',
-          message: `${path}: inline math could not be rendered; source retained`,
-          path,
-          reason: 'katex-render-failed',
-          severity: 'warning',
-        })
-        return `<code class="math-inline" data-math-source="${escapeHtml(source)}">${escapeHtml(source)}</code>`
-      }
-    }
-    case 'mathBlock': {
-      const source = mathSource(node)
-      try {
-        return `<div class="math-block" data-math-source="${escapeHtml(source)}">${renderKaTeXMathToString(source, true)}</div>`
-      }
-      catch {
-        diagnostics?.push({
-          code: 'math-render-fallback',
-          fallback: 'source-text',
-          kind: 'math-block',
-          message: `${path}: block math could not be rendered; source retained`,
-          path,
-          reason: 'katex-render-failed',
-          severity: 'warning',
-        })
-        return `<pre class="math-block" data-math-source="${escapeHtml(source)}"><code>${escapeHtml(source)}</code></pre>`
-      }
-    }
-    case 'tag': return `<span class="tag">#${escapeHtml(String(node.attrs?.label ?? ''))}</span>`
-    case 'cardDelimiter': return '<span class="card-delimiter">↔</span>'
-    case 'image': {
-      const src = typeof node.attrs?.src === 'string' ? inlineAsset(node.attrs.src) : ''
-      return src.length === 0 ? '<span class="missing-resource">[image unavailable]</span>' : `<img src="${escapeHtml(src)}" alt="">`
-    }
-    case 'table': return `<table>${content}</table>`
-    case 'tableRow': return `<tr>${content}</tr>`
-    case 'tableCell': return `<td>${content}</td>`
-    case 'tableHeaderCell': return `<th>${content}</th>`
-    default: return content.length > 0 ? content : marks
-  }
-}
-
-function renderTypstNode(node: JsonNode, inlineAsset: (src: string) => string): string {
-  const content = (node.content ?? []).map(child => renderTypstNode(child, inlineAsset)).join('')
-  const rawText = node.text === undefined ? content : escapeTypst(node.text)
-  const text = (node.marks ?? []).reduce((value, mark) => {
-    switch (mark.type) {
-      case 'bold': return `*${value}*`
-      case 'italic': return `_${value}_`
-      case 'underline': return `#underline[${value}]`
-      case 'strike': return `#strike[${value}]`
-      case 'code': return `#raw[${value}]`
-      case 'inlineHighlight': return `#highlight[${value}]`
-      case 'link': {
-        const href = safeExportHref(mark.attrs?.href)
-        return href === null ? value : `#link("${escapeTypstString(href)}")[${value}]`
-      }
-      case 'cloze': return value
-      default: return value
-    }
-  }, rawText)
-  switch (node.type) {
-    case 'doc': return content
-    case 'paragraph': return `${text}\n\n`
-    case 'heading': return `= ${text}\n\n`
-    case 'blockquote': return `#quote[${content}]\n\n`
-    case 'codeBlock': return `#raw(block: true)[${text}]\n\n`
-    case 'horizontalRule': return '#line(length: 100%)\n\n'
-    case 'bulletList':
-    case 'orderedList': return content
-    case 'listItem':
-    case 'list': {
-      const kind = typeof node.attrs?.kind === 'string' ? node.attrs.kind : 'outline'
-      if (kind !== 'task')
-        return `- ${content.replaceAll('\n\n', ' ')}\n`
-      const checked = node.attrs?.checked === true
-      const status = node.attrs?.status === 'doing' || node.attrs?.status === 'done' || node.attrs?.status === 'todo'
-        ? node.attrs.status
-        : checked ? 'done' : 'todo'
-      const marker = status === 'done' ? '☑' : status === 'doing' ? '◐' : '☐'
-      const taskContent = status === 'done' ? `#strike[${content.replaceAll('\n\n', ' ')}]` : content.replaceAll('\n\n', ' ')
-      return `- ${marker} ${taskContent}\n`
-    }
-    case 'hardBreak': return '\\ '
-    case 'image': {
-      const src = typeof node.attrs?.src === 'string' ? inlineAsset(node.attrs.src) : ''
-      return src.length === 0 ? '[image unavailable]\n\n' : `#image("${escapeTypstString(src)}", width: 100%)\n\n`
-    }
-    case 'mathInline':
-    case 'mathBlock': {
-      const source = mathSource(node)
-      const converted = typstMathSource(source)
-      if (converted === null)
-        return `#raw[${escapeTypst(source)}]\n\n`
-      const expression = `$ ${converted} $`
-      return node.type === 'mathBlock'
-        ? `#align(center, ${expression})\n\n`
-        : `${expression} `
-    }
-    case 'tag': return `#text[#${escapeTypst(String(node.attrs?.label ?? ''))}]`
-    case 'cardDelimiter': return '↔'
-    default: return content.length > 0 ? content : text
-  }
-}
-
-function renderSpreadsheetHtml(workbook: SpreadsheetExportWorkbook): string {
-  return workbook.sheets.map((sheet) => {
-    const header = `<tr><th></th>${sheet.columns.map(column => `<th>${escapeHtml(column.id)}</th>`).join('')}</tr>`
-    const rows = sheet.rows.map(row => `<tr><th>${escapeHtml(row.id)}</th>${sheet.columns.map((column) => {
-      const cell = sheet.cells[`${row.id}\u001F${column.id}`]
-      return `<td>${escapeHtml(cell?.display ?? '')}</td>`
-    }).join('')}</tr>`).join('')
-    return `<section class="spreadsheet"><h3>${escapeHtml(sheet.name)}</h3><table><thead>${header}</thead><tbody>${rows}</tbody></table></section>`
-  }).join('')
-}
-
 function renderSpreadsheetTypst(workbook: SpreadsheetExportWorkbook): string {
   return workbook.sheets.map((sheet) => {
     const columns = sheet.columns.length + 1
@@ -828,26 +596,6 @@ function renderSpreadsheetTypst(workbook: SpreadsheetExportWorkbook): string {
     ]
     return `== ${escapeTypst(sheet.name)}\n\n#table(columns: ${columns}, ${cells.flat().map(cell => `[${escapeTypst(cell)}]`).join(', ')})\n\n`
   }).join('')
-}
-
-function renderImageOcclusionHtml(
-  state: ImageOcclusionExportState,
-  inlineAsset: (src: string) => string,
-): string {
-  const image = inlineAsset(state.image.src)
-  const shapes = state.shapes.map((shape) => {
-    if (shape.kind === 'brush') {
-      const points = shape.points.reduce((result, value, index) => `${result}${index % 2 === 0 ? (index === 0 ? 'M' : ' L') : ' '}${value}`, '')
-      return `<path d="${points}" vector-effect="non-scaling-stroke" fill="none" stroke="currentColor"/>`
-    }
-    const tag = shape.kind === 'ellipse' ? 'ellipse' : 'rect'
-    return tag === 'ellipse'
-      ? `<ellipse cx="${shape.x + shape.width / 2}" cy="${shape.y + shape.height / 2}" rx="${shape.width / 2}" ry="${shape.height / 2}" fill="none" stroke="currentColor"/>`
-      : `<rect x="${shape.x}" y="${shape.y}" width="${shape.width}" height="${shape.height}" fill="none" stroke="currentColor"/>`
-  }).join('')
-  return image.length === 0
-    ? '<p class="missing-resource">[image unavailable]</p>'
-    : `<figure class="image-occlusion"><div class="image-occlusion-canvas"><img src="${escapeHtml(image)}" alt=""><svg viewBox="0 0 1 1" preserveAspectRatio="none">${shapes}</svg></div><figcaption>${escapeHtml(state.mode)}</figcaption></figure>`
 }
 
 function renderImageOcclusionTypst(
@@ -970,7 +718,7 @@ function sceneElementSvg(
   const opacity = Math.min(1, Math.max(0, sceneNumber(element.opacity, 100) / 100))
   const strokeWidth = Math.max(0.5, sceneNumber(element.strokeWidth, 1))
   const fill = element.fillStyle === 'solid' ? background : 'transparent'
-  const common = `fill="${escapeHtml(fill)}" stroke="${escapeHtml(stroke)}" stroke-width="${strokeWidth}" opacity="${opacity}"`
+  const common = `fill="${escapeXml(fill)}" stroke="${escapeXml(stroke)}" stroke-width="${strokeWidth}" opacity="${opacity}"`
   if (type === 'rectangle')
     return `<rect x="${x}" y="${y}" width="${Math.max(0, width)}" height="${Math.max(0, height)}" ${common}/>`
   if (type === 'diamond')
@@ -981,7 +729,7 @@ function sceneElementSvg(
     const points = Array.isArray(element.points) ? element.points : []
     const endX = x + (points.length >= 2 ? sceneNumber(points.at(-2), width) : width)
     const endY = y + (points.length >= 1 ? sceneNumber(points.at(-1), height) : height)
-    return `<line x1="${x}" y1="${y}" x2="${endX}" y2="${endY}" fill="none" stroke="${escapeHtml(stroke)}" stroke-width="${strokeWidth}" opacity="${opacity}"/>`
+    return `<line x1="${x}" y1="${y}" x2="${endX}" y2="${endY}" fill="none" stroke="${escapeXml(stroke)}" stroke-width="${strokeWidth}" opacity="${opacity}"/>`
   }
   if (type === 'freedraw') {
     const points = Array.isArray(element.points) ? element.points : []
@@ -992,11 +740,11 @@ function sceneElementSvg(
         return `${result}${index === 0 ? 'M' : ' L'}${x + value}`
       return `${result} ${y + value}`
     }, '')
-    return path.length === 0 ? '' : `<path d="${escapeHtml(path)}" fill="none" stroke="${escapeHtml(stroke)}" stroke-width="${strokeWidth}" opacity="${opacity}"/>`
+    return path.length === 0 ? '' : `<path d="${escapeXml(path)}" fill="none" stroke="${escapeXml(stroke)}" stroke-width="${strokeWidth}" opacity="${opacity}"/>`
   }
   if (type === 'text') {
     const text = typeof element.text === 'string' ? element.text : ''
-    return `<text x="${x}" y="${y + Math.max(16, sceneNumber(element.fontSize, 16))}" fill="${escapeHtml(stroke)}" font-size="${Math.max(8, sceneNumber(element.fontSize, 16))}" opacity="${opacity}">${escapeHtml(text)}</text>`
+    return `<text x="${x}" y="${y + Math.max(16, sceneNumber(element.fontSize, 16))}" fill="${escapeXml(stroke)}" font-size="${Math.max(8, sceneNumber(element.fontSize, 16))}" opacity="${opacity}">${escapeXml(text)}</text>`
   }
   if (type === 'image') {
     const source = sceneFileSource(files, element.fileId)
@@ -1014,7 +762,7 @@ function sceneElementSvg(
     }
     return image.length === 0
       ? `<rect x="${x}" y="${y}" width="${Math.max(0, width)}" height="${Math.max(0, height)}" fill="#f5f5f5" stroke="#a33"/><text x="${x + 8}" y="${y + 20}" fill="#a33">[image unavailable]</text>`
-      : `<image href="${escapeHtml(image)}" x="${x}" y="${y}" width="${Math.max(0, width)}" height="${Math.max(0, height)}" preserveAspectRatio="none" opacity="${opacity}"/>`
+      : `<image href="${escapeXml(image)}" x="${x}" y="${y}" width="${Math.max(0, width)}" height="${Math.max(0, height)}" preserveAspectRatio="none" opacity="${opacity}"/>`
   }
   diagnostics?.push({
     code: 'unsupported-whiteboard-element',
@@ -1025,7 +773,7 @@ function sceneElementSvg(
     reason: 'element-kind-not-supported',
     severity: 'warning',
   })
-  return `<text x="${x}" y="${y + 16}" fill="#a33">[unsupported whiteboard element: ${escapeHtml(type)}]</text>`
+  return `<text x="${x}" y="${y + 16}" fill="#a33">[unsupported whiteboard element: ${escapeXml(type)}]</text>`
 }
 
 function renderWhiteboardSceneSvg(
@@ -1054,7 +802,7 @@ function renderWhiteboardSceneSvg(
   const bounds = sceneBounds(elements)
   const background = sceneColor(sceneRecord(value.appState)?.viewBackgroundColor, '#ffffff')
   const body = elements.map((element, index) => sceneElementSvg(element, files, inlineAsset, diagnostics, `${path}.elements[${index}]`)).join('')
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${bounds.x} ${bounds.y} ${bounds.width} ${bounds.height}" role="img" aria-label="Whiteboard scene"><rect x="${bounds.x}" y="${bounds.y}" width="${bounds.width}" height="${bounds.height}" fill="${escapeHtml(background)}"/>${body}</svg>`
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${bounds.x} ${bounds.y} ${bounds.width} ${bounds.height}" role="img" aria-label="Whiteboard scene"><rect x="${bounds.x}" y="${bounds.y}" width="${bounds.width}" height="${bounds.height}" fill="${escapeXml(background)}"/>${body}</svg>`
 }
 
 export class NoteTransferApplication {
@@ -1213,8 +961,6 @@ export class NoteTransferApplication {
   ): Promise<Extract<DesktopNoteExportResult, { status: 'saved' }> | { status: 'cancelled' }> {
     if (format === 'memo')
       return this.#exportMemo(noteId, owner, signal)
-    if (format === 'html')
-      return this.#exportHtml(noteId, owner, signal)
     return this.#exportPdf(noteId, owner, signal)
   }
 
@@ -1293,40 +1039,6 @@ export class NoteTransferApplication {
     return { diagnostics: [], path: destination.filePath, status: 'saved' }
   }
 
-  async exportHtml(noteId: string, owner: BrowserWindow | null): Promise<DesktopNoteExportResult> {
-    const result = await this.#operations.runSingleFlight(() => this.#exportHtml(noteId, owner))
-    if (result.status === 'busy')
-      throw new Error('Another Note transfer is already in progress')
-    return result.value
-  }
-
-  async #exportHtml(noteId: string, owner: BrowserWindow | null, signal?: AbortSignal): Promise<DesktopNoteExportResult> {
-    throwIfAborted(signal)
-    if (!(await this.#dependencies.flushRenderer()))
-      throw new Error('The Note could not be flushed before export')
-    throwIfAborted(signal)
-    const note = await this.#dependencies.notes.getNote({ noteId })
-    const source = createEditorNote({ id: note.id, snapshot: note.snapshot })
-    const resources = await this.#resolveExportResources(source)
-    const document = projectExportDocument(source)
-    const inlineAsset = (src: string): string => resources.html.get(src) ?? ''
-    const body = entriesHtml(document, inlineAsset, resources.diagnostics)
-    const warnings = resources.diagnostics.length === 0
-      ? ''
-      : `<aside class="export-warnings"><strong>Export warnings</strong><ul>${resources.diagnostics.map(diagnostic => `<li>${escapeHtml(diagnostic.message)}</li>`).join('')}</ul></aside>`
-    const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>${escapeHtml(note.title)}</title><style>body{max-width:820px;margin:40px auto;padding:0 24px;color:#202124;font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}h1{font-size:2em;border-bottom:1px solid #ddd;padding-bottom:.3em}h2,h3{margin-top:1.5em}img,svg{max-width:100%;height:auto}figure{margin:1.25em 0}figure figcaption{color:#666;font-size:.9em}pre{padding:12px;background:#f5f5f5;overflow:auto}.outline-item{display:flex;gap:.6em;align-items:flex-start;margin:.25em 0;padding-left:1em}.outline-item>div{flex:1}.list-marker{color:#6b7280;line-height:1.65}.task-marker{display:inline-flex;flex:0 0 1.05em;width:1.05em;height:1.05em;margin-top:.35em;align-items:center;justify-content:center;box-sizing:border-box;border:1.5px solid #9ca3af;border-radius:999px;color:#fff;font-size:.72em;line-height:1}.task-marker[data-task-status="doing"]{border-color:#4f46e5;color:#4f46e5}.task-marker[data-task-status="done"]{border-color:#4f46e5;background:#4f46e5}.task-item[data-task-status="done"] .task-content{color:#6b7280;text-decoration:line-through}.missing-resource,.export-warnings{color:#a33}.export-warnings{border:1px solid #e5a0a0;padding:12px}.export-warnings ul{margin:.5em 0 0}table{border-collapse:collapse;max-width:100%;width:100%}th,td{border:1px solid #ccc;padding:.35em;text-align:left;vertical-align:top}</style></head><body><h1>${escapeHtml(note.title)}</h1>${warnings}${body}</body></html>`
-    const destination = await showSaveDialog(owner, {
-      defaultPath: `${note.title.replaceAll(/[\\/:*?"<>|]/gu, '_')}.html`,
-      filters: [{ extensions: ['html'], name: 'HTML' }],
-      properties: ['createDirectory', 'showOverwriteConfirmation'],
-    })
-    if (destination.canceled || !destination.filePath)
-      return { status: 'cancelled' }
-    throwIfAborted(signal)
-    await atomicWrite(destination.filePath, Buffer.from(html, 'utf8'))
-    return { diagnostics: resources.diagnostics, path: destination.filePath, status: 'saved' }
-  }
-
   async exportPdf(noteId: string, owner: BrowserWindow | null): Promise<DesktopNoteExportResult> {
     const result = await this.#operations.runSingleFlight(() => this.#exportPdf(noteId, owner))
     if (result.status === 'busy')
@@ -1347,7 +1059,7 @@ export class NoteTransferApplication {
     const document = projectExportDocument(source)
     const diagnostics: DesktopExportDiagnostic[] = []
     const inlineAsset = (src: string): string => resources.pdf.get(src)?.path ?? ''
-    const sceneInlineAsset = (src: string): string => resources.html.get(src) ?? ''
+    const sceneInlineAsset = (src: string): string => resources.inline.get(src) ?? ''
     const whiteboardScenes = new Map<string, { path: string, source: string }>()
     const visitScenes = (entries: readonly ExportDocumentEntry[]): void => {
       for (const entry of entries) {
@@ -1367,7 +1079,7 @@ export class NoteTransferApplication {
     // The bundled Xiaolai files are browser-only WOFF2 Unicode subsets; Typst 0.7
     // cannot discover a family from them, so naming Xiaolai here creates a false
     // warning and silently falls back anyway. Keep Typst's portable CJK fallback.
-    const typst = `#set page(paper: "a4", margin: 2cm)\n#set text(font: ("Libertinus Serif", "Hiragino Sans GB"), size: 11pt)\n= ${escapeTypst(note.title)}\n\n${warningText}${entriesTypst(document, inlineAsset, topicId => whiteboardScenes.get(topicId)?.path ?? '')}`
+    const typst = `#set page(paper: "a4", margin: 2cm)\n#set text(font: ("Libertinus Serif", "Hiragino Sans GB"), size: 11pt)\n${typstTaskPrelude}\n= ${escapeTypst(note.title)}\n\n${warningText}${entriesTypst(document, inlineAsset, topicId => whiteboardScenes.get(topicId)?.path ?? '')}`
     const root = await mkdtemp(join(tmpdir(), 'memorilo-typst-export-'))
     try {
       const sourcePath = join(root, 'note.typ')
@@ -1472,7 +1184,7 @@ export class NoteTransferApplication {
 
   async #resolveExportResources(note: ReturnType<typeof createEditorNote>): Promise<ExportResources> {
     const diagnostics: DesktopExportDiagnostic[] = []
-    const html = new Map<string, string>()
+    const inline = new Map<string, string>()
     const pdf = new Map<string, { bytes: Uint8Array, path: string }>()
     const managed = new Map((await this.#dependencies.storage.assets.list()).map(asset => [asset.fileName, asset]))
     const sources = collectExportImageSources(note)
@@ -1505,7 +1217,7 @@ export class NoteTransferApplication {
         if (resolved.bytes.byteLength > maxExportImageBytes)
           throw new Error('Image exceeds the 50 MiB export limit')
         const dataUrl = `data:${resolved.mimeType};base64,${Buffer.from(resolved.bytes).toString('base64')}`
-        html.set(resource.source, dataUrl)
+        inline.set(resource.source, dataUrl)
         const extension = exportImageMimeExtensions[resolved.mimeType]
         if (extension !== undefined) {
           const fileName = `${randomUUID()}${extension}`
@@ -1516,21 +1228,18 @@ export class NoteTransferApplication {
       catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         const invalidManagedUri = managedFileName === null && resource.source.startsWith('memorilo:')
-        const externalFallback = managedFileName === null && isHttpImageSource(resource.source)
         diagnostics.push({
-          code: invalidManagedUri ? 'invalid-managed-uri' : externalFallback ? 'external-image-fallback' : 'missing-image',
-          fallback: externalFallback ? 'external-url-in-html' : 'visible-placeholder',
+          code: invalidManagedUri ? 'invalid-managed-uri' : 'missing-image',
+          fallback: 'visible-placeholder',
           kind: resource.kind,
-          message: `${resource.path}: ${message}${externalFallback ? '; kept as an external URL in HTML and omitted from PDF' : ''}`,
+          message: `${resource.path}: ${message}`,
           path: resource.path,
           reason: message,
           severity: 'warning',
         })
-        if (externalFallback)
-          html.set(resource.source, resource.source)
       }
     }
-    return { diagnostics, html, pdf }
+    return { diagnostics, inline, pdf }
   }
 
   async #importMemo(sourcePath: string, owner: BrowserWindow | null, signal?: AbortSignal): Promise<DesktopNoteImportResult> {
@@ -2091,43 +1800,6 @@ export class NoteTransferApplication {
   }
 }
 
-function entriesHtml(
-  document: ExportDocument,
-  inlineAsset: (src: string) => string,
-  diagnostics?: DesktopExportDiagnostic[],
-): string {
-  const render = (entries: readonly ExportDocumentEntry[]): string => entries.map((entry) => {
-    const children = render(entry.children)
-    if (entry.kind === 'folder')
-      return `<section><h2>${escapeHtml(entry.title)}</h2>${children}</section>`
-    const validation = entry.validation
-    if (validation === undefined)
-      return `<article><h2>${escapeHtml(entry.title)}</h2><p class="missing-resource">[content unavailable]</p>${children}</article>`
-    const readerReference = entry.readerReference
-    const readerSource = readerReference?.source.kind === 'region'
-      ? (() => {
-          const src = inlineAsset(readerReference.source.imageSrc)
-          return src.length === 0
-            ? `<aside class="missing-resource">Reader region: ${escapeHtml(readerReference.source.location)} (image unavailable)</aside>`
-            : `<aside class="reader-source"><img src="${escapeHtml(src)}" alt=""><span>${escapeHtml(readerReference.source.location)}</span></aside>`
-        })()
-      : readerReference?.source.kind === 'text'
-        ? `<aside class="reader-source"><blockquote>${escapeHtml(readerReference.source.text)}</blockquote><span>${escapeHtml(readerReference.source.location)}</span></aside>`
-        : ''
-    const content = 'document' in validation
-      ? renderNode(validation.document, inlineAsset, diagnostics, `topic:${entry.id}.document`)
-      : 'embeddedEditors' in validation
-        ? `${renderWhiteboardSceneSvg(validation.scene, inlineAsset, diagnostics, `topic:${entry.id}.whiteboard`) === null ? '<p class="missing-resource">[Whiteboard scene unavailable]</p>' : `<figure class="whiteboard-scene">${renderWhiteboardSceneSvg(validation.scene, inlineAsset)}<figcaption>Whiteboard scene (static)</figcaption></figure>`}${Object.entries(validation.embeddedEditors).map(([editorId, editor]) => renderNode(editor.document, inlineAsset, diagnostics, `topic:${entry.id}.embeddedEditors.${editorId}`)).join('')}`
-        : 'workbook' in validation
-          ? renderSpreadsheetHtml(validation.workbook as unknown as SpreadsheetExportWorkbook)
-          : 'state' in validation
-            ? renderImageOcclusionHtml(validation.state as ImageOcclusionExportState, inlineAsset)
-            : '<p>[content unavailable]</p>'
-    return `<article><h2>${escapeHtml(entry.title)}</h2>${readerSource}${content}${children}</article>`
-  }).join('')
-  return render(document.entries)
-}
-
 function entriesTypst(
   document: ExportDocument,
   inlineAsset: (src: string) => string,
@@ -2151,9 +1823,9 @@ function entriesTypst(
         ? `#quote[${escapeTypst(readerReference.source.text)}] — ${escapeTypst(readerReference.source.location)}\n\n`
         : ''
     const content = 'document' in validation
-      ? renderTypstNode(validation.document, inlineAsset)
+      ? renderTypstContent(validation.document, { inlineAsset })
       : 'embeddedEditors' in validation
-        ? `${whiteboardScenePath(entry.id).length === 0 ? '[Whiteboard scene unavailable]\n\n' : `#image("${escapeTypstString(whiteboardScenePath(entry.id))}", width: 100%)\n\n`}${Object.values(validation.embeddedEditors).map(editor => renderTypstNode(editor.document, inlineAsset)).join('')}`
+        ? `${whiteboardScenePath(entry.id).length === 0 ? '[Whiteboard scene unavailable]\n\n' : `#image("${escapeTypstString(whiteboardScenePath(entry.id))}", width: 100%)\n\n`}${Object.values(validation.embeddedEditors).map(editor => renderTypstContent(editor.document, { inlineAsset })).join('')}`
         : 'workbook' in validation
           ? renderSpreadsheetTypst(validation.workbook as unknown as SpreadsheetExportWorkbook)
           : 'state' in validation

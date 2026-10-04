@@ -8,7 +8,6 @@
   "viewOptions": "View options",
   "importMarkdown": "Import Markdown",
   "importNote": "Import…",
-  "exportHtml": "Export HTML",
   "exportPdf": "Export Memo PDF",
   "renameNote": "Rename Note",
   "renameNoteFor": "Rename Note: {{title}}",

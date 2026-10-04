@@ -4,6 +4,7 @@ import type {
   DesktopJournalSummary,
   JournalDate,
 } from '@memorilo/desktop-api'
+import type { NoteExportFormat } from '../notes/note-export-menu'
 import type { JournalFeedHandle } from './journal-feed'
 import type { JournalRouteCoordinator } from './journal-route-coordinator'
 import * as stylex from '@stylexjs/stylex'
@@ -20,9 +21,10 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'react-toastify/unstyled'
 import { desktopRequests } from '../../shared/desktop-requests'
 import { desktopEffect, desktopEffectQuery } from '../../shared/effect-query'
-
 import { errorMessage } from '../../shared/error-message'
+
 import { createEditorNoteSessionCache } from '../notes/note-runtime'
+import { runNoteExport } from '../notes/note-transfer-operation'
 import { useFlushNotePersistence } from '../notes/persistence/note-persistence-hooks'
 import { noteQueryKeys } from '../notes/query-keys'
 import { useJournalCalendarTitlebar } from './journal-calendar-titlebar'
@@ -62,6 +64,8 @@ export function JournalsPage({
   const [selectedDate, setSelectedDate] = useState<JournalDate | null>(null)
   const [selectedJournal, setSelectedJournal] = useState<DesktopJournalSummary | null>(null)
   const [selectingDate, setSelectingDate] = useState(false)
+  const [exporting, setExporting] = useState(false)
+  const [transferOperationId, setTransferOperationId] = useState<string | null>(null)
 
   const todayQuery = useQuery(desktopEffectQuery.queryOptions({
     gcTime: 0,
@@ -111,6 +115,41 @@ export function JournalsPage({
     () => buildJournalFeed(today, pastQuery.data?.pages ?? [], selectedJournal),
     [pastQuery.data?.pages, selectedJournal, today],
   )
+  const exportDate = selectedDate ?? today?.journalDate
+  const exportJournal = exportDate === undefined || today === undefined
+    ? null
+    : feedItems.find(item => item.journalDate === exportDate) ?? journalSummary(today)
+  const handleExport = useCallback(async (format: NoteExportFormat) => {
+    if (exporting || exportJournal === null)
+      return
+    setExporting(true)
+    try {
+      const result = await runNoteExport(format, exportJournal.noteId, undefined, undefined, setTransferOperationId)
+      if (result.phase === 'saved') {
+        if (result.result.diagnostics.length > 0)
+          toast.warning(`${result.result.path}\n${result.result.diagnostics.map(diagnostic => diagnostic.message).join('\n')}`, { autoClose: 10_000 })
+        else
+          toast.success(result.result.path, { autoClose: 5_000 })
+      }
+      else if (result.phase === 'failed') {
+        throw new Error(result.error.message)
+      }
+    }
+    catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error))
+    }
+    finally {
+      setTransferOperationId(null)
+      setExporting(false)
+    }
+  }, [exportJournal, exporting])
+  const cancelExport = useCallback(() => {
+    if (transferOperationId === null)
+      return
+    void desktopRequests.cancelNoteTransfer(transferOperationId).catch((error) => {
+      toast.error(error instanceof Error ? error.message : String(error))
+    })
+  }, [transferOperationId])
   const fetchNextPage = pastQuery.fetchNextPage
   const handleFetchNextPage = useCallback(() => {
     void fetchNextPage()
@@ -181,6 +220,9 @@ export function JournalsPage({
   }, [feedItems, queryClient, recordJournalOpened, t, today])
   selectJournalDateRef.current = selectJournalDate
   useJournalCalendarTitlebar({
+    exporting,
+    onCancelExport: cancelExport,
+    onExport: handleExport,
     onSelectDate: selectJournalDate,
     selectedDate,
     selectingDate,

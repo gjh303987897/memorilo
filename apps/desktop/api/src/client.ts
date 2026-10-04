@@ -131,7 +131,6 @@ export function createDesktopApiClient(options: CreateDesktopApiClientOptions): 
     deleteNote: input => rpc('notes', 'deleteNote', input),
     deleteShelfReading: readingId => rpc('shelf', 'deleteReading', readingId),
     exportDatabase: () => rpc('backup', 'exportDatabase'),
-    exportNoteHtml: input => rpc('notes', 'exportNoteHtml', input),
     exportNoteMemo: input => rpc('notes', 'exportNoteMemo', input),
     exportNotePdf: input => rpc('notes', 'exportNotePdf', input),
     startNoteExport: input => rpc('notes', 'startNoteExport', input),

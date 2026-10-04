@@ -1,4 +1,5 @@
 import type { JournalDate } from '@memorilo/desktop-api'
+import type { NoteExportFormat } from '../notes/note-export-menu'
 import { useQuery } from '@tanstack/react-query'
 import { useCallback, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -6,6 +7,7 @@ import { useDesktopConfiguration } from '../../shared/configuration'
 import { desktopRequests } from '../../shared/desktop-requests'
 import { desktopEffect, desktopEffectQuery } from '../../shared/effect-query'
 import { usePageTitlebar } from '../../shared/page-titlebar'
+import { NoteExportMenu } from '../notes/note-export-menu'
 import { JournalCalendarControl } from './journal-calendar-control'
 import {
   fromJournalDate,
@@ -15,6 +17,9 @@ import {
 import { journalQueryKeys } from './query-keys'
 
 interface UseJournalCalendarTitlebarOptions {
+  exporting: boolean
+  onCancelExport: () => void
+  onExport: (format: NoteExportFormat) => void
   onSelectDate: (journalDate: JournalDate) => void
   selectedDate: JournalDate | null
   selectingDate: boolean
@@ -22,6 +27,9 @@ interface UseJournalCalendarTitlebarOptions {
 }
 
 export function useJournalCalendarTitlebar({
+  exporting,
+  onCancelExport,
+  onExport,
   onSelectDate,
   selectedDate,
   selectingDate,
@@ -61,23 +69,26 @@ export function useJournalCalendarTitlebar({
     title: t('journals'),
     trailing: today && effectiveSelectedDate
       ? (
-          <JournalCalendarControl
-            activeMonth={activeMonth}
-            calendarLabel={t('journalCalendarLabel')}
-            close={closeCalendar}
-            existingDates={knownDates}
-            loadingDates={datesQuery.isFetching || selectingDate}
-            locale={locale}
-            nextMonthLabel={t('nextMonth')}
-            open={calendarOpen}
-            previousMonthLabel={t('previousMonth')}
-            selectedDate={effectiveSelectedDate}
-            today={today}
-            weekStart={configuration.weekStart}
-            onActiveMonthChange={changeActiveMonth}
-            onOpen={openCalendar}
-            onSelectDate={onSelectDate}
-          />
+          <>
+            <JournalCalendarControl
+              activeMonth={activeMonth}
+              calendarLabel={t('journalCalendarLabel')}
+              close={closeCalendar}
+              existingDates={knownDates}
+              loadingDates={datesQuery.isFetching || selectingDate}
+              locale={locale}
+              nextMonthLabel={t('nextMonth')}
+              open={calendarOpen}
+              previousMonthLabel={t('previousMonth')}
+              selectedDate={effectiveSelectedDate}
+              today={today}
+              weekStart={configuration.weekStart}
+              onActiveMonthChange={changeActiveMonth}
+              onOpen={openCalendar}
+              onSelectDate={onSelectDate}
+            />
+            <NoteExportMenu exporting={exporting} onCancelExport={onCancelExport} onExport={onExport} />
+          </>
         )
       : undefined,
   }), [
@@ -88,8 +99,11 @@ export function useJournalCalendarTitlebar({
     configuration.weekStart,
     datesQuery.isFetching,
     effectiveSelectedDate,
+    exporting,
     knownDates,
     locale,
+    onCancelExport,
+    onExport,
     onSelectDate,
     openCalendar,
     selectingDate,
