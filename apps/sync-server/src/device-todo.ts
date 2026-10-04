@@ -59,6 +59,7 @@ export interface TodoCalendarFeedOptions {
   readonly calendarEvents?: readonly { readonly startDate: string, readonly subscriptionId: string }[]
   readonly completed: 'hide' | 'show'
   readonly from: string
+  readonly timeZone?: string
   readonly through: string
   readonly undated: 'hide' | 'today'
   readonly undatedDate: string
@@ -435,6 +436,7 @@ export function createDeviceTodoModule(options: DeviceTodoModuleOptions): Device
       const body = serializeTodoIcsFeed(events.slice(0, 10_000), {
         calendarName: 'Memorilo Todos',
         generatedAt: '1970-01-01T00:00:00Z',
+        timeZone: input.options.timeZone,
       })
       if (Buffer.byteLength(body, 'utf8') > 2_000_000)
         throw new DeviceTodoError('invalid_request', 'Todo calendar feed is too large')
