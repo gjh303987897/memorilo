@@ -1,6 +1,19 @@
+import { Fragment } from 'prosekit/pm/model'
 import { describe, expect, it } from 'vitest'
+import { topicProseMirrorSchema } from '../schema/topic-prosemirror-schema'
 import { renderEditorContent } from './editor-content'
 import { renderTypstContent, typstTaskPrelude } from './typst-content'
+
+function registeredNode(type: string, depth = 0): ReturnType<typeof topicProseMirrorSchema.nodes[string]['createAndFill']> {
+  const nodeType = topicProseMirrorSchema.nodes[type]
+  if (nodeType === undefined)
+    return null
+  if (type === 'text')
+    return topicProseMirrorSchema.text('sample')
+  const childType = depth < 8 ? nodeType.contentMatch.defaultType : null
+  const child = childType === null || childType === undefined ? null : registeredNode(childType.name, depth + 1)
+  return nodeType.createAndFill(undefined, child === null ? undefined : Fragment.from(child))
+}
 
 describe('editor export rendering', () => {
   it('keeps nested nodes and marks in one renderer seam', () => {
@@ -74,5 +87,21 @@ describe('editor export rendering', () => {
     })
 
     expect(source).toContain('$ frac(a, sqrt(x)) $')
+  })
+
+  it('renders every node currently registered in the editor schema', () => {
+    const failures: string[] = []
+    for (const type of Object.keys(topicProseMirrorSchema.nodes)) {
+      const node = registeredNode(type)
+      if (node === null || node === undefined) {
+        failures.push(`${type}: schema could not create a representative node`)
+        continue
+      }
+      const source = renderTypstContent(node.toJSON())
+      if (source.trim().length === 0)
+        failures.push(`${type}: Typst renderer returned an empty fragment`)
+    }
+
+    expect(failures).toEqual([])
   })
 })
