@@ -1,4 +1,5 @@
 import type { NodeJSON } from 'prosekit/core'
+import type { Node as ProseMirrorNode } from 'prosekit/pm/model'
 import type { EditorAdapters } from '../adapters/editor-adapters'
 import type { CardReviewRuntime } from '../card/card-review-runtime'
 import type { EditorShortcutConfiguration } from '../common/formatting-shortcuts'
@@ -17,6 +18,7 @@ import {
 import i18next from 'i18next'
 import { defineBasicExtension } from 'prosekit/basic'
 import {
+  defineClipboardSerializer,
   defineCommands,
   defineDocChangeHandler,
   defineKeymap,
@@ -55,6 +57,38 @@ import { defineInlineMathInputRule } from './inline-math-input-rule'
 import { defineMathKeymapExtension } from './math-keymap-extension'
 import { createNetworkImagePaste } from './network-image-paste'
 import { defineTag } from './tag-extension'
+
+function defineTaskClipboardSerializer() {
+  // Flat-list's native clipboard serializer bypasses the schema's custom task attributes.
+  return withPriority(defineClipboardSerializer({
+    serializeFragmentWrapper: serializeFragment => (fragment, ...args) => {
+      const dom = serializeFragment(fragment, ...args)
+      const targets = dom.querySelectorAll('li.prosemirror-flat-list')
+      const lists: ProseMirrorNode[] = []
+      fragment.descendants((node) => {
+        if (node.type.name === 'list')
+          lists.push(node)
+      })
+      lists.forEach((node, index) => {
+        const target = targets.item(index)
+        if (!target || node.attrs.kind !== 'task')
+          return
+        const output = node.type.spec.toDOM?.(node)
+        if (!Array.isArray(output) || output[1] === null || typeof output[1] !== 'object' || Array.isArray(output[1]))
+          return
+        Object.entries(output[1]).forEach(([name, value]) => {
+          if (!name.startsWith('data-task-'))
+            return
+          if (value === null || value === undefined)
+            target.removeAttribute(name)
+          else
+            target.setAttribute(name, String(value))
+        })
+      })
+      return dom
+    },
+  }), Priority.highest)
+}
 
 function defineLoroTree(topic: EditorTopicRuntime) {
   const keymap = {
@@ -125,6 +159,7 @@ export function createEditorExtension(
     defineImageView(imageOcclusion),
     defineTagView(tagRuntime),
     defineTaskListView(adapters.taskActions),
+    defineTaskClipboardSerializer(),
     defineImageUploadHandler({
       uploader,
       onError: ({ error }) => {
