@@ -40,11 +40,16 @@ describe('settings renderer', () => {
     fireEvent.change(recurringTaskCompletion, { target: { value: 'move-next-to-due-date' } })
     await waitFor(() => expect(store.getSnapshot().todo.recurringTaskCompletionAction).toBe('move-next-to-due-date'))
 
-    fireEvent.click(rendered.getByRole('button', { name: 'Sync' }))
-    expect(await rendered.findByRole('heading', { name: 'Sync' })).toBeInTheDocument()
-    expect(rendered.getByRole('heading', { name: 'Sync Server' })).toBeInTheDocument()
+    fireEvent.click(rendered.getByRole('button', { name: 'Sync Server' }))
+    expect(await rendered.findByRole('heading', { level: 1, name: 'Sync Server' })).toBeInTheDocument()
+    expect(rendered.getByRole('switch', { name: 'Enable Sync Server' })).toBeInTheDocument()
+    expect(rendered.queryByText('P2P sync')).not.toBeInTheDocument()
+
+    fireEvent.click(rendered.getByRole('button', { name: 'Local Network Sync' }))
+    expect(await rendered.findByRole('heading', { level: 1, name: 'Local Network Sync' })).toBeInTheDocument()
     expect(rendered.getByText('P2P sync')).toBeInTheDocument()
     expect(rendered.getByRole('button', { name: 'Allow discovery for 5 minutes' })).toBeDisabled()
+    expect(rendered.queryByRole('switch', { name: 'Enable Sync Server' })).not.toBeInTheDocument()
 
     fireEvent.click(rendered.getByRole('button', { name: 'Notes & Editor' }))
     expect(await rendered.findByRole('heading', { name: 'Notes & Editor' })).toBeInTheDocument()

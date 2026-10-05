@@ -84,7 +84,7 @@ function createWindow() {
       }
     : {}
   const window = new BrowserWindow({
-    autoHideMenuBar: process.platform !== 'darwin',
+    autoHideMenuBar: false,
     backgroundColor: '#ffffff',
     height: 800,
     minHeight: 640,

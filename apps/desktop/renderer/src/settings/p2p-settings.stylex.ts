@@ -4,7 +4,11 @@ import * as stylex from '@stylexjs/stylex'
 export const p2pSettingsStyles = stylex.create({
   root: {
     display: 'grid',
-    gap: 10,
+    gap: 16,
+  },
+  majorSection: {
+    display: 'grid',
+    gap: 12,
   },
   surface: {
     overflow: 'hidden',
@@ -104,7 +108,7 @@ export const p2pSettingsStyles = stylex.create({
     height: 6,
     borderRadius: 3,
     backgroundColor: 'currentColor',
-    boxShadow: '0 0 0 2px color-mix(in srgb, currentColor 14%, transparent)',
+    boxShadow: `0 0 0 2px ${uiColors.divider}`,
   },
   settingRow: {
     'display': 'grid',
@@ -320,5 +324,8 @@ export const p2pSettingsStyles = stylex.create({
     paddingInline: 4,
     fontSize: 11,
     lineHeight: '16px',
+  },
+  serverConfigInput: {
+    opacity: 0.7,
   },
 })

@@ -143,7 +143,7 @@ export const sidebarStyles = stylex.create({
     boxShadow: {
       'default': 'none',
       ':focus-visible': `0 0 0 2px ${uiColors.focus}`,
-      ':is([data-state="active"])': uiColors.controlShadow,
+      ':is([data-state="active"])': uiColors.navSelectedShadow,
     },
   },
   settingsItem: {
@@ -176,7 +176,7 @@ export const sidebarStyles = stylex.create({
     boxShadow: {
       'default': 'none',
       ':focus-visible': `0 0 0 2px ${uiColors.focus}`,
-      ':is([data-state="active"])': uiColors.controlShadow,
+      ':is([data-state="active"])': uiColors.navSelectedShadow,
     },
     fontSize: 13,
     lineHeight: '18px',
