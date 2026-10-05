@@ -1,12 +1,10 @@
-import type { DesktopP2pDiscoveredPeer, DesktopP2pLocalDevice, DesktopP2pPairedDevice, DesktopP2pPairingRequest, DesktopP2pStatus, DesktopSyncServerStatus } from '@memorilo/desktop-api'
+import type { DesktopP2pDiscoveredPeer, DesktopP2pLocalDevice, DesktopP2pPairedDevice, DesktopP2pPairingRequest, DesktopP2pStatus } from '@memorilo/desktop-api'
 import type { ReactNode } from 'react'
 import { Button, ButtonGroup, Status, TextField } from '@memorilo/ui'
 import * as stylex from '@stylexjs/stylex'
-import { Check, Laptop, Radar, Save, Server, ShieldCheck, Trash2, Wifi } from 'lucide-react'
+import { Check, Laptop, Radar, Save, ShieldCheck, Trash2, Wifi } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { useDesktopConfiguration } from '../shared/configuration'
-import { desktopRequests } from '../shared/desktop-requests'
 import { errorMessage } from '../shared/error-message'
 import { p2pSettingsStyles as styles } from './p2p-settings.stylex'
 
@@ -14,40 +12,18 @@ function peerIdSummary(peerId: string): string {
   return peerId.length > 18 ? `${peerId.slice(0, 10)}…${peerId.slice(-6)}` : peerId
 }
 
-function peerIdFromInvitation(value: string): string | null {
-  const separator = value.indexOf('.')
-  if (separator < 0)
-    return null
-  try {
-    const encoded = value.slice(separator + 1).replace(/-/gu, '+').replace(/_/gu, '/')
-    const invitation = JSON.parse(atob(encoded.padEnd(Math.ceil(encoded.length / 4) * 4, '='))) as { peerId?: unknown }
-    return typeof invitation.peerId === 'string' && invitation.peerId.length > 0
-      ? invitation.peerId
-      : null
-  }
-  catch {
-    return null
-  }
-}
-
 export function P2pSettings() {
   const { t } = useTranslation('settings')
-  const configuration = useDesktopConfiguration()
   const available = typeof window.desktop !== 'undefined'
   const [devices, setDevices] = useState<readonly DesktopP2pPairedDevice[]>([])
   const [localDevice, setLocalDevice] = useState<DesktopP2pLocalDevice | null>(null)
   const [draftDeviceName, setDraftDeviceName] = useState('')
   const [nameDirty, setNameDirty] = useState(false)
   const [status, setStatus] = useState<DesktopP2pStatus | null>(null)
-  const [serverStatus, setServerStatus] = useState<DesktopSyncServerStatus | null>(null)
   const [peers, setPeers] = useState<readonly DesktopP2pDiscoveredPeer[]>([])
   const [requests, setRequests] = useState<readonly DesktopP2pPairingRequest[]>([])
   const [emojiByRequest, setEmojiByRequest] = useState<Record<string, string>>({})
   const [message, setMessage] = useState<string | null>(null)
-  const [serverInvitation, setServerInvitation] = useState('')
-  const [serverPairingResponse, setServerPairingResponse] = useState('')
-  const [serverCredential, setServerCredential] = useState('')
-  const [serverPeerId, setServerPeerId] = useState('')
 
   const reload = useCallback(async () => {
     if (!available)
@@ -87,30 +63,6 @@ export function P2pSettings() {
     const timer = window.setInterval(() => void reload(), 1000)
     return () => window.clearInterval(timer)
   }, [available, reload])
-
-  useEffect(() => {
-    if (!available)
-      return
-    let active = true
-    const unsubscribe = window.desktop.subscribeSyncServerEvents((event) => {
-      setServerStatus(event.status)
-      if (event.type === 'account-data-reset')
-        setMessage(t('syncServerDataResetDetected'))
-      else if (event.type === 'policy-changed')
-        setMessage(t('syncServerPolicyChanged'))
-    })
-    void window.desktop.p2p.getServerStatus().then((next) => {
-      if (active)
-        setServerStatus(next)
-    }).catch((error) => {
-      if (active)
-        setMessage(errorMessage(error))
-    })
-    return () => {
-      active = false
-      unsubscribe()
-    }
-  }, [available, t])
 
   const enableDiscovery = async () => {
     try {
@@ -168,45 +120,6 @@ export function P2pSettings() {
     }
   }
 
-  const acceptServerInvitation = async () => {
-    try {
-      const serverUrl = configuration.syncServer.url.trim()
-      if (serverUrl.length === 0)
-        throw new Error(t('syncServerUrlRequired'))
-      const invitation = serverInvitation.trim()
-      const peerId = peerIdFromInvitation(invitation)
-      if (peerId === null)
-        throw new Error(t('syncServerInvitationInvalid'))
-      const response = await window.desktop.p2p.acceptInvitation(invitation, serverUrl)
-      await desktopRequests.setConfigurationValue('syncServer.peerId', peerId)
-      setServerPeerId(peerId)
-      setServerPairingResponse(response)
-      setMessage(t('syncServerPairingResponseReady'))
-    }
-    catch (error) {
-      setMessage(errorMessage(error))
-    }
-  }
-
-  const completeServerPairing = async () => {
-    try {
-      const credential = serverCredential.trim()
-      const peerId = serverPeerId || configuration.syncServer.peerId.trim()
-      if (peerId.length === 0 || credential.length === 0)
-        throw new Error(t('syncServerCredentialRequired'))
-      await desktopRequests.setConfigurationValue('syncServer.peerId', peerId)
-      await window.desktop.p2p.installServerCredential(credential)
-      await desktopRequests.setConfigurationValue('syncServer.enabled', true)
-      setServerCredential('')
-      setServerInvitation('')
-      setServerPairingResponse('')
-      setMessage(t('syncServerPairingCompleted'))
-    }
-    catch (error) {
-      setMessage(errorMessage(error))
-    }
-  }
-
   const stateLabel = status?.state === 'ready'
     ? t('p2pStateReady')
     : status?.state === 'starting'
@@ -217,215 +130,128 @@ export function P2pSettings() {
   const pairingPeerIds = new Set(requests.map(request => request.peerId))
   const unpairedPeers = peers.filter(peer => !pairingPeerIds.has(peer.peerId))
   const nearbyDeviceCount = requests.length + unpairedPeers.length
-  const serverStateLabelKeys = {
-    'disabled': 'syncServerStateDisabled',
-    'setup-required': 'syncServerStateSetupRequired',
-    'restart-required': 'syncServerStateRestartRequired',
-    'connecting': 'syncServerStateConnecting',
-    'syncing': 'syncServerStateSyncing',
-    'synced': 'syncServerStateSynced',
-    'offline': 'syncServerStateOffline',
-    'error': 'syncServerStateError',
-  } as const
-  const serverStateKey = serverStatus?.state === undefined
-    ? 'syncServerStateLoading'
-    : serverStateLabelKeys[serverStatus.state]
-  const serverStateLabel = t(serverStateKey)
-  const serverModeDescription = serverStatus?.modes.includes('relay')
-    ? t('syncServerRelayWarning')
-    : serverStatus?.modes.includes('authoritative')
-      ? t('syncServerAuthoritativeDescription')
-      : t('syncServerStatusDescription')
 
   return (
     <div {...stylex.props(styles.root)} data-window-no-drag="">
-      <div {...stylex.props(styles.surface)}>
-        <section {...stylex.props(styles.identitySection)} aria-labelledby="p2p-local-device-heading">
-          <div {...stylex.props(styles.deviceGlyph)}>
-            <Laptop aria-hidden="true" size={22} strokeWidth={1.7} />
-          </div>
-          <div {...stylex.props(styles.identityCopy)}>
-            <span {...stylex.props(styles.identityEyebrow)}>{t('p2pStatus')}</span>
-            <div {...stylex.props(styles.identityHeadingLine)}>
-              <h2 id="p2p-local-device-heading" {...stylex.props(styles.identityTitle)}>
-                {localDevice?.deviceName ?? t('p2pUnavailable')}
-              </h2>
-              <span {...stylex.props(styles.connectionState, status?.state === 'ready' && styles.connectionStateReady)}>
-                <span aria-hidden="true" {...stylex.props(styles.stateDot)} />
-                {stateLabel}
-              </span>
+      <section {...stylex.props(styles.majorSection)}>
+        <div {...stylex.props(styles.surface)}>
+          <section {...stylex.props(styles.identitySection)} aria-labelledby="p2p-local-device-heading">
+            <div {...stylex.props(styles.deviceGlyph)}>
+              <Laptop aria-hidden="true" size={22} strokeWidth={1.7} />
             </div>
-            <p {...stylex.props(styles.identityDescription)}>
-              {t('p2pConnectionSummary', { count: status?.connectedPeers.length ?? 0 })}
-            </p>
-          </div>
-        </section>
-
-        <div {...stylex.props(styles.settingRow)}>
-          <div {...stylex.props(styles.rowCopy)}>
-            <span {...stylex.props(styles.rowLabel)}>{t('syncServerSection')}</span>
-            <p {...stylex.props(styles.rowDescription, serverStatus?.modes.includes('relay') && styles.serverWarning)}>
-              {serverModeDescription}
-            </p>
-          </div>
-          <div {...stylex.props(styles.serverSummary)} aria-live="polite">
-            <span {...stylex.props(styles.serverState, serverStatus?.state === 'synced' && styles.serverStateReady)}>
-              <Server aria-hidden="true" size={14} strokeWidth={1.8} />
-              {serverStateLabel}
-            </span>
-            {serverStatus?.url
-              ? <span {...stylex.props(styles.serverAddress)}>{serverStatus.url}</span>
-              : null}
-            {serverStatus && serverStatus.modes.length > 0
-              ? (
-                  <span {...stylex.props(styles.serverModes)}>
-                    {serverStatus.modes.map(mode => (
-                      <span key={mode} {...stylex.props(styles.serverMode)}>
-                        {mode === 'relay' ? t('syncServerModeRelay') : t('syncServerModeAuthoritative')}
-                      </span>
-                    ))}
-                  </span>
-                )
-              : null}
-            {serverStatus?.configured
-              ? (
-                  <span {...stylex.props(styles.serverEpochs)}>
-                    {t('syncServerEpochSummary', {
-                      generation: serverStatus.generation,
-                      policyEpoch: serverStatus.policyEpoch,
-                    })}
-                  </span>
-                )
-              : null}
-          </div>
-        </div>
-
-        <div {...stylex.props(styles.settingRow)}>
-          <div {...stylex.props(styles.rowCopy)}>
-            <label htmlFor="p2p-device-name" {...stylex.props(styles.rowLabel)}>{t('p2pDeviceName')}</label>
-            <p {...stylex.props(styles.rowDescription)}>{t('p2pDeviceNameDescription')}</p>
-          </div>
-          <ButtonGroup xstyle={styles.nameEditor}>
-            <TextField
-              id="p2p-device-name"
-              value={draftDeviceName}
-              variant="settings"
-              xstyle={styles.nameInput}
-              maxLength={80}
-              onChange={(event) => {
-                setDraftDeviceName(event.target.value)
-                setNameDirty(true)
-              }}
-            />
-            <Button
-              disabled={!available || !nameDirty || draftDeviceName.trim().length === 0}
-              variant="secondary"
-              xstyle={styles.compactButton}
-              onClick={() => void updateDeviceName()}
-            >
-              <Save aria-hidden="true" size={14} strokeWidth={2} />
-              {t('p2pSaveDeviceName')}
-            </Button>
-          </ButtonGroup>
-        </div>
-
-        <div {...stylex.props(styles.settingRow)}>
-          <div {...stylex.props(styles.rowCopy)}>
-            <span {...stylex.props(styles.rowLabel)}>{t('p2pDiscovery')}</span>
-            <p {...stylex.props(styles.rowDescription)}>{t('p2pDiscoveryDescription')}</p>
-          </div>
-          <Button
-            disabled={!available}
-            variant="primary"
-            xstyle={styles.compactButton}
-            onClick={() => void enableDiscovery()}
-          >
-            <Radar aria-hidden="true" size={14} strokeWidth={2} />
-            {t('p2pEnableDiscovery')}
-          </Button>
-        </div>
-
-        <DeviceSection title={t('p2pNearbyDevices')} empty={nearbyDeviceCount === 0 ? t('p2pNoNearbyDevices') : null}>
-          {unpairedPeers.map(peer => (
-            <DeviceRow key={peer.peerId} name={peer.deviceName} detail={t('p2pDiscoveredOnNetwork')}>
-              <Button variant="secondary" xstyle={styles.compactButton} onClick={() => void requestPairing(peer)}>
-                <ShieldCheck aria-hidden="true" size={14} strokeWidth={2} />
-                {t('p2pRequestPairing')}
-              </Button>
-            </DeviceRow>
-          ))}
-          {requests.map((request) => {
-            const emoji = emojiByRequest[request.requestId] || request.emoji
-            return (
-              <DeviceRow key={request.requestId} name={request.deviceName} detail={emoji ? t('p2pCompareEmoji') : t('p2pPairingRequestPending')} stacked={Boolean(emoji)}>
-                {emoji
-                  ? (
-                      <div {...stylex.props(styles.emojiConfirmation)}>
-                        <code {...stylex.props(styles.emojiCode)} aria-label={t('p2pPairingEmoji')}>{emoji}</code>
-                        <Button variant="primary" xstyle={styles.compactButton} onClick={() => void confirmPairing(request.requestId)}>
-                          <Check aria-hidden="true" size={14} strokeWidth={2} />
-                          {t('p2pConfirmEmoji')}
-                        </Button>
-                      </div>
-                    )
-                  : (
-                      <Button variant="primary" xstyle={styles.compactButton} onClick={() => void approvePairing(request)}>
-                        <Check aria-hidden="true" size={14} strokeWidth={2} />
-                        {t('p2pApprovePairing')}
-                      </Button>
-                    )}
-              </DeviceRow>
-            )
-          })}
-        </DeviceSection>
-
-        <DeviceSection title={t('p2pPairedDevices')} empty={devices.length === 0 ? t('p2pNoPairedDevices') : null}>
-          {devices.map(device => (
-            <DeviceRow key={device.deviceId} name={device.deviceName} detail={peerIdSummary(device.peerId)}>
-              <Button
-                aria-label={`${t('p2pRemove')} ${device.deviceName}`}
-                variant="plain"
-                xstyle={styles.removeButton}
-                onClick={() => void window.desktop.p2p.removeDevice(device.deviceId).then(reload)}
-              >
-                <Trash2 aria-hidden="true" size={14} strokeWidth={2} />
-                {t('p2pRemove')}
-              </Button>
-            </DeviceRow>
-          ))}
-        </DeviceSection>
-        <div {...stylex.props(styles.settingRow)}>
-          <div {...stylex.props(styles.rowCopy)}>
-            <label htmlFor="sync-server-invitation" {...stylex.props(styles.rowLabel)}>{t('syncServerPairingInvitation')}</label>
-            <p {...stylex.props(styles.rowDescription)}>{t('syncServerPairingInvitationDescription')}</p>
-          </div>
-          <ButtonGroup xstyle={styles.nameEditor}>
-            <TextField id="sync-server-invitation" value={serverInvitation} variant="settings" onChange={event => setServerInvitation(event.target.value)} />
-            <Button disabled={!available || serverInvitation.trim().length === 0} variant="secondary" xstyle={styles.compactButton} onClick={() => void acceptServerInvitation()}>{t('syncServerCreatePairingResponse')}</Button>
-          </ButtonGroup>
-        </div>
-        {serverPairingResponse.length > 0
-          ? (
-              <div {...stylex.props(styles.settingRow)}>
-                <div {...stylex.props(styles.rowCopy)}>
-                  <label htmlFor="sync-server-pairing-response" {...stylex.props(styles.rowLabel)}>{t('syncServerPairingResponse')}</label>
-                  <p {...stylex.props(styles.rowDescription)}>{t('syncServerPairingResponseDescription')}</p>
-                </div>
-                <TextField id="sync-server-pairing-response" readOnly value={serverPairingResponse} variant="settings" />
+            <div {...stylex.props(styles.identityCopy)}>
+              <span {...stylex.props(styles.identityEyebrow)}>{t('p2pStatus')}</span>
+              <div {...stylex.props(styles.identityHeadingLine)}>
+                <h2 id="p2p-local-device-heading" {...stylex.props(styles.identityTitle)}>
+                  {localDevice?.deviceName ?? t('p2pUnavailable')}
+                </h2>
+                <span {...stylex.props(styles.connectionState, status?.state === 'ready' && styles.connectionStateReady)}>
+                  <span aria-hidden="true" {...stylex.props(styles.stateDot)} />
+                  {stateLabel}
+                </span>
               </div>
-            )
-          : null}
-        <div {...stylex.props(styles.settingRow)}>
-          <div {...stylex.props(styles.rowCopy)}>
-            <label htmlFor="sync-server-issued-credential" {...stylex.props(styles.rowLabel)}>{t('syncServerIssuedCredential')}</label>
-            <p {...stylex.props(styles.rowDescription)}>{t('syncServerIssuedCredentialDescription')}</p>
+              <p {...stylex.props(styles.identityDescription)}>
+                {t('p2pConnectionSummary', { count: status?.connectedPeers.length ?? 0 })}
+              </p>
+            </div>
+          </section>
+
+          <div {...stylex.props(styles.settingRow)}>
+            <div {...stylex.props(styles.rowCopy)}>
+              <label htmlFor="p2p-device-name" {...stylex.props(styles.rowLabel)}>{t('p2pDeviceName')}</label>
+              <p {...stylex.props(styles.rowDescription)}>{t('p2pDeviceNameDescription')}</p>
+            </div>
+            <ButtonGroup xstyle={styles.nameEditor}>
+              <TextField
+                id="p2p-device-name"
+                value={draftDeviceName}
+                variant="settings"
+                xstyle={styles.nameInput}
+                maxLength={80}
+                onChange={(event) => {
+                  setDraftDeviceName(event.target.value)
+                  setNameDirty(true)
+                }}
+              />
+              <Button
+                disabled={!available || !nameDirty || draftDeviceName.trim().length === 0}
+                variant="secondary"
+                xstyle={styles.compactButton}
+                onClick={() => void updateDeviceName()}
+              >
+                <Save aria-hidden="true" size={14} strokeWidth={2} />
+                {t('p2pSaveDeviceName')}
+              </Button>
+            </ButtonGroup>
           </div>
-          <ButtonGroup xstyle={styles.nameEditor}>
-            <TextField id="sync-server-issued-credential" value={serverCredential} variant="settings" onChange={event => setServerCredential(event.target.value)} />
-            <Button disabled={!available || serverCredential.trim().length === 0} variant="primary" xstyle={styles.compactButton} onClick={() => void completeServerPairing()}>{t('syncServerFinishPairing')}</Button>
-          </ButtonGroup>
+
+          <div {...stylex.props(styles.settingRow)}>
+            <div {...stylex.props(styles.rowCopy)}>
+              <span {...stylex.props(styles.rowLabel)}>{t('p2pDiscovery')}</span>
+              <p {...stylex.props(styles.rowDescription)}>{t('p2pDiscoveryDescription')}</p>
+            </div>
+            <Button
+              disabled={!available}
+              variant="primary"
+              xstyle={styles.compactButton}
+              onClick={() => void enableDiscovery()}
+            >
+              <Radar aria-hidden="true" size={14} strokeWidth={2} />
+              {t('p2pEnableDiscovery')}
+            </Button>
+          </div>
+
+          <DeviceSection title={t('p2pNearbyDevices')} empty={nearbyDeviceCount === 0 ? t('p2pNoNearbyDevices') : null}>
+            {unpairedPeers.map(peer => (
+              <DeviceRow key={peer.peerId} name={peer.deviceName} detail={t('p2pDiscoveredOnNetwork')}>
+                <Button variant="secondary" xstyle={styles.compactButton} onClick={() => void requestPairing(peer)}>
+                  <ShieldCheck aria-hidden="true" size={14} strokeWidth={2} />
+                  {t('p2pRequestPairing')}
+                </Button>
+              </DeviceRow>
+            ))}
+            {requests.map((request) => {
+              const emoji = emojiByRequest[request.requestId] || request.emoji
+              return (
+                <DeviceRow key={request.requestId} name={request.deviceName} detail={emoji ? t('p2pCompareEmoji') : t('p2pPairingRequestPending')} stacked={Boolean(emoji)}>
+                  {emoji
+                    ? (
+                        <div {...stylex.props(styles.emojiConfirmation)}>
+                          <code {...stylex.props(styles.emojiCode)} aria-label={t('p2pPairingEmoji')}>{emoji}</code>
+                          <Button variant="primary" xstyle={styles.compactButton} onClick={() => void confirmPairing(request.requestId)}>
+                            <Check aria-hidden="true" size={14} strokeWidth={2} />
+                            {t('p2pConfirmEmoji')}
+                          </Button>
+                        </div>
+                      )
+                    : (
+                        <Button variant="primary" xstyle={styles.compactButton} onClick={() => void approvePairing(request)}>
+                          <Check aria-hidden="true" size={14} strokeWidth={2} />
+                          {t('p2pApprovePairing')}
+                        </Button>
+                      )}
+                </DeviceRow>
+              )
+            })}
+          </DeviceSection>
+
+          <DeviceSection title={t('p2pPairedDevices')} empty={devices.length === 0 ? t('p2pNoPairedDevices') : null}>
+            {devices.map(device => (
+              <DeviceRow key={device.deviceId} name={device.deviceName} detail={peerIdSummary(device.peerId)}>
+                <Button
+                  aria-label={`${t('p2pRemove')} ${device.deviceName}`}
+                  variant="plain"
+                  xstyle={styles.removeButton}
+                  onClick={() => void window.desktop.p2p.removeDevice(device.deviceId).then(reload)}
+                >
+                  <Trash2 aria-hidden="true" size={14} strokeWidth={2} />
+                  {t('p2pRemove')}
+                </Button>
+              </DeviceRow>
+            ))}
+          </DeviceSection>
         </div>
-      </div>
+      </section>
 
       {message
         ? (

@@ -1,3 +1,5 @@
+export { Alert } from './components/alert'
+export type { AlertProps, AlertVariant } from './components/alert'
 export { Button } from './components/button'
 export type { ButtonProps, ButtonVariant } from './components/button'
 export { ButtonGroup } from './components/button-group'
