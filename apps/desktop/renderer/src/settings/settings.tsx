@@ -6,7 +6,7 @@ import { ConfigurationFields } from '@memorilo/config/react'
 import { desktopConfigurationDefinition } from '@memorilo/desktop-config'
 import { getUiThemeDefinitions, SegmentedControl, Sidebar } from '@memorilo/ui'
 import * as stylex from '@stylexjs/stylex'
-import { BookOpen, CalendarDays, GraduationCap, HardDrive, Keyboard, NotebookPen, Plug, Settings2, TabletSmartphone, Wifi } from 'lucide-react'
+import { BookOpen, CalendarDays, Check, GraduationCap, HardDrive, Keyboard, NotebookPen, Plug, Server, Settings2, TabletSmartphone, Wifi } from 'lucide-react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import { Fragment, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -18,8 +18,9 @@ import { DatabaseSettings } from './database-settings'
 import { DeviceSettings } from './device-settings'
 import { P2pSettings } from './p2p-settings'
 import { settingsShellStyles as settingsStyles } from './settings-shell.stylex'
+import { SyncServerSettings } from './sync-server-settings'
 
-type SettingsCategoryId = 'calendar' | 'device' | 'editor' | 'general' | 'learning' | 'mcp' | 'media' | 'reading' | 'shortcuts' | 'sync'
+type SettingsCategoryId = 'calendar' | 'device' | 'editor' | 'general' | 'learning' | 'mcp' | 'media' | 'p2p' | 'reading' | 'shortcuts' | 'sync'
 type SourceSectionId = 'backup' | 'editor' | 'flashcards' | 'general' | 'goals' | 'images' | 'learning' | 'mcp' | 'reading' | 'shortcut-formatting' | 'shortcut-learning' | 'shortcut-navigation' | 'shortcut-note-structure' | 'sync-server' | 'todo'
 
 interface SettingsCategoryDefinition {
@@ -42,7 +43,8 @@ const settingsCategoryDefinitions: readonly SettingsCategoryDefinition[] = [
   { id: 'media', sectionIds: ['images', 'backup'], showSectionHeadings: true },
   { id: 'mcp', sectionIds: ['mcp'] },
   { id: 'device', sectionIds: [] },
-  { id: 'sync', sectionIds: ['sync-server'], showSectionHeadings: true },
+  { id: 'sync', sectionIds: ['sync-server'] },
+  { id: 'p2p', sectionIds: [] },
 ]
 
 const learningDetailSectionIds: readonly SourceSectionId[] = ['flashcards', 'goals']
@@ -55,9 +57,10 @@ const categoryIcons = {
   learning: GraduationCap,
   mcp: Plug,
   media: HardDrive,
+  p2p: Wifi,
   reading: BookOpen,
   shortcuts: Keyboard,
-  sync: Wifi,
+  sync: Server,
 } as const
 
 const categoryLabelKeys: Readonly<Record<SettingsCategoryId, string>> = {
@@ -68,9 +71,10 @@ const categoryLabelKeys: Readonly<Record<SettingsCategoryId, string>> = {
   learning: 'learningSection',
   media: 'mediaSection',
   mcp: 'mcpSection',
+  p2p: 'p2pSection',
   reading: 'readingSection',
   shortcuts: 'shortcutsSection',
-  sync: 'syncSection',
+  sync: 'syncServerSection',
 }
 
 const categoryDescriptionKeys: Readonly<Record<SettingsCategoryId, string>> = {
@@ -81,9 +85,10 @@ const categoryDescriptionKeys: Readonly<Record<SettingsCategoryId, string>> = {
   learning: 'learningDescription',
   media: 'mediaDescription',
   mcp: 'mcpDescription',
+  p2p: 'p2pDescription',
   reading: 'readingDescription',
   shortcuts: 'shortcutsDescription',
-  sync: 'syncDescription',
+  sync: 'syncServerSectionDescription',
 }
 
 const sectionLabelKeys: Readonly<Record<string, string>> = {
@@ -462,7 +467,7 @@ function ThemeGallery({ store }: { store: ConfigurationStore<DesktopConfiguratio
               </div>
               <div {...stylex.props(settingsStyles.themeCardHeader)}>
                 <span {...stylex.props(settingsStyles.themeCardName)}>{label}</span>
-                {selected ? <span {...stylex.props(settingsStyles.themeSelection)} aria-hidden="true">✓</span> : null}
+                {selected ? <span {...stylex.props(settingsStyles.themeSelection)} aria-hidden="true"><Check size="1em" strokeWidth={3} /></span> : null}
               </div>
               <p {...stylex.props(settingsStyles.themeCardDescription)}>{description}</p>
             </label>
@@ -544,7 +549,8 @@ export function Settings({ store }: { store: ConfigurationStore<DesktopConfigura
                 </header>
                 {activeCategory.id === 'general' ? <ThemeGallery store={store} /> : null}
                 {activeCategory.id === 'device' ? <DeviceSettings /> : null}
-                {activeCategory.id === 'sync' ? <P2pSettings /> : null}
+                {activeCategory.id === 'sync' ? <SyncServerSettings /> : null}
+                {activeCategory.id === 'p2p' ? <P2pSettings /> : null}
                 {activeCategory.sections.map((section, index) => (
                   <Fragment key={section.id}>
                     <SettingsFieldsGroup

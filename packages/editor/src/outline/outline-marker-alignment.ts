@@ -6,7 +6,9 @@ function firstTextLineCenter(block: HTMLElement, content: HTMLElement): number |
     const text = node.textContent ?? ''
     const characterIndex = text.search(/\S/u)
     const parent = node.parentElement
-    if (characterIndex >= 0 && parent?.closest('[data-block-id]') === block) {
+    if (characterIndex >= 0
+      && parent?.closest('[data-block-id]') === block
+      && !parent.closest('.prosemirror-math-inline, .prosemirror-math-block')) {
       const range = document.createRange()
       range.setStart(node, characterIndex)
       range.setEnd(node, characterIndex + 1)
@@ -14,6 +16,28 @@ function firstTextLineCenter(block: HTMLElement, content: HTMLElement): number |
       range.detach()
       if (rect)
         return rect.top + rect.height / 2
+    }
+    node = walker.nextNode()
+  }
+
+  return null
+}
+
+function firstMathDisplayCenter(block: HTMLElement, content: HTMLElement): number | null {
+  const walker = document.createTreeWalker(content, NodeFilter.SHOW_ELEMENT)
+  let node = walker.nextNode()
+
+  while (node) {
+    if (node instanceof HTMLElement
+      && node.closest('[data-block-id]') === block
+      && node.matches('.prosemirror-math-inline, .prosemirror-math-block')) {
+      const display = node.querySelector<HTMLElement>(':scope > .prosemirror-math-display')
+      if (display) {
+        const rect = display.getBoundingClientRect()
+        const style = getComputedStyle(display)
+        if (rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden')
+          return rect.top + rect.height / 2
+      }
     }
     node = walker.nextNode()
   }
@@ -57,7 +81,9 @@ function markerOffset(block: HTMLElement): number | null {
   if (markerRect.height === 0 || blockRect.height === 0)
     return null
 
-  const anchor = firstTextLineCenter(block, content) ?? firstVisibleBoxTop(block, content)
+  const anchor = firstTextLineCenter(block, content)
+    ?? firstMathDisplayCenter(block, content)
+    ?? firstVisibleBoxTop(block, content)
   if (anchor === null)
     return null
 
@@ -71,8 +97,8 @@ function alignmentRules(root: HTMLElement): string {
       const offset = markerOffset(block)
       if (!blockId || offset === null)
         return null
-      const selector = `[data-editor-mode='outline'] [data-editor-content].ProseMirror [data-block-id=${CSS.escape(blockId)}]`
-      return `${selector} > .list-marker,${selector}[data-list-kind='ordered']::before{top:${offset}px}`
+      const selector = `[data-editor-mode='outline'] [data-editor-content].ProseMirror [data-block-id="${blockId}"]`
+      return `${selector} > .list-marker,${selector}[data-list-kind='ordered']::before{top:${offset}px !important}`
     })
     .filter(rule => rule !== null)
     .join('\n')

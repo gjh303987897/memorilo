@@ -6,6 +6,9 @@ import { defineConfig } from '@playwright/test'
 delete process.env.ELECTRON_RUN_AS_NODE
 process.env.MEMORILO_E2E_HIDE_WINDOW = '1'
 process.env.MEMORILO_SHELF_IMAGE_CACHE_PATH = ':memory:'
+// The host runner exports this for Electron's Node tooling; passing it through
+// makes Playwright launch Electron in Node mode instead of application mode.
+delete process.env.ELECTRON_RUN_AS_NODE
 
 export default defineConfig({
   fullyParallel: false,

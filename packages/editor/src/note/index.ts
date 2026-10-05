@@ -51,7 +51,8 @@ export type {
   WhiteboardTopicSnapshot,
   WhiteboardTopicValidationInput,
 } from './editor-note'
-export { createEditorNote, createJournalNote } from './editor-note'
+export { cloneEditorNote, createEditorNote, createJournalNote } from './editor-note'
+export { NOTE_SCHEMA_VERSION } from './editor-note-crdt'
 export { whiteboardSceneSignature } from './editor-note-whiteboard'
 export type { ResolveJournalTopicOptions } from './journal-note'
 export { resolveJournalTopic } from './journal-note'

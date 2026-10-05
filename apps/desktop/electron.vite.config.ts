@@ -32,6 +32,7 @@ export default defineConfig({
         ],
         include: [
           '@huggingface/transformers',
+          '@myriaddreamin/typst-ts-node-compiler',
           '@open-spaced-repetition/binding',
           'better-sqlite3',
           'loro-crdt',

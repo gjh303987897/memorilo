@@ -8,6 +8,12 @@ import type {
   DesktopBookTopicContextSummary,
   DesktopColumnVisibilityMenuSelection,
   DesktopExportDatabaseResult,
+  DesktopExportDiagnostic,
+  DesktopNoteExportResult,
+  DesktopNoteImportResult,
+  DesktopNoteTransferDecision,
+  DesktopNoteTransferStart,
+  DesktopNoteTransferState,
   DesktopRestoreDatabaseResult,
   OpenDesktopBookContextResult,
   ReclaimDesktopAssetsInput,
@@ -155,6 +161,118 @@ const BackupExportResultSchema: EffectSchema.Codec<DesktopExportDatabaseResult |
 const BackupRestoreResultSchema: EffectSchema.Codec<DesktopRestoreDatabaseResult> = Schema.Union([
   Schema.Struct({ status: Schema.Literal('cancelled') }),
   Schema.Struct({ status: Schema.Literal('restarting') }),
+])
+
+const NoteExportDiagnosticSchema: EffectSchema.Codec<DesktopExportDiagnostic> = Schema.Struct({
+  code: Schema.NonEmptyString,
+  fallback: Schema.optionalKey(Schema.String),
+  kind: Schema.optionalKey(Schema.String),
+  message: Schema.String,
+  path: Schema.optionalKey(Schema.String),
+  reason: Schema.optionalKey(Schema.String),
+  severity: Schema.Literals(['error', 'warning']),
+})
+const NoteExportResultSchema: EffectSchema.Codec<DesktopNoteExportResult> = Schema.Union([
+  Schema.Struct({
+    diagnostics: Schema.Array(NoteExportDiagnosticSchema),
+    path: Schema.NonEmptyString,
+    status: Schema.Literal('saved'),
+  }),
+  Schema.Struct({ status: Schema.Literal('cancelled') }),
+])
+const NoteImportResultSchema: EffectSchema.Codec<DesktopNoteImportResult> = Schema.Union([
+  Schema.Struct({
+    journalDate: Schema.optionalKey(JournalDateSchema),
+    kind: Schema.Literals(['journal', 'regular']),
+    noteId: Schema.NonEmptyString,
+    title: Schema.String,
+    status: Schema.Literal('imported'),
+  }),
+  Schema.Struct({
+    fileName: Schema.NonEmptyString,
+    source: Schema.String,
+    status: Schema.Literal('markdown'),
+  }),
+  Schema.Struct({ status: Schema.Literal('cancelled') }),
+])
+
+const NoteTransferStartSchema: EffectSchema.Codec<DesktopNoteTransferStart> = Schema.Struct({
+  operationId: Schema.NonEmptyString,
+})
+const NoteTransferErrorSchema = Schema.Struct({
+  code: Schema.NonEmptyString,
+  message: Schema.String,
+})
+const NoteTransferStateSchema: EffectSchema.Codec<DesktopNoteTransferState> = Schema.Union([
+  Schema.Struct({
+    format: Schema.Literals(['memo', 'pdf']),
+    kind: Schema.Literal('export'),
+    operationId: Schema.NonEmptyString,
+    phase: Schema.Literal('preparing'),
+  }),
+  Schema.Struct({
+    format: Schema.Literals(['memo', 'pdf']),
+    kind: Schema.Literal('export'),
+    operationId: Schema.NonEmptyString,
+    phase: Schema.Literal('saved'),
+    result: Schema.Struct({
+      diagnostics: Schema.Array(NoteExportDiagnosticSchema),
+      path: Schema.NonEmptyString,
+      status: Schema.Literal('saved'),
+    }),
+  }),
+  Schema.Struct({
+    error: NoteTransferErrorSchema,
+    format: Schema.Literals(['memo', 'pdf']),
+    kind: Schema.Literal('export'),
+    operationId: Schema.NonEmptyString,
+    phase: Schema.Literal('failed'),
+  }),
+  Schema.Struct({
+    format: Schema.Literals(['memo', 'pdf']),
+    kind: Schema.Literal('export'),
+    operationId: Schema.NonEmptyString,
+    phase: Schema.Literal('cancelled'),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal('import'),
+    operationId: Schema.NonEmptyString,
+    phase: Schema.Literal('preparing'),
+  }),
+  Schema.Struct({
+    fileName: Schema.NonEmptyString,
+    kind: Schema.Literal('import'),
+    operationId: Schema.NonEmptyString,
+    phase: Schema.Literal('markdown'),
+    source: Schema.String,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal('import'),
+    operationId: Schema.NonEmptyString,
+    phase: Schema.Literal('imported'),
+    result: Schema.Struct({
+      journalDate: Schema.optionalKey(JournalDateSchema),
+      kind: Schema.Literals(['journal', 'regular']),
+      noteId: Schema.NonEmptyString,
+      title: Schema.String,
+      status: Schema.Literal('imported'),
+    }),
+  }),
+  Schema.Struct({
+    error: NoteTransferErrorSchema,
+    kind: Schema.Literal('import'),
+    operationId: Schema.NonEmptyString,
+    phase: Schema.Literal('failed'),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal('import'),
+    operationId: Schema.NonEmptyString,
+    phase: Schema.Literal('cancelled'),
+  }),
+])
+const NoteTransferDecisionSchema: EffectSchema.Codec<DesktopNoteTransferDecision> = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal('cancel') }),
+  Schema.Struct({ kind: Schema.Literal('acknowledge') }),
 ])
 
 const BookContextSummarySchema: EffectSchema.Codec<DesktopBookTopicContextSummary> = Schema.Struct({
@@ -405,6 +523,32 @@ export const desktopOperationSchemas = {
       noteId: Schema.NonEmptyString,
     })]), DesktopNoteFavoriteStateSchema),
     deleteNote: operation(Schema.Tuple([Schema.Struct({ noteId: Schema.NonEmptyString })]), DeleteDesktopNoteImpactSchema),
+    exportNoteMemo: contextualOperation(
+      Schema.Tuple([Schema.Struct({ noteId: Schema.NonEmptyString })]),
+      NoteExportResultSchema,
+    ),
+    exportNotePdf: contextualOperation(
+      Schema.Tuple([Schema.Struct({ noteId: Schema.NonEmptyString })]),
+      NoteExportResultSchema,
+    ),
+    importNote: contextualOperation(EmptyArgumentsSchema, NoteImportResultSchema),
+    startNoteExport: contextualOperation(
+      Schema.Tuple([Schema.Struct({
+        format: Schema.Literals(['memo', 'pdf']),
+        noteId: Schema.NonEmptyString,
+      })]),
+      NoteTransferStartSchema,
+    ),
+    prepareNoteImport: contextualOperation(EmptyArgumentsSchema, NoteTransferStartSchema),
+    getNoteTransfer: contextualOperation(Schema.Tuple([Schema.NonEmptyString]), NoteTransferStateSchema),
+    continueNoteTransfer: contextualOperation(
+      Schema.Tuple([Schema.Struct({
+        decision: NoteTransferDecisionSchema,
+        operationId: Schema.NonEmptyString,
+      })]),
+      NoteTransferStateSchema,
+    ),
+    cancelNoteTransfer: contextualOperation(Schema.Tuple([Schema.NonEmptyString]), NoteTransferStateSchema),
   },
   shelf: {
     addSource: operation(Schema.Tuple([AddShelfSourceInputSchema]), ShelfSourceSchema),

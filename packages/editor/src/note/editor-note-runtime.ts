@@ -185,6 +185,21 @@ export class EditorNoteRuntime implements EditorNoteDocument {
     return new EditorNoteRuntime(doc, noteId)
   }
 
+  static clone(options: CreateEditorNoteOptions, newId: string): EditorNoteRuntime {
+    const source = EditorNoteRuntime.open(options)
+    const noteId = normalizeNonEmptyString(newId, 'Cloned Note id')
+    const doc = new LoroDoc()
+    configureNoteDocument(doc)
+    // A JSON diff copies the current semantic state into a new CRDT lineage instead of importing the source oplog.
+    doc.applyDiff(source.doc.diff([], source.doc.frontiers(), true))
+    const meta = doc.getMap(NOTE_META_KEY)
+    meta.set('id', noteId)
+    meta.set(NOTE_UNDO_BOUNDARY_KEY, 0)
+    doc.commit({ origin: 'sys:import-clone' })
+    validateRestoredNote(doc, noteId)
+    return new EditorNoteRuntime(doc, noteId)
+  }
+
   static openJournal(journalDate: string, learningEnabled = true): EditorNoteRuntime {
     assertJournalDate(journalDate)
     const noteId = journalNoteId(journalDate)

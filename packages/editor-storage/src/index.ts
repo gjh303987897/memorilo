@@ -10,6 +10,7 @@ export type {
   BookTopicContext,
   BookTopicProjection,
   CheckpointNoteInput,
+  CreateImportedNoteInput,
   CreateInitializedNoteInput,
   CreateNoteInput,
   EditorAssetStorage,

@@ -98,6 +98,7 @@
   "closeEntryDialog": "关闭",
   "create": "创建",
   "importMarkdown": "导入 Markdown",
+  "exportPdf": "导出 Memo PDF",
   "renameEntry": "重命名",
   "deleteEntry": "删除",
   "deleteEntryTitle": "删除 {{name}}？",

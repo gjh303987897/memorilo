@@ -8,13 +8,18 @@ import type {
   SetDesktopNoteFavoriteInput,
 } from '@memorilo/desktop-api'
 import type { InfiniteData } from 'effect-query'
+import type { PaletteCommand } from '../../../shared/command-palette'
 import type { MarkdownImportValues } from '../markdown-import-dialog'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { FileUp } from 'lucide-react'
+import { useCallback, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { toast } from 'react-toastify/unstyled'
+import { useCommandPaletteCommands } from '../../../shared/command-palette'
 import { desktopRequests } from '../../../shared/desktop-requests'
 import { MarkdownImportDialog } from '../markdown-import-dialog'
 import { defaultTopicId } from '../note-runtime'
+import { prepareNoteImport, runNoteExport } from '../note-transfer-operation'
 
 import { noteQueryKeys } from '../query-keys'
 import {
@@ -46,9 +51,11 @@ export function NoteLibraryPage({
   onOpenJournal: (journalDate: JournalDate) => Promise<void>
   onOpenNote: (noteId: string, topicId: string) => Promise<void>
 }) {
+  const { t } = useTranslation(['pages', 'app'])
   const queryClient = useQueryClient()
-  const fileInputRef = useRef<HTMLInputElement>(null)
-  const [markdownFile, setMarkdownFile] = useState<{ name: string, source: string } | null>(null)
+  const [markdownImport, setMarkdownImport] = useState<{ fileName: string, source: string } | null>(null)
+  const [transferBusy, setTransferBusy] = useState(false)
+  const [transferOperationId, setTransferOperationId] = useState<string | null>(null)
   const { mutateAsync: mutateRenameNote } = useMutation({
     ...renameNoteMutationOptions(),
     onSuccess: (result) => {
@@ -93,46 +100,111 @@ export function NoteLibraryPage({
     (noteId: string) => openStoredNote(noteId, onOpenJournal, onOpenNote),
     [onOpenJournal, onOpenNote],
   )
-  const importMarkdown = useCallback(() => fileInputRef.current?.click(), [])
+  const importNote = useCallback(async () => {
+    if (transferBusy) {
+      return
+    }
+    setTransferBusy(true)
+    try {
+      const result = await prepareNoteImport(undefined, undefined, setTransferOperationId)
+      if (result.phase === 'cancelled')
+        return
+      if (result.phase === 'markdown') {
+        setMarkdownImport({ fileName: result.fileName, source: result.source })
+        return
+      }
+      if (result.phase === 'failed')
+        throw new Error(result.error.message)
+      if (result.phase !== 'imported')
+        throw new Error('Note import did not complete')
+      void queryClient.invalidateQueries({ queryKey: noteQueryKeys.lists })
+      if (result.result.kind === 'journal' && result.result.journalDate !== undefined)
+        await onOpenJournal(result.result.journalDate)
+      else
+        await onOpenNote(result.result.noteId, result.result.kind === 'regular' ? defaultTopicId(await desktopRequests.getNote({ noteId: result.result.noteId })) : '')
+    }
+    catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error))
+    }
+    finally {
+      setTransferOperationId(null)
+      setTransferBusy(false)
+    }
+  }, [onOpenJournal, onOpenNote, queryClient, transferBusy])
   const confirmMarkdownImport = useCallback(async (values: MarkdownImportValues) => {
     const created = await desktopRequests.createNote({
-      initialTopic: { initialContent: values.document, mode: 0, title: values.topicTitle },
+      initialTopic: {
+        initialContent: values.document,
+        mode: 0,
+        title: values.topicTitle,
+      },
       title: values.noteTitle,
     })
-    setMarkdownFile(null)
-    void queryClient.invalidateQueries({ queryKey: noteQueryKeys.lists })
-    if (values.diagnostics.length > 0) {
+    setMarkdownImport(null)
+    if (values.diagnostics.length > 0)
       toast.warning(values.diagnostics.map(diagnostic => `L${diagnostic.line}: ${diagnostic.message}`).join('\n'), { autoClose: 10_000 })
-    }
+    void queryClient.invalidateQueries({ queryKey: noteQueryKeys.lists })
     await onOpenNote(created.id, defaultTopicId(created))
   }, [onOpenNote, queryClient])
+  const importCommands = useMemo<readonly PaletteCommand[]>(() => [{
+    accent: 'violet',
+    action: t('importAction', { ns: 'app' }),
+    description: t('importNoteDescription', { ns: 'app' }),
+    icon: FileUp,
+    id: 'import-note',
+    keywords: t('importNoteKeywords', { ns: 'app' }) as unknown as readonly string[],
+    label: t('importNote', { ns: 'pages' }),
+    run: importNote,
+    section: t('navigationSection', { ns: 'app' }) as PaletteCommand['section'],
+  }], [importNote, t])
+  useCommandPaletteCommands(importCommands)
+  const exportNote = useCallback(async (format: 'memo' | 'pdf', noteId: string) => {
+    if (transferBusy) {
+      return
+    }
+    setTransferBusy(true)
+    try {
+      const result = await runNoteExport(format, noteId, undefined, undefined, setTransferOperationId)
+      if (result.phase === 'saved') {
+        if (result.result.diagnostics.length > 0)
+          toast.warning(`${result.result.path}\n${result.result.diagnostics.map(diagnostic => diagnostic.message).join('\n')}`, { autoClose: 10_000 })
+        else
+          toast.success(result.result.path, { autoClose: 5_000 })
+      }
+      else if (result.phase === 'failed') {
+        throw new Error(result.error.message)
+      }
+    }
+    catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error))
+    }
+    finally {
+      setTransferOperationId(null)
+      setTransferBusy(false)
+    }
+  }, [transferBusy])
+  const cancelTransfer = useCallback(() => {
+    if (transferOperationId === null)
+      return
+    void desktopRequests.cancelNoteTransfer(transferOperationId).catch((error) => {
+      toast.error(error instanceof Error ? error.message : String(error))
+    })
+  }, [transferOperationId])
   const commands = useMemo(() => ({
     favorite: favoriteNote,
-    importMarkdown,
+    importNote,
+    exportNote,
     open: openSelectedNote,
     rename: renameNote,
     getDeleteImpact,
     delete: deleteNote,
-  }), [deleteNote, favoriteNote, getDeleteImpact, importMarkdown, openSelectedNote, renameNote])
+  }), [deleteNote, exportNote, favoriteNote, getDeleteImpact, importNote, openSelectedNote, renameNote])
 
   return (
     <>
-      <NoteLibraryView commands={commands} />
-      <input
-        ref={fileInputRef}
-        accept=".md,.markdown,text/markdown"
-        hidden
-        type="file"
-        onChange={(event) => {
-          const file = event.target.files?.[0]
-          event.target.value = ''
-          if (!file)
-            return
-          void file.text().then(source => setMarkdownFile({ name: file.name, source }))
-        }}
-      />
-      {markdownFile
-        ? <MarkdownImportDialog fileName={markdownFile.name} onClose={() => setMarkdownFile(null)} onConfirm={confirmMarkdownImport} source={markdownFile.source} target="new-note" />
+      <NoteLibraryView commands={commands} onCancelTransfer={cancelTransfer} transferBusy={transferBusy} />
+      {markdownImport
+        ? <MarkdownImportDialog fileName={markdownImport.fileName} onClose={() => setMarkdownImport(null)} onConfirm={confirmMarkdownImport} source={markdownImport.source} target="new-note" />
         : null}
     </>
   )

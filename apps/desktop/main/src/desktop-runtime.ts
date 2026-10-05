@@ -41,6 +41,7 @@ import { installJournalRollover } from './lifecycle/journal-rollover'
 import { createMcpServerController } from './mcp/mcp-server-controller'
 import { createNoteApplicationService } from './notes/note-application-service'
 import { ensureNoteP2pBaselines } from './notes/note-p2p-baselines'
+import { NoteTransferApplication } from './notes/note-transfer-application'
 import { createActiveReadingRegistry } from './reading/active-reading-registry'
 import { BetterSqliteDatabase } from './storage/better-sqlite-database'
 import { ElectronDeviceSigningKeyStore } from './storage/electron-device-signing-key-store'
@@ -675,9 +676,26 @@ export async function createDesktopRuntime(options: DesktopRuntimeOptions): Prom
       close: application => application.close(),
       name: 'database backup',
     })).resource
+    const transfer = new NoteTransferApplication({
+      appVersion: app.getVersion(),
+      assetDirectory: assets,
+      flushRenderer: options.flushRenderer,
+      notes,
+      shelfReadingFiles,
+      storage: editorStorage,
+      typstFontDirectories: [app.isPackaged
+        ? join(process.resourcesPath, 'typst-fonts', 'Xiaolai')
+        : resolve(options.mainDirectory, '../../../../packages/excalidraw/excalidraw/fonts/Xiaolai')],
+    })
+    await scope.acquire({
+      acquire: () => transfer,
+      close: application => application.close(),
+      name: 'note transfer',
+    })
     await scope.acquire({
       acquire: () => createDesktopServices(
         notes,
+        transfer,
         editorStorage,
         backup,
         shelfStorage,
