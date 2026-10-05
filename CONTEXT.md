@@ -212,6 +212,14 @@ _Avoid_: Card, Review Target, reading session
 The navigable Folder/Topic/CardTopic hierarchy of one Note, shown as context for learning and used to select a learning source without redefining NoteEntry identity.
 _Avoid_: Sidebar tree, deck tree, document outline
 
+**Imported Note Copy**:
+A Regular Note created by importing a `.memo` snapshot with a newly assigned NoteID and newly assigned globally unique learning identities. It is independent content and does not inherit the source Note's review history.
+_Avoid_: Clone, duplicate document, backup restore
+
+**Memo File**:
+A private Memorilo interchange file containing one Note's validated snapshot and identity metadata. A Memo File is intended for Memorilo round trips, not public interchange.
+_Avoid_: Export archive, database backup
+
 **Personal Learning Sync**:
 Account-scoped synchronization of a user's Review Events, Learning States, Optimizer revisions, and assignments across that user's devices; it is separate from collaborative Note content.
 _Avoid_: Note collaboration, shared review state

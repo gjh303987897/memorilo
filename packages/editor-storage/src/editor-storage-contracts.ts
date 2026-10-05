@@ -154,6 +154,14 @@ export interface CreateInitializedNoteInput {
   topics: readonly TopicContentProjection[]
 }
 
+export interface CreateImportedNoteInput extends CreateInitializedNoteInput {
+  assetReferences?: readonly AssetReferenceProjection[]
+  assets?: readonly RegisterAssetInput[]
+  hasUserContent?: boolean
+  journalDate?: JournalDate
+  kind?: 'journal' | 'regular'
+}
+
 export type JournalDate = string
 
 export type GetOrCreateJournalInput = Omit<CreateInitializedNoteInput, 'id' | 'title'> & {
@@ -621,6 +629,7 @@ export interface EditorJournalStorage {
 export interface EditorNoteStorage {
   checkpointNote: (input: CheckpointNoteInput) => Promise<NoteWriteReceipt>
   createInitializedNote: (input: CreateInitializedNoteInput) => Promise<StoredNote>
+  createImportedNote: (input: CreateImportedNoteInput) => Promise<StoredNote>
   createNote: (input?: CreateNoteInput) => Promise<StoredNote>
   deleteNote: (input: GetNoteInput) => Promise<DeleteNoteImpact>
   getDeleteNoteImpact: (input: GetNoteInput) => Promise<DeleteNoteImpact>

@@ -25,6 +25,7 @@ import { matchesKeyboardShortcut } from '../../../shared/keyboard-shortcut'
 import { usePageTitlebar } from '../../../shared/page-titlebar'
 import { getPlatform } from '../../../shared/platform'
 import { projectVisibleNoteEntries, selectAdjacentVisibleId } from '../note-entry-tree'
+import { NoteExportMenu } from '../note-export-menu'
 import { NoteInspector } from '../note-inspector'
 import { NoteInspectorActions } from '../note-inspector-actions'
 import { useNoteInspectorVisibility } from '../note-inspector-state'
@@ -57,6 +58,7 @@ function isImageOcclusionTopic(
 export interface NoteEditorViewProps {
   applyExternal: (external: DesktopNoteExternalUpdate) => boolean
   collapsedEntryIds: ReadonlySet<string>
+  exporting: boolean
   favoritePending: boolean
   focusBlockId?: string
   onAddBook: (parentId: string | null) => void
@@ -69,6 +71,8 @@ export interface NoteEditorViewProps {
   onOpenTopic: (topicId: string) => Promise<void>
   onRebindBook: (topicId: string) => void
   onDeleteEntry: (entryId: string) => void
+  onExport: (format: 'memo' | 'pdf') => Promise<void>
+  onCancelExport: () => void
   onRenameNote: (note: EditorNote, title: string) => Promise<{ error?: string } | void>
   onToggleEntry: (entryId: string) => void
   onToggleFavorite: () => void
@@ -80,6 +84,7 @@ export interface NoteEditorViewProps {
 export function NoteEditorView({
   applyExternal,
   collapsedEntryIds,
+  exporting,
   favoritePending,
   focusBlockId,
   onAddBook,
@@ -92,6 +97,8 @@ export function NoteEditorView({
   onOpenTopic,
   onRebindBook,
   onDeleteEntry,
+  onExport,
+  onCancelExport,
   onRenameNote,
   onToggleEntry,
   onToggleFavorite,
@@ -350,12 +357,16 @@ export function NoteEditorView({
         onToggleInspector={toggleInspector}
       />
     ),
+    trailing: <NoteExportMenu exporting={exporting} onCancelExport={onCancelExport} onExport={format => void onExport(format)} />,
     title: opened.stored.title,
     titleVisibility: whiteboardTopic === null && spreadsheetTopic === null ? 'always' as const : 'hidden' as const,
   }), [
     favoritePending,
+    exporting,
     inspectorVisible,
     onToggleFavorite,
+    onExport,
+    onCancelExport,
     opened.stored.favorite,
     opened.stored.title,
     renameNote,

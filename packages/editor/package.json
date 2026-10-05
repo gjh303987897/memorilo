@@ -6,6 +6,10 @@
   "exports": {
     ".": "./src/index.ts",
     "./card": "./src/card/index.ts",
+    "./export": "./src/export/index.ts",
+    "./import": "./src/import/index.ts",
+    "./math": "./src/math.ts",
+    "./math/latex-to-typst": "./src/math/latex-to-typst.ts",
     "./note": "./src/note/index.ts",
     "./reader": "./src/reader/index.ts",
     "./schema": "./src/schema/index.ts",

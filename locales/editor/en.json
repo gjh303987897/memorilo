@@ -98,6 +98,7 @@
   "closeEntryDialog": "Close",
   "create": "Create",
   "importMarkdown": "Import Markdown",
+  "exportPdf": "Export Memo PDF",
   "renameEntry": "Rename",
   "deleteEntry": "Delete",
   "deleteEntryTitle": "Delete {{name}}?",

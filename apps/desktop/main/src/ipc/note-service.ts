@@ -1,10 +1,14 @@
 import type { DesktopRequestHandlers } from '../desktop-request-handlers'
 import type { NoteApplicationService } from '../notes/note-application-service'
+import type { NoteTransferApplication } from '../notes/note-transfer-application'
 import type { TodoCalendarService } from '../todo/todo-calendar-service'
+import { BrowserWindow } from 'electron'
+import { withDesktopRequestContext } from '../desktop-request-handlers'
 
 export function createNoteHandlers(
   application: NoteApplicationService,
   calendars: TodoCalendarService,
+  transfer: NoteTransferApplication,
 ): DesktopRequestHandlers['notes'] {
   return {
     createNote(input?: Parameters<NoteApplicationService['createNote']>[0]) {
@@ -64,6 +68,34 @@ export function createNoteHandlers(
     deleteNote(input: Parameters<NoteApplicationService['deleteNote']>[0]) {
       return application.deleteNote(input)
     },
+    exportNoteMemo: withDesktopRequestContext((context, input) => (
+      transfer.exportMemo(input.noteId, BrowserWindow.fromWebContents(context.sender))
+    )),
+    exportNotePdf: withDesktopRequestContext((context, input) => (
+      transfer.exportPdf(input.noteId, BrowserWindow.fromWebContents(context.sender))
+    )),
+    importNote: withDesktopRequestContext(context => (
+      transfer.importNote(BrowserWindow.fromWebContents(context.sender))
+    )),
+    startNoteExport: withDesktopRequestContext((context, input) => (
+      transfer.startExport(
+        input,
+        BrowserWindow.fromWebContents(context.sender),
+        context.sender.id,
+      )
+    )),
+    prepareNoteImport: withDesktopRequestContext(context => (
+      transfer.prepareImport(BrowserWindow.fromWebContents(context.sender), context.sender.id)
+    )),
+    getNoteTransfer: withDesktopRequestContext((context, operationId) => (
+      transfer.getTransfer(operationId, context.sender.id)
+    )),
+    continueNoteTransfer: withDesktopRequestContext((context, input) => (
+      transfer.continueTransfer(input, context.sender.id)
+    )),
+    cancelNoteTransfer: withDesktopRequestContext((context, operationId) => (
+      transfer.cancelTransfer(operationId, context.sender.id)
+    )),
     saveNoteUpdates(input: Parameters<NoteApplicationService['saveNoteUpdates']>[0]) {
       return application.saveNoteUpdates(input)
     },

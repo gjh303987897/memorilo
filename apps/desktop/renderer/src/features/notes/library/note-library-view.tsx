@@ -18,6 +18,7 @@ import dayjs from 'dayjs'
 import {
   ArrowDown,
   ArrowUp,
+  Download,
   FileText,
   FileUp,
   LoaderCircle,
@@ -25,6 +26,7 @@ import {
   Star,
   Trash2,
   TriangleAlert,
+  X,
 } from 'lucide-react'
 import {
   useCallback,
@@ -55,7 +57,8 @@ export interface NoteLibraryCommands {
   rename: (input: RenameDesktopNoteInput) => Promise<RenameDesktopNoteResult>
   getDeleteImpact: (input: { noteId: string }) => Promise<DeleteDesktopNoteImpact>
   delete: (input: { noteId: string }) => Promise<DeleteDesktopNoteImpact>
-  importMarkdown: () => void
+  importNote: () => Promise<void>
+  exportNote: (format: 'memo' | 'pdf', noteId: string) => Promise<void>
 }
 
 function estimateRowSize() {
@@ -103,7 +106,7 @@ function createPagesColumns(commands: NoteLibraryCommands, t: TFunction, renameR
   ]
 }
 
-export function NoteLibraryView({ commands }: { commands: NoteLibraryCommands }) {
+export function NoteLibraryView({ commands, onCancelTransfer, transferBusy }: { commands: NoteLibraryCommands, onCancelTransfer: () => void, transferBusy: boolean }) {
   const { t } = useTranslation('pages')
   const scrollElementRef = useRef<HTMLDivElement>(null)
   const [sorting, setSorting] = useState<SortingState>(() => [{ desc: true, id: 'updatedAt' }])
@@ -177,9 +180,16 @@ export function NoteLibraryView({ commands }: { commands: NoteLibraryCommands })
     title: t('pageLabel'),
     trailing: (
       <>
-        <Button aria-label={t('importMarkdown')} data-window-no-drag="" title={t('importMarkdown')} variant="titlebar" onClick={commands.importMarkdown}>
+        <Button aria-busy={transferBusy} aria-label={t('importNote')} data-window-no-drag="" disabled={transferBusy} title={t('importNote')} variant="titlebar" onClick={() => void commands.importNote()}>
           <FileUp aria-hidden="true" size={17} strokeWidth={1.9} />
         </Button>
+        {transferBusy
+          ? (
+              <Button aria-label={t('cancel')} data-window-no-drag="" title={t('cancel')} variant="titlebar" onClick={onCancelTransfer}>
+                <X aria-hidden="true" size={16} strokeWidth={1.9} />
+              </Button>
+            )
+          : null}
         <NoteLibraryViewMenu
           columnVisibility={columnVisibility}
           onToggleColumn={toggleColumnVisibility}
@@ -187,7 +197,7 @@ export function NoteLibraryView({ commands }: { commands: NoteLibraryCommands })
         />
       </>
     ),
-  }), [commands.importMarkdown, columnVisibility, t, toggleColumnVisibility])
+  }), [commands, columnVisibility, onCancelTransfer, t, toggleColumnVisibility, transferBusy])
   usePageTitlebar(titlebar)
 
   const {
@@ -432,6 +442,10 @@ export function NoteLibraryView({ commands }: { commands: NoteLibraryCommands })
                   <ContextMenu.Item xstyle={pagesRouteStyles.contextMenuItem} onSelect={() => void commands.open(context.note.id)}>
                     <FileText {...stylex.props(pagesRouteStyles.contextMenuIcon)} aria-hidden="true" />
                     {t('openNote')}
+                  </ContextMenu.Item>
+                  <ContextMenu.Item disabled={transferBusy} xstyle={pagesRouteStyles.contextMenuItem} onSelect={() => void commands.exportNote('pdf', context.note.id)}>
+                    <Download {...stylex.props(pagesRouteStyles.contextMenuIcon)} aria-hidden="true" />
+                    {t('exportPdf')}
                   </ContextMenu.Item>
                   {context.note.kind === 'regular'
                     ? (

@@ -12,6 +12,7 @@ import { toast } from 'react-toastify/unstyled'
 
 import { desktopRequests } from '../../../shared/desktop-requests'
 import { MarkdownImportDialog } from '../markdown-import-dialog'
+import { runNoteExport } from '../note-transfer-operation'
 import { noteQueryKeys } from '../query-keys'
 import { BookTopicPickerDialog, EntryCreationDialog, EntryDeleteDialog } from './note-editor-dialogs'
 import { useEditorNoteSession } from './note-editor-session'
@@ -51,6 +52,8 @@ export function NoteEditor({
   const [bookPickerTarget, setBookPickerTarget] = useState<BookPickerTarget | undefined>(undefined)
   const [entryCreationTarget, setEntryCreationTarget] = useState<EntryCreationTarget | undefined>(undefined)
   const [entryDeleteTarget, setEntryDeleteTarget] = useState<EntryActionTarget | undefined>(undefined)
+  const [exporting, setExporting] = useState(false)
+  const [transferOperationId, setTransferOperationId] = useState<string | null>(null)
   const [markdownImport, setMarkdownImport] = useState<{ fileName: string, parentId: string | null, source: string } | null>(null)
   const markdownImportParentId = useRef<string | null>(null)
   const markdownFileInputRef = useRef<HTMLInputElement>(null)
@@ -65,6 +68,38 @@ export function NoteEditor({
   const handleExternalUpdate = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: noteQueryKeys.lists })
   }, [queryClient])
+  const handleExport = useCallback(async (format: 'memo' | 'pdf') => {
+    if (exporting) {
+      return
+    }
+    setExporting(true)
+    try {
+      const result = await runNoteExport(format, noteId, undefined, undefined, setTransferOperationId)
+      if (result.phase === 'saved') {
+        if (result.result.diagnostics.length > 0)
+          toast.warning(`${result.result.path}\n${result.result.diagnostics.map(diagnostic => diagnostic.message).join('\n')}`, { autoClose: 10_000 })
+        else
+          toast.success(result.result.path, { autoClose: 5_000 })
+      }
+      else if (result.phase === 'failed') {
+        throw new Error(result.error.message)
+      }
+    }
+    catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error))
+    }
+    finally {
+      setTransferOperationId(null)
+      setExporting(false)
+    }
+  }, [exporting, noteId])
+  const cancelExport = useCallback(() => {
+    if (transferOperationId === null)
+      return
+    void desktopRequests.cancelNoteTransfer(transferOperationId).catch((error) => {
+      toast.error(error instanceof Error ? error.message : String(error))
+    })
+  }, [transferOperationId])
   const session = useEditorNoteSession<DesktopRegularNote>({
     loadNote,
     noteId,
@@ -246,6 +281,8 @@ export function NoteEditor({
         applyExternal={session.applyExternal}
         collapsedEntryIds={collapsedEntryIds}
         favoritePending={metadata.favoritePending}
+        exporting={exporting}
+        onCancelExport={cancelExport}
         focusBlockId={focusBlockId}
         onAddBook={parentId => setBookPickerTarget({ kind: 'create', parentId })}
         onAddFolder={parentId => setEntryCreationTarget({ kind: 'folder', parentId })}
@@ -260,6 +297,7 @@ export function NoteEditor({
           setBookPickerTarget({ format, kind: 'rebind', topicId })
         }}
         onDeleteEntry={requestDeleteEntry}
+        onExport={handleExport}
         onRenameNote={metadata.renameNote}
         onToggleEntry={onToggleEntry}
         onToggleFavorite={metadata.toggleFavorite}
