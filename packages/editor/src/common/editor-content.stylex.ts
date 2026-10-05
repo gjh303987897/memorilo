@@ -13,6 +13,7 @@ const editorContentRules = [
   '[data-editor-content].ProseMirror table { width: 100%; border-collapse: collapse; table-layout: fixed; }',
   '[data-editor-content].ProseMirror :is(td, th) { border: 1px solid #cfd5da; padding: 8px 10px; vertical-align: top; }',
   '[data-editor-content].ProseMirror code { border-radius: 3px; padding: 2px 4px; background: #eef1f3; color: #8d2d42; }',
+  '[data-editor-content].ProseMirror .prosemirror-math-block .prosemirror-math-display, [data-editor-content].ProseMirror .prosemirror-math-block .prosemirror-math-display > math { text-align: center; }',
 ]
 
 for (const rule of editorContentRules)

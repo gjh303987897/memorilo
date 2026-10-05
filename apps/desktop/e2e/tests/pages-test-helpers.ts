@@ -87,7 +87,7 @@ export async function launchPagesTestApplication(
   options: LaunchPagesTestApplicationOptions = {},
 ): Promise<ElectronApplication> {
   const inheritedEnvironment = Object.entries(process.env)
-    .filter((entry): entry is [string, string] => entry[1] !== undefined)
+    .filter((entry): entry is [string, string] => entry[0] !== 'ELECTRON_RUN_AS_NODE' && entry[1] !== undefined)
   const environmentVariables: Record<string, string> = {
     ...Object.fromEntries(inheritedEnvironment),
     MEMORILO_DATABASE_PATH: environment.databasePath,
