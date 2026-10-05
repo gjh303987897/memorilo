@@ -7,9 +7,12 @@ import type {
 import { convertLatexToTypst } from '../math/latex-to-typst'
 import { editorTaskStatus, renderEditorContent } from './editor-content'
 
+export type TypstFallbackPolicy = 'preserve' | 'throw'
+
 export interface TypstContentRendererOptions {
   inlineAsset?: (source: string) => string
   nodeRenderers?: Readonly<Record<string, (node: EditorExportNode, content: string) => string | undefined>>
+  fallbackPolicy?: TypstFallbackPolicy
 }
 
 export const typstTaskPrelude = `#let task-marker(status) = {
@@ -81,6 +84,26 @@ function safeExportHref(value: unknown): string | null {
   }
 }
 
+function tableColumnCount(node: EditorExportNode): number {
+  const row = node.content?.find(child => child.type === 'tableRow')
+  const columns = row?.content?.reduce(
+    (count, cell) => count + Number(cell.attrs?.colspan ?? 1),
+    0,
+  ) ?? 0
+  return columns > 0 ? columns : 1
+}
+
+function preserveOrThrow(
+  policy: TypstFallbackPolicy | undefined,
+  kind: 'mark' | 'node',
+  type: string,
+  value: string,
+): string {
+  if (policy === 'throw')
+    throw new Error(`Typst renderer has no handler for ${kind} "${type}"`)
+  return value
+}
+
 function createTypstRenderer(options: TypstContentRendererOptions): EditorContentRenderer<string> {
   const inlineAsset = options.inlineAsset ?? (() => '')
   const renderers = options.nodeRenderers ?? {}
@@ -99,7 +122,8 @@ function createTypstRenderer(options: TypstContentRendererOptions): EditorConten
           return href === null ? value : `#link("${escapeTypstString(href)}")[${value}]`
         }
         case 'cloze': return value
-        default: return value
+        default:
+          return preserveOrThrow(options.fallbackPolicy, 'mark', mark.type, value)
       }
     },
     renderNode(node: EditorExportNode, content: string): string {
@@ -108,6 +132,7 @@ function createTypstRenderer(options: TypstContentRendererOptions): EditorConten
         return custom
       switch (node.type) {
         case 'doc': return content
+        case 'text': return content
         case 'paragraph': return `${content}\n\n`
         case 'heading': return `= ${content}\n\n`
         case 'blockquote': return `#quote[${content}]\n\n`
@@ -122,6 +147,13 @@ function createTypstRenderer(options: TypstContentRendererOptions): EditorConten
             return renderTypstTask(status, content)
           return `- ${content.replaceAll('\n\n', ' ')}\n`
         }
+        case 'table': {
+          const cells = content.replace(/,\s*$/, '')
+          return `#table(columns: ${tableColumnCount(node)}, ${cells})\n\n`
+        }
+        case 'tableRow': return content
+        case 'tableCell':
+        case 'tableHeaderCell': return `[${content}], `
         case 'hardBreak': return '\\ '
         case 'image': {
           const source = typeof node.attrs?.src === 'string' ? inlineAsset(node.attrs.src) : ''
@@ -140,7 +172,13 @@ function createTypstRenderer(options: TypstContentRendererOptions): EditorConten
         }
         case 'tag': return `#text[#${escapeTypst(String(node.attrs?.label ?? ''))}]`
         case 'cardDelimiter': return '↔'
-        default: return content.length > 0 ? content : escapeTypst(node.text ?? '')
+        default:
+          return preserveOrThrow(
+            options.fallbackPolicy,
+            'node',
+            node.type,
+            content.length > 0 ? content : escapeTypst(node.text ?? ''),
+          )
       }
     },
     renderText: text => escapeTypst(text),

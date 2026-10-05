@@ -89,19 +89,68 @@ describe('editor export rendering', () => {
     expect(source).toContain('$ frac(a, sqrt(x)) $')
   })
 
-  it('renders every node currently registered in the editor schema', () => {
-    const failures: string[] = []
+  it('reports fallback use without changing fallback output', () => {
+    const futureMarkNode = {
+      content: [{
+        marks: [{ type: 'futureMark' }],
+        text: 'sample',
+        type: 'text',
+      }],
+      type: 'futureNode',
+    }
+    const futureNode = {
+      content: [{ text: 'sample', type: 'text' }],
+      type: 'futureNode',
+    }
+
+    expect(renderTypstContent(futureMarkNode)).toBe('sample')
+    expect(renderTypstContent(futureNode)).toBe('sample')
+    expect(() => renderTypstContent(futureMarkNode, { fallbackPolicy: 'throw' }))
+      .toThrow('Typst renderer has no handler for mark "futureMark"')
+    expect(() => renderTypstContent(futureNode, { fallbackPolicy: 'throw' }))
+      .toThrow('Typst renderer has no handler for node "futureNode"')
+  })
+
+  it('does not fall back for any node or mark currently registered in the editor schema', () => {
+    const unhandledNodes: string[] = []
+    const unhandledMarks: string[] = []
     for (const type of Object.keys(topicProseMirrorSchema.nodes)) {
       const node = registeredNode(type)
       if (node === null || node === undefined) {
-        failures.push(`${type}: schema could not create a representative node`)
+        unhandledNodes.push(`${type}: schema could not create a representative node`)
         continue
       }
-      const source = renderTypstContent(node.toJSON())
-      if (source.trim().length === 0)
-        failures.push(`${type}: Typst renderer returned an empty fragment`)
+      try {
+        renderTypstContent(node.toJSON(), { fallbackPolicy: 'throw' })
+      }
+      catch {
+        unhandledNodes.push(type)
+      }
     }
 
-    expect(failures).toEqual([])
+    const markAttrs: Readonly<Record<string, unknown>> = {
+      anchorKind: 'rich-content',
+      cardId: 'test-card',
+      color: 'yellow',
+      definitionId: 'test-definition',
+      groupId: 'test-group',
+      href: 'https://example.test/',
+      id: 'test-highlight',
+    }
+    for (const type of Object.keys(topicProseMirrorSchema.marks)) {
+      try {
+        renderTypstContent({
+          marks: [{ attrs: markAttrs, type }],
+          text: 'sample',
+          type: 'text',
+        }, { fallbackPolicy: 'throw' })
+      }
+      catch {
+        unhandledMarks.push(type)
+      }
+    }
+
+    expect(unhandledNodes).toEqual([])
+    expect(unhandledMarks).toEqual([])
   })
 })
