@@ -12,6 +12,60 @@ import {
 } from './document-interactions.fixture'
 
 describe('document interactions', () => {
+  it('preserves task attributes when serializing mixed list types to clipboard HTML', async () => {
+    const taskBlock = (id: string, text: string, status: 'todo' | 'doing' | 'done') => ({
+      type: 'list' as const,
+      attrs: {
+        blockId: id,
+        checked: status === 'done',
+        collapsed: false,
+        elapsedMs: 0,
+        kind: 'task' as const,
+        order: null,
+        startedAt: null,
+        status,
+      },
+      content: [paragraph(text)],
+    })
+    const rendered = render(
+      <Editor
+        adapters={adapters}
+        mode={EditorMode.Document}
+        initialContent={{
+          type: 'doc',
+          content: [
+            documentBlock('bullet-before', paragraph('Bullet before'), 'bullet'),
+            taskBlock('task-todo', 'Task todo', 'todo'),
+            documentBlock('ordered-middle', paragraph('Ordered middle'), 'ordered', []),
+            taskBlock('task-doing', 'Task doing', 'doing'),
+            documentBlock('bullet-after', paragraph('Bullet after'), 'bullet'),
+            taskBlock('task-done', 'Task done', 'done'),
+          ],
+        }}
+      />,
+    )
+    const editor = await rendered.findByRole('textbox', { name: 'Editor content' })
+    await userEvent.click(rendered.getByText('Bullet before'))
+    await userEvent.keyboard(modShortcut('a'))
+
+    const clipboardData = new DataTransfer()
+    fireEvent(editor, new ClipboardEvent('copy', { bubbles: true, clipboardData }))
+
+    const document = new DOMParser().parseFromString(clipboardData.getData('text/html'), 'text/html')
+    expect([...document.querySelectorAll('li.prosemirror-flat-list')].map(list => ({
+      kind: list.getAttribute('data-list-kind'),
+      status: list.getAttribute('data-task-status'),
+      text: list.textContent,
+    }))).toEqual([
+      { kind: 'bullet', status: null, text: 'Bullet before' },
+      { kind: 'task', status: 'todo', text: 'Task todo' },
+      { kind: 'ordered', status: null, text: 'Ordered middle' },
+      { kind: 'task', status: 'doing', text: 'Task doing' },
+      { kind: 'bullet', status: null, text: 'Bullet after' },
+      { kind: 'task', status: 'done', text: 'Task done' },
+    ])
+  })
+
   it('only replaces images added by the current network paste', async () => {
     let resolveImport!: (source: string) => void
     const importNetworkImage = vi.fn(() => new Promise<string>((resolve) => {

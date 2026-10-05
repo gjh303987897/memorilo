@@ -1,5 +1,5 @@
 import type { NodeJSON } from 'prosekit/core'
-import type { Node as ProseMirrorNode } from 'prosekit/pm/model'
+import type { ProsemirrorNode } from 'prosemirror-flat-list'
 import type { EditorAdapters } from '../adapters/editor-adapters'
 import type { CardReviewRuntime } from '../card/card-review-runtime'
 import type { EditorShortcutConfiguration } from '../common/formatting-shortcuts'
@@ -34,6 +34,7 @@ import { defineImageUploadHandler } from 'prosekit/extensions/image'
 import { defineMath } from 'prosekit/extensions/math'
 import { definePlaceholder } from 'prosekit/extensions/placeholder'
 import { defineReadonly } from 'prosekit/extensions/readonly'
+import { defaultAttributesGetter, listToDOM } from 'prosemirror-flat-list'
 import { defineCardExtension } from '../card/card-extension'
 import { defineCardReviewExtension } from '../card/card-review-extension'
 import { defineBlockIdExtension } from '../common/block-id-extension'
@@ -58,34 +59,33 @@ import { defineMathKeymapExtension } from './math-keymap-extension'
 import { createNetworkImagePaste } from './network-image-paste'
 import { defineTag } from './tag-extension'
 
+function taskDOMAttributes(node: ProsemirrorNode): Record<string, string> {
+  const output = node.type.spec.toDOM?.(node)
+  if (!Array.isArray(output) || output[1] === null || typeof output[1] !== 'object' || Array.isArray(output[1]))
+    return {}
+  return Object.fromEntries(
+    Object.entries(output[1])
+      .filter(([name, value]) => name.startsWith('data-task-') && value !== null && value !== undefined)
+      .map(([name, value]) => [name, String(value)]),
+  )
+}
+
 function defineTaskClipboardSerializer() {
-  // Flat-list's native clipboard serializer bypasses the schema's custom task attributes.
+  // Attach task metadata while the native flat-list serializer still has the source list node.
   return withPriority(defineClipboardSerializer({
-    serializeFragmentWrapper: serializeFragment => (fragment, ...args) => {
-      const dom = serializeFragment(fragment, ...args)
-      const targets = dom.querySelectorAll('li.prosemirror-flat-list')
-      const lists: ProseMirrorNode[] = []
-      fragment.descendants((node) => {
-        if (node.type.name === 'list')
-          lists.push(node)
-      })
-      lists.forEach((node, index) => {
-        const target = targets.item(index)
-        if (!target || node.attrs.kind !== 'task')
-          return
-        const output = node.type.spec.toDOM?.(node)
-        if (!Array.isArray(output) || output[1] === null || typeof output[1] !== 'object' || Array.isArray(output[1]))
-          return
-        Object.entries(output[1]).forEach(([name, value]) => {
-          if (!name.startsWith('data-task-'))
-            return
-          if (value === null || value === undefined)
-            target.removeAttribute(name)
-          else
-            target.setAttribute(name, String(value))
-        })
-      })
-      return dom
+    nodesFromSchemaWrapper: nodesFromSchema => (schema) => {
+      const nodes = nodesFromSchema(schema)
+      return {
+        ...nodes,
+        list: node => listToDOM({
+          node,
+          nativeList: true,
+          getAttributes: listNode => ({
+            ...defaultAttributesGetter(listNode),
+            ...(listNode.attrs.kind === 'task' ? taskDOMAttributes(listNode) : {}),
+          }),
+        }),
+      }
     },
   }), Priority.highest)
 }
