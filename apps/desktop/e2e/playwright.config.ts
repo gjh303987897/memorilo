@@ -1,6 +1,9 @@
 import process from 'node:process'
 import { defineConfig } from '@playwright/test'
 
+// The Electron package may be resolved from a Node process that inherits this flag;
+// remove it before Playwright launches the Electron executable or Electron will run as Node.
+delete process.env.ELECTRON_RUN_AS_NODE
 process.env.MEMORILO_E2E_HIDE_WINDOW = '1'
 process.env.MEMORILO_SHELF_IMAGE_CACHE_PATH = ':memory:'
 // The host runner exports this for Electron's Node tooling; passing it through

@@ -86,6 +86,7 @@ export async function launchPagesTestApplication(
   environment: PagesTestEnvironment,
   options: LaunchPagesTestApplicationOptions = {},
 ): Promise<ElectronApplication> {
+  // Playwright workers can inherit this flag from the Electron package loader; passing it to Electron makes it start as Node.
   const inheritedEnvironment = Object.entries(process.env)
     .filter((entry): entry is [string, string] => entry[0] !== 'ELECTRON_RUN_AS_NODE' && entry[1] !== undefined)
   const environmentVariables: Record<string, string> = {
