@@ -75,10 +75,9 @@ import {
   JournalDateSchema,
   PruneDesktopPastEmptyJournalsResultSchema,
   RenameDesktopNoteResultSchema,
-  TaskDateTimeSchema,
   TaskReminderMinutesSchema,
   TaskReminderSchema,
-  TaskTimeSchema,
+  TaskScheduleSchema,
 } from './schemas/notes'
 import {
   AddShelfSourceInputSchema,
@@ -458,10 +457,7 @@ export const desktopOperationSchemas = {
     })]), DesktopTodoCalendarSubscriptionSchema),
     updateTodoTask: operation(Schema.Tuple([Schema.Struct({
       blockId: Schema.NonEmptyString,
-      allDay: Schema.optionalKey(Schema.Boolean),
-      dueDate: Schema.optionalKey(nullable(JournalDateSchema)),
-      dueTime: Schema.optionalKey(nullable(TaskTimeSchema)),
-      endAt: Schema.optionalKey(nullable(TaskDateTimeSchema)),
+      schedule: Schema.optionalKey(TaskScheduleSchema),
       nextDueDate: Schema.optionalKey(nullable(JournalDateSchema)),
       noteId: Schema.NonEmptyString,
       onlyThis: Schema.optionalKey(Schema.Boolean),
@@ -491,7 +487,6 @@ export const desktopOperationSchemas = {
         yearWeekday: Schema.optionalKey(Schema.Int.check(Schema.isBetween({ maximum: 6, minimum: 0 }))),
       }))),
       status: Schema.optionalKey(Schema.Literals(['todo', 'doing', 'done'])),
-      startAt: Schema.optionalKey(nullable(TaskDateTimeSchema)),
       text: Schema.optionalKey(Schema.String),
       topicId: Schema.NonEmptyString,
     })]), DesktopNoteExternalUpdateSchema),

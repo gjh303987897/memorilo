@@ -1,4 +1,4 @@
-import type { TaskStatus } from '@memorilo/editor/task'
+import type { TaskIcsEvent, TaskSchedule, TaskStatus } from '@memorilo/editor/task'
 import type {
   SyncDeviceTodoScope,
   SyncDeviceTodoStore,
@@ -9,11 +9,12 @@ import type {
 import { Buffer } from 'node:buffer'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { createEditorNote } from '@memorilo/editor/note'
-import { parseTaskDueDate, parseTaskTime, readTaskStatus } from '@memorilo/editor/task'
+import { parseTaskRepeatRule, parseTaskSchedule, projectTaskOccurrences, readTaskStatus, serializeTodoIcsFeed, todoOccurrenceUid } from '@memorilo/editor/task'
 import { Effect } from 'effect'
 import { noteSnapshotRevision } from '../infrastructure/database/shared'
 
 const deviceTokenPrefix = 'memorilo-todo-v1.'
+const calendarTokenPrefix = 'memorilo-calendar-v1.'
 const isoDatePattern = /^\d{4}-\d{2}-\d{2}$/u
 
 export type DeviceTodoErrorCode
@@ -36,9 +37,7 @@ export class DeviceTodoError extends Error {
 }
 
 export interface DeviceTodoItem {
-  readonly allDay: boolean
-  readonly dueDate: string | null
-  readonly dueTime: string | null
+  readonly schedule: TaskSchedule
   readonly id: string
   readonly noteTitle: string
   readonly parentId: string | null
@@ -54,6 +53,23 @@ export interface DeviceTodoSnapshot {
   readonly revision: string
 }
 
+export interface TodoCalendarFeedOptions {
+  readonly afterDays: number
+  readonly beforeDays: number
+  readonly calendarEvents?: readonly { readonly startDate: string, readonly subscriptionId: string }[]
+  readonly completed: 'hide' | 'show'
+  readonly from: string
+  readonly timeZone?: string
+  readonly through: string
+  readonly undated: 'hide' | 'today'
+  readonly undatedDate: string
+}
+
+export interface TodoCalendarFeedResult {
+  readonly body: string
+  readonly revision: string
+}
+
 export interface DeviceTodoModule {
   readonly issueToken: (input: {
     readonly accountId: string
@@ -61,12 +77,19 @@ export interface DeviceTodoModule {
     readonly expiresAt: number
     readonly scopes: readonly SyncDeviceTodoScope[]
   }) => Effect.Effect<{ readonly credential: SyncDeviceTodoToken, readonly token: string }, DeviceTodoError>
+  readonly issueCalendarToken: (input: {
+    readonly accountId: string
+    readonly deviceId: string
+    readonly deviceName: string
+  }) => Effect.Effect<{ readonly credential: SyncDeviceTodoToken, readonly token: string }, DeviceTodoError>
+  readonly revokeCalendarToken: (input: { readonly accountId: string, readonly deviceId: string }) => Effect.Effect<boolean, DeviceTodoError>
   readonly list: (input: {
     readonly date: string
     readonly limit: number
     readonly token: string
     readonly view: 'all' | 'today'
   }) => Effect.Effect<DeviceTodoSnapshot, DeviceTodoError>
+  readonly calendar: (input: { readonly options: TodoCalendarFeedOptions, readonly token: string }) => Effect.Effect<TodoCalendarFeedResult, DeviceTodoError>
   readonly listTokens: (accountId: string) => Effect.Effect<readonly SyncDeviceTodoToken[], DeviceTodoError>
   readonly revokeToken: (accountId: string, deviceId: string) => Effect.Effect<boolean, DeviceTodoError>
   readonly invalidateAccount: (accountId: string, generation?: number) => void
@@ -150,7 +173,6 @@ function buildProjection(snapshots: readonly SyncNoteSnapshotRecord[]): TodoProj
     const leftDate = projectedDate(left) ?? '9999-12-31'
     const rightDate = projectedDate(right) ?? '9999-12-31'
     return leftDate.localeCompare(rightDate)
-      || (left.dueTime ?? '99:99').localeCompare(right.dueTime ?? '99:99')
       || left.noteTitle.localeCompare(right.noteTitle)
       || left.topicTitle.localeCompare(right.topicTitle)
       || left.text.localeCompare(right.text)
@@ -163,8 +185,10 @@ export function deviceTodoRevision(snapshots: readonly SyncNoteSnapshotRecord[])
   return buildProjection(snapshots).revision
 }
 
-function projectedDate(todo: Pick<ProjectedTodo, 'dueDate' | 'journalDate'>): string | null {
-  return todo.dueDate ?? todo.journalDate
+function projectedDate(todo: Pick<ProjectedTodo, 'schedule'>): string | null {
+  return todo.schedule.kind === 'deadline'
+    ? todo.schedule.date
+    : todo.schedule.kind === 'span' ? todo.schedule.start.slice(0, 10) : null
 }
 
 function projectSnapshot(snapshot: SyncNoteSnapshotRecord): readonly ProjectedTodo[] {
@@ -198,26 +222,19 @@ function projectSnapshot(snapshot: SyncNoteSnapshotRecord): readonly ProjectedTo
               todoParent = todoId({ blockId: ancestor.id, noteId: snapshot.noteId, topicId: entry.id })
             ancestorId = ancestor.parentId
           }
-          const dueDateValue = block.attributes.dueDate
-          const dueTimeValue = block.attributes.dueTime
-          const dueDate = dueDateValue === undefined || dueDateValue === null ? null : parseTaskDueDate(dueDateValue)
-          const dueTime = dueTimeValue === undefined || dueTimeValue === null ? null : parseTaskTime(dueTimeValue)
-          if ((dueDateValue !== undefined && dueDateValue !== null && dueDate === null)
-            || (dueTimeValue !== undefined && dueTimeValue !== null && dueTime === null)) {
-            throw new Error(`Todo ${block.id} contains invalid due metadata`)
-          }
+          const schedule = parseTaskSchedule(block.attributes.schedule)
+          if (schedule === null)
+            throw new Error(`Todo ${block.id} contains invalid schedule metadata`)
           projected.push({
-            allDay: block.attributes.allDay === true,
             attributes: block.attributes,
             blockId: block.id,
-            dueDate,
-            dueTime,
             id: todoId({ blockId: block.id, noteId: snapshot.noteId, topicId: entry.id }),
             journalDate,
             noteId: snapshot.noteId,
             noteTitle,
             parentId: todoParent,
             revision,
+            schedule,
             status: readTaskStatus(block.attributes.status),
             text: block.text,
             topicId: entry.id,
@@ -238,15 +255,13 @@ function projectSnapshot(snapshot: SyncNoteSnapshotRecord): readonly ProjectedTo
 }
 
 function publicTodo(todo: ProjectedTodo, selectedIds: ReadonlySet<string>): DeviceTodoItem {
-  const { allDay, dueDate, dueTime, id, noteTitle, parentId, revision, status, text, topicTitle } = todo
+  const { id, noteTitle, parentId, revision, schedule, status, text, topicTitle } = todo
   return {
-    allDay,
-    dueDate,
-    dueTime,
     id,
     noteTitle,
     parentId: parentId !== null && selectedIds.has(parentId) ? parentId : null,
     revision,
+    schedule,
     status,
     text,
     topicTitle,
@@ -270,8 +285,8 @@ export function createDeviceTodoModule(options: DeviceTodoModuleOptions): Device
     return projection
   }
 
-  const authorize = async (token: string, scope: SyncDeviceTodoScope): Promise<SyncDeviceTodoToken> => {
-    if (!token.startsWith(deviceTokenPrefix) || token.length > 256)
+  const authorize = async (token: string, scope: SyncDeviceTodoScope, prefix = deviceTokenPrefix): Promise<SyncDeviceTodoToken> => {
+    if (!token.startsWith(prefix) || token.length > 256)
       throw new DeviceTodoError('unauthorized', 'Device token is invalid')
     const credential = await options.store.findToken(tokenHash(token))
     const timestamp = now()
@@ -314,6 +329,37 @@ export function createDeviceTodoModule(options: DeviceTodoModuleOptions): Device
       })
       return { credential, token }
     }),
+    issueCalendarToken: input => attempt(async () => {
+      const deviceName = input.deviceName.trim()
+      if (input.accountId.length === 0 || input.deviceId.length === 0 || deviceName.length < 1 || deviceName.length > 64)
+        throw new DeviceTodoError('invalid_request', 'Calendar feed device identity is invalid')
+      await accountState(input.accountId)
+      const existing = await options.store.listTokens(input.accountId)
+      for (const token of existing) {
+        if (token.scopes.includes('todos:calendar:read') && token.deviceId.startsWith(`calendar:${input.deviceId}:`))
+          await options.store.revokeToken(input.accountId, token.deviceId, now())
+      }
+      const token = `${calendarTokenPrefix}${randomBytes(32).toString('base64url')}`
+      const credential = await options.store.createToken({
+        accountId: input.accountId,
+        createdAt: now(),
+        deviceId: `calendar:${input.deviceId}:${randomUUID()}`,
+        deviceName,
+        expiresAt: now() + maxTokenLifetimeMs,
+        scopes: ['todos:calendar:read'],
+        tokenHash: tokenHash(token),
+      })
+      return { credential, token }
+    }),
+    revokeCalendarToken: input => attempt(async () => {
+      const tokens = await options.store.listTokens(input.accountId)
+      let revoked = false
+      for (const token of tokens) {
+        if (token.scopes.includes('todos:calendar:read') && token.deviceId.startsWith(`calendar:${input.deviceId}:`))
+          revoked ||= await options.store.revokeToken(input.accountId, token.deviceId, now())
+      }
+      return revoked
+    }),
     listTokens: accountId => attempt(() => options.store.listTokens(accountId)),
     revokeToken: (accountId, deviceId) => attempt(() => options.store.revokeToken(accountId, deviceId, now())),
     invalidateAccount: (accountId, generation) => {
@@ -341,6 +387,60 @@ export function createDeviceTodoModule(options: DeviceTodoModuleOptions): Device
         items: selected.map(todo => publicTodo(todo, selectedIds)),
         revision: projection.revision,
       }
+    }),
+    calendar: input => attempt(async () => {
+      if (!validDate(input.options.from) || !validDate(input.options.through) || !validDate(input.options.undatedDate) || input.options.through < input.options.from)
+        throw new DeviceTodoError('invalid_request', 'Todo calendar feed range is invalid')
+      if (!Number.isSafeInteger(input.options.beforeDays) || input.options.beforeDays < 0 || input.options.beforeDays > 3660
+        || !Number.isSafeInteger(input.options.afterDays) || input.options.afterDays < 0 || input.options.afterDays > 3660) {
+        throw new DeviceTodoError('invalid_request', 'Todo calendar feed bounds are invalid')
+      }
+      const credential = await authorize(input.token, 'todos:calendar:read', calendarTokenPrefix)
+      const state = await accountState(credential.accountId)
+      const projection = await getProjection(credential.accountId, state.generation)
+      const byId = new Map(projection.todos.map(todo => [todo.id, todo]))
+      const events: TaskIcsEvent[] = []
+      for (const todo of projection.todos) {
+        if (input.options.completed === 'hide' && todo.status === 'done')
+          continue
+        let schedule: TaskSchedule
+        try {
+          schedule = todo.schedule
+        }
+        catch {
+          continue
+        }
+        const repeatValue = todo.attributes.repeatRule
+        const repeatRule = repeatValue === undefined || repeatValue === null ? null : parseTaskRepeatRule(repeatValue)
+        if (repeatValue !== undefined && repeatValue !== null && repeatRule === null)
+          continue
+        const occurrences = projectTaskOccurrences(schedule, repeatRule, {
+          calendarEvents: input.options.calendarEvents,
+          from: input.options.from,
+          through: input.options.through,
+          undatedDate: input.options.undated === 'today' ? input.options.undatedDate : undefined,
+        })
+        for (const occurrence of occurrences) {
+          const parent = todo.parentId === null ? undefined : byId.get(todo.parentId)
+          events.push({
+            allDay: occurrence.allDay,
+            description: `${todo.noteTitle} / ${todo.topicTitle}`,
+            end: occurrence.end,
+            parentContext: parent?.text,
+            start: occurrence.start,
+            summary: todo.text,
+            uid: todoOccurrenceUid(todo.id, occurrence.key),
+          })
+        }
+      }
+      const body = serializeTodoIcsFeed(events.slice(0, 10_000), {
+        calendarName: 'Memorilo Todos',
+        generatedAt: '1970-01-01T00:00:00Z',
+        timeZone: input.options.timeZone,
+      })
+      if (Buffer.byteLength(body, 'utf8') > 2_000_000)
+        throw new DeviceTodoError('invalid_request', 'Todo calendar feed is too large')
+      return { body, revision: projection.revision }
     }),
   }
 }

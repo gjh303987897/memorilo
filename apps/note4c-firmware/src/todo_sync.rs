@@ -202,16 +202,22 @@ pub struct TodoSnapshot {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TodoSnapshotItem {
-    pub all_day: bool,
-    pub due_date: Option<String>,
-    pub due_time: Option<String>,
     pub id: String,
     pub note_title: String,
     pub parent_id: Option<String>,
     pub revision: String,
+    pub schedule: TodoSchedule,
     pub status: SnapshotStatus,
     pub text: String,
     pub topic_title: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum TodoSchedule {
+    None,
+    Deadline { date: String, time: Option<String> },
+    Span { all_day: bool, end: String, start: String },
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -424,17 +430,18 @@ pub fn validate_snapshot(snapshot: &TodoSnapshot) -> Result<(), TodoSnapshotErro
                 index,
             });
         }
-        if item.due_date.as_ref().is_some_and(|date| !valid_date(date)) {
-            return Err(TodoSnapshotError::InvalidField {
-                field: "dueDate",
-                index,
-            });
-        }
-        if item.due_time.as_ref().is_some_and(|time| !valid_time(time)) {
-            return Err(TodoSnapshotError::InvalidField {
-                field: "dueTime",
-                index,
-            });
+        match &item.schedule {
+            TodoSchedule::None => {}
+            TodoSchedule::Deadline { date, time } => {
+                if !valid_date(date) || time.as_ref().is_some_and(|value| !valid_time(value)) {
+                    return Err(TodoSnapshotError::InvalidField { field: "schedule", index });
+                }
+            }
+            TodoSchedule::Span { start, end, .. } => {
+                if !valid_datetime(start) || !valid_datetime(end) || end <= start {
+                    return Err(TodoSnapshotError::InvalidField { field: "schedule", index });
+                }
+            }
         }
         if !ids.insert(item.id.as_str()) {
             return Err(TodoSnapshotError::DuplicateId);
@@ -475,11 +482,11 @@ fn map_model(snapshot: &TodoSnapshot) -> TodoModel {
             .map(|item| TodoItem {
                 id: TodoId(item.id.clone()),
                 title: item.text.clone(),
-                due: item
-                    .due_time
-                    .clone()
-                    .or_else(|| item.due_date.clone())
-                    .unwrap_or_default(),
+                due: match &item.schedule {
+                    TodoSchedule::None => String::new(),
+                    TodoSchedule::Deadline { date, time } => time.clone().map_or_else(|| date.clone(), |value| format!("{date}T{value}")),
+                    TodoSchedule::Span { start, .. } => start.clone(),
+                },
                 status: match item.status {
                     SnapshotStatus::Todo => Status::Open,
                     SnapshotStatus::InProgress => Status::Doing,
@@ -547,6 +554,10 @@ fn valid_time(value: &str) -> bool {
     hour < 24 && minute < 60
 }
 
+fn valid_datetime(value: &str) -> bool {
+    value.len() == 16 && valid_date(&value[..10]) && value.as_bytes().get(10) == Some(&b'T') && valid_time(&value[11..])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -557,13 +568,11 @@ mod tests {
             time_zone_offset_minutes: Some(480),
             revision: revision.into(),
             items: vec![TodoSnapshotItem {
-                all_day: true,
-                due_date: Some("2026-09-05".into()),
-                due_time: None,
                 id: "opaque-1".into(),
                 note_title: "Note".into(),
                 parent_id: None,
                 revision: revision.into(),
+                schedule: TodoSchedule::Deadline { date: "2026-09-05".into(), time: None },
                 status: SnapshotStatus::Todo,
                 text: text.into(),
                 topic_title: "Topic".into(),
@@ -649,11 +658,11 @@ mod tests {
     #[test]
     fn rejects_invalid_dates_duplicate_ids_and_cycles() {
         let mut invalid = snapshot("a", "text");
-        invalid.items[0].due_date = Some("2026-02-30".into());
+        invalid.items[0].schedule = TodoSchedule::Deadline { date: "2026-02-30".into(), time: None };
         assert_eq!(
             validate_snapshot(&invalid),
             Err(TodoSnapshotError::InvalidField {
-                field: "dueDate",
+                field: "schedule",
                 index: 0
             })
         );

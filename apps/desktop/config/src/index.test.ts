@@ -91,7 +91,7 @@ describe('desktop MCP configuration', () => {
     })
   })
 
-  it('adds the default recurring-task completion action to existing Todo settings', () => {
+  it('fills all missing Todo settings while preserving existing values', () => {
     const current = configuration({ accessToken: '', enabled: false, port: 8765 })
     expect(migrateDesktopConfiguration({
       ...current,
@@ -99,6 +99,7 @@ describe('desktop MCP configuration', () => {
     })).toEqual({
       ...current,
       todo: {
+        ...desktopConfigurationDefinition.defaults.todo,
         autoCompleteParentTasks: true,
         enabled: false,
         recurringTaskCompletionAction: 'archive-completed-to-today',
