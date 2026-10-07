@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { memoriloProtocol } from '@memorilo/desktop-api/transport'
 import { app, BrowserWindow, dialog, ipcMain, protocol, screen, shell } from 'electron'
 
+import { applicationIconPath } from './app-icon-paths'
 import { applyPendingRestore } from './backup/restore-state'
 import { createDesktopRuntime } from './desktop-runtime'
 import { flushRendererNotes } from './lifecycle/note-save-handshake'
@@ -87,6 +88,7 @@ function createWindow() {
     autoHideMenuBar: false,
     backgroundColor: '#ffffff',
     height: 800,
+    icon: applicationIconPath,
     minHeight: 640,
     minWidth: 720,
     show: false,
@@ -142,6 +144,7 @@ function createPanel(): BrowserWindow {
     backgroundColor: '#ffffff',
     frame: false,
     height: 560,
+    icon: applicationIconPath,
     resizable: false,
     roundedCorners: true,
     show: false,
@@ -274,6 +277,8 @@ function openMainWindow(): void {
 }
 
 async function startApplication(): Promise<void> {
+  if (process.platform === 'darwin')
+    app.dock?.setIcon(applicationIconPath)
   const dataDirectory = applicationDataDirectory(app.getPath('userData'), resolve(mainDirectory, '../../../../.dev'), app.isPackaged)
   const database = mainDatabasePath(dataDirectory)
   const restore = await applyPendingRestore(database)
