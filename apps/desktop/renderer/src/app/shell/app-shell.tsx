@@ -16,6 +16,7 @@ import { appShellStyles } from './app-shell.stylex'
 import { AppTitlebar } from './app-titlebar'
 import { AppToastContainer } from './app-toast'
 import { TodoCalendarBootstrap } from './todo-calendar-bootstrap'
+import { WindowTitlebar } from './window-titlebar'
 import { WorkspaceSidebar } from './workspace-sidebar'
 
 export function AppShell({ children }: { children: ReactNode }) {
@@ -69,14 +70,17 @@ export function AppShell({ children }: { children: ReactNode }) {
           className={shellProps.className}
           style={shellStyle}
         >
-          <AppTitlebar page={pageTitlebar} sidebarVisible={sidebarVisible} />
-          <div {...stylex.props(appShellStyles.body)}>
-            <WorkspaceSidebar
-              compactCollapsed={compactCanvasTitlebar}
-              visible={sidebarVisible}
-              onToggle={toggleSidebar}
-            />
-            <div {...stylex.props(appShellStyles.routeViewport)}>{children}</div>
+          <WindowTitlebar />
+          <div {...stylex.props(appShellStyles.workspace)}>
+            <AppTitlebar page={pageTitlebar} sidebarVisible={sidebarVisible} />
+            <div {...stylex.props(appShellStyles.body)}>
+              <WorkspaceSidebar
+                compactCollapsed={compactCanvasTitlebar}
+                visible={sidebarVisible}
+                onToggle={toggleSidebar}
+              />
+              <div {...stylex.props(appShellStyles.routeViewport)}>{children}</div>
+            </div>
           </div>
           <CommandPalette
             contextualCommands={pageCommands}

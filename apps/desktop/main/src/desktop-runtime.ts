@@ -69,7 +69,7 @@ export interface DesktopRuntime {
 
 interface DesktopRuntimeOptions {
   allowTestClock: boolean
-  createWindow: () => void
+  createWindow: (redrawTitlebar: boolean) => void
   flushRenderer: () => Promise<boolean>
   mainDirectory: string
   requestRestart: () => void
@@ -801,10 +801,10 @@ export async function createDesktopRuntime(options: DesktopRuntimeOptions): Prom
       close: remove => remove(),
       name: 'application menu',
     })
-    options.createWindow()
+    options.createWindow(configurationStore.getSnapshot().redrawTitlebar)
     const handleActivate = (): void => {
       if (BrowserWindow.getAllWindows().length === 0)
-        options.createWindow()
+        options.createWindow(configurationStore.getSnapshot().redrawTitlebar)
     }
     await scope.acquire({
       acquire: () => {
