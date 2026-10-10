@@ -5,7 +5,7 @@ import { Effect, Fiber } from 'effect'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'react-toastify/unstyled'
-import { getPlatform } from '../../shared/platform'
+import { hasCustomWindowTitlebar } from './window-chrome'
 import { loadWindowApplicationIcon, opaqueHexColor, openWindowTitlebarMenu, updateWindowTitlebarAppearance } from './window-titlebar-service'
 import { windowTitlebarStyles as styles } from './window-titlebar.stylex'
 
@@ -181,9 +181,5 @@ function CustomWindowTitlebar() {
 }
 
 export function WindowTitlebar() {
-  const platform = getPlatform()
-  // The native frame is fixed at window creation. Keep its renderer caption
-  // aligned with that frame while a changed preference awaits a restart.
-  const enabled = typeof window.desktop === 'undefined' || window.desktop.customTitlebarEnabled !== false
-  return enabled && (platform === 'windows' || platform === 'linux') ? <CustomWindowTitlebar /> : null
+  return hasCustomWindowTitlebar() ? <CustomWindowTitlebar /> : null
 }

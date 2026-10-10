@@ -16,6 +16,7 @@ import { appShellStyles } from './app-shell.stylex'
 import { AppTitlebar } from './app-titlebar'
 import { AppToastContainer } from './app-toast'
 import { TodoCalendarBootstrap } from './todo-calendar-bootstrap'
+import { hasCustomWindowTitlebar } from './window-chrome'
 import { WindowTitlebar } from './window-titlebar'
 import { WorkspaceSidebar } from './workspace-sidebar'
 
@@ -59,6 +60,8 @@ export function AppShell({ children }: { children: ReactNode }) {
   )
   const shellStyle = {
     '--reader-leading-offset': `${readerLeadingOffset}px`,
+    // Fixed reader controls use viewport coordinates, outside workspace flow.
+    '--window-titlebar-height': hasCustomWindowTitlebar() ? '40px' : '0px',
   } as CSSProperties
   const shellProps = stylex.props(appShellStyles.shell)
 
